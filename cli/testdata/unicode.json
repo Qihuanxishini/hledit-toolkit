@@ -1,0 +1,18 @@
+{
+  "project": "hledit",
+  "title": "Café — ありがとう — 😀",
+  "owner": "Jalapeño",
+  "description": "Unicode JSON fixture with accents, emoji, and CJK.",
+  "sections": [
+    {
+      "id": "intro",
+      "label": "naïve façade",
+      "body": "First line with русский текст."
+    },
+    {
+      "id": "notes",
+      "label": "emoji-heavy",
+      "body": "Keep snowman ☃, sparkles ✨, and music ♫ intact."
+    }
+  ]
+}

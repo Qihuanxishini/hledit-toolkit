@@ -1,0 +1,18 @@
+# Local build outputs
+/dist/
+/hledit
+
+# Coverage / profiling
+*.cover
+coverage.out
+*.prof
+
+# Extension dependencies
+/pi-hledit/node_modules/
+
+# Editor / OS noise
+.DS_Store
+
+# pi-lens cache
+.pi-lens/
+.pi/

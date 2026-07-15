@@ -1,0 +1,32 @@
+{
+  "name": "pi-hledit-diff",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi extension for stale-safe anchored file changes with inline updated anchors and diff rendering.",
+  "main": "index.ts",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.ts",
+    "check": "npm run typecheck && npm test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "^0.80.7",
+    "@earendil-works/pi-coding-agent": "^0.80.7",
+    "@earendil-works/pi-tui": "^0.80.7",
+    "typebox": "^1.1.38"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.80.7",
+    "@earendil-works/pi-coding-agent": "0.80.7",
+    "@earendil-works/pi-tui": "0.80.7",
+    "@types/node": "^26.1.1",
+    "typebox": "1.1.38",
+    "typescript": "^7.0.2"
+  }
+}

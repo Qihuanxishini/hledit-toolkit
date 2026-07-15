@@ -1,0 +1,30 @@
+# Dependencies
+**/node_modules/
+
+# Build, test, and profiling outputs
+**/dist/
+**/coverage/
+**/*.cover
+**/coverage.out
+**/*.prof
+*.log
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Editor, OS, and agent caches
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.pi/
+.pi-lens/
+
+# The upstream CLI workflow is retained as source reference; root CI is authoritative.
+/cli/.github/

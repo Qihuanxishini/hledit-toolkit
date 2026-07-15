@@ -1,0 +1,87 @@
+export type BatchUpdatedAnchorLine = {
+	line: number;
+	anchor: string;
+	text: string;
+	textTruncated: boolean;
+};
+
+export type BatchUpdatedAnchorContext = {
+	lines: BatchUpdatedAnchorLine[];
+	offset: number;
+	limit: number;
+	desiredLimit: number;
+	truncated: boolean;
+};
+
+export type PostEditContextResult = {
+	text: string;
+	offset: number;
+	limit: number;
+	truncated: boolean;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function positiveInteger(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function nonNegativeInteger(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+export function parseBatchUpdatedAnchorContext(parsed: Record<string, unknown> | null): BatchUpdatedAnchorContext | undefined {
+	const value = parsed?.updatedAnchors;
+	if (!isRecord(value) || !Array.isArray(value.lines) || typeof value.truncated !== "boolean") {
+		return undefined;
+	}
+
+	const offset = positiveInteger(value.offset);
+	const limit = nonNegativeInteger(value.limit);
+	const desiredLimit = nonNegativeInteger(value.desiredLimit);
+	if (offset === undefined || limit === undefined || desiredLimit === undefined || limit !== value.lines.length || desiredLimit < limit) {
+		return undefined;
+	}
+
+	const lines: BatchUpdatedAnchorLine[] = [];
+	for (const [index, item] of value.lines.entries()) {
+		if (!isRecord(item)) {
+			return undefined;
+		}
+		const line = positiveInteger(item.line);
+		const textTruncated = item.textTruncated ?? false;
+		if (
+			line !== offset + index ||
+			typeof item.anchor !== "string" ||
+			!new RegExp(`^${line}#[A-Za-z0-9]+$`).test(item.anchor) ||
+			typeof item.text !== "string" ||
+			typeof textTruncated !== "boolean"
+		) {
+			return undefined;
+		}
+		lines.push({ line, anchor: item.anchor, text: item.text, textTruncated });
+	}
+
+	return { lines, offset, limit, desiredLimit, truncated: value.truncated };
+}
+
+export function formatBatchUpdatedAnchorContext(context: BatchUpdatedAnchorContext): PostEditContextResult {
+	const truncated = context.truncated || context.lines.some((line) => line.textTruncated);
+	const output = [
+		"Updated anchors:",
+		context.lines.map((line) => `${line.anchor}:${line.text}`).join("\n") || "(file empty)",
+		"Use these anchors for another change, or call hledit_read_anchors. Do not reuse anchors read before this mutation.",
+	];
+	if (truncated) {
+		output.push(`Updated anchors were truncated. Call hledit_read_anchors with offset:${context.offset} limit:${context.desiredLimit}.`);
+	}
+
+	return {
+		text: output.join("\n"),
+		offset: context.offset,
+		limit: context.limit,
+		truncated,
+	};
+}

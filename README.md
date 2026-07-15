@@ -18,7 +18,7 @@
 - 单次重建文件，避免多 edit 场景下反复复制整份内容。
 - batch 成功后直接返回 `updatedAnchors`，无需再次启动 `read-range`。
 - 插件工具参数采用严格 schema，并将 logical failure 转换为真正的 Pi 工具错误。
-- 修改结果包含紧凑摘要、新锚点以及供 TUI 使用的 diff/patch details。
+- 插件内置主题自适应的锚点预览与统一/双栏 diff 渲染，不依赖其他显示插件。
 
 ## 开发验证
 

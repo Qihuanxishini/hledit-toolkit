@@ -35,11 +35,9 @@ import {
 	type ReadAnchorsParams,
 } from "./src/schema.ts";
 import {
-	createEditDiffRenderDelegate,
-	hasDiffPayload,
-	renderFallbackResult,
+	renderFileChangesResult,
 	renderHleditCall,
-	renderWithEditDiffDelegate,
+	renderReadAnchorsResult,
 	type RenderTheme,
 	type ToolRenderContextLike,
 } from "./src/render.ts";
@@ -118,7 +116,6 @@ async function runFileChangesWithDiff(
 }
 
 export default function piHleditDiffExtension(pi: ExtensionAPI): void {
-	const editDiffDelegate = createEditDiffRenderDelegate();
 	let warnedHleditUnavailable = false;
 
 	pi.registerTool(({
@@ -135,8 +132,8 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		renderCall(args: unknown, theme: RenderTheme) {
 			return renderHleditCall("read_anchors", args, theme);
 		},
-		renderResult(result: TextResult, _options: ToolRenderResultOptions, theme: RenderTheme, context: ToolRenderContextLike) {
-			return renderFallbackResult("read_anchors", result, theme, context);
+		renderResult(result: TextResult, options: ToolRenderResultOptions, theme: RenderTheme, context: ToolRenderContextLike) {
+			return renderReadAnchorsResult(result, options, theme, context);
 		},
 		async execute(
 			_toolCallId: string,
@@ -166,13 +163,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			return renderHleditCall("apply_file_changes", args, theme);
 		},
 		renderResult(result: TextResult, options: ToolRenderResultOptions, theme: RenderTheme, context: ToolRenderContextLike) {
-			if (hasDiffPayload(result)) {
-				const rendered = renderWithEditDiffDelegate(editDiffDelegate, result, options, theme, context);
-				if (rendered) {
-					return rendered;
-				}
-			}
-			return renderFallbackResult("apply_file_changes", result, theme, context);
+			return renderFileChangesResult(result, options, theme, context);
 		},
 		async execute(
 			_toolCallId: string,

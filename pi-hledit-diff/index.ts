@@ -15,7 +15,7 @@ import {
 	preferAnchoredEditingTools,
 } from "./src/active-tools.ts";
 import { HLEDIT_INSTALL_HINT, parseHleditCapabilities, resolveHleditBin, runHledit } from "./src/cli.ts";
-import { buildFileChangeRequest } from "./src/file-changes.ts";
+import { buildFileChangeRequest, findSingleAnchorReplacementError } from "./src/file-changes.ts";
 import { formatBatchUpdatedAnchorContext, type BatchUpdatedAnchorContext } from "./src/post-edit-context.ts";
 import { prepareFileChangeArguments, prepareReadAnchorsArguments } from "./src/prepare-arguments.ts";
 import { buildReadArgs, normalizeToolPath } from "./src/read-args.ts";
@@ -72,6 +72,14 @@ async function runFileChangesWithDiff(
 			return toolFailureResult(`Changes were not applied: unable to read ${normalizedPath} before editing: ${before.error}`);
 		}
 
+		const singleAnchorReplacementError = findSingleAnchorReplacementError(params, before.content);
+		if (singleAnchorReplacementError) {
+			return toolFailureResult(
+				`Atomic batch rejected; zero changes were applied.\n${singleAnchorReplacementError}`,
+				"rejected",
+			);
+		}
+
 		const run = await runHledit(request.args, request.stdin, ctx.cwd, signal);
 		const result = textResult(run, "apply_file_changes", { path: normalizedPath });
 		if (result.details.disposition !== "succeeded") {
@@ -125,7 +133,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Read text-file anchors before applying anchored changes",
 		promptGuidelines: [
 			"Call hledit_read_anchors immediately before changing a text file; copy LN#HASH anchors exactly and never invent them.",
-			"When the location is known, read only the affected range with offset and limit. In output like 51#AB:text, the anchor is only 51#AB.",
+			"When the location is known, read only the affected range with offset and limit. In output like 51#BJ:text, the anchor is only 51#BJ.",
 		],
 		parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 		prepareArguments: prepareReadAnchorsArguments,
@@ -152,10 +160,11 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		description: "Apply one atomic set of non-conflicting stale-safe changes to one text file.",
 		promptSnippet: "Atomically apply anchored changes to one text file",
 		promptGuidelines: [
-			"Use hledit_apply_file_changes once for all non-conflicting changes in one file. Its lines arrays contain raw file text only, never anchors or diff markers.",
-			"For range replacement use { operation: \"replace\", anchor, end_anchor, lines }; replace-range is not valid.",
+			"Use hledit_apply_file_changes once for all complete, non-conflicting changes in one file. Its lines arrays contain raw file text only, never anchors or diff markers.",
+			"A replace without end_anchor consumes exactly one source line even when lines contains multiple output lines. To replace an existing block, always supply the inclusive end_anchor.",
+			"Never include placeholder anchors such as #??/#XX, operation:read, or unfinished changes. Read anchors in a separate hledit_read_anchors call first.",
 			"Delete uses { operation: \"delete\", anchor, end_anchor? } without lines. Insert requires { operation: \"insert\", anchor, position: \"before\" | \"after\", lines }.",
-			"After a stale hledit_apply_file_changes result, call hledit_read_anchors for the affected range before retrying. Do not reuse pre-mutation anchors.",
+			"The batch is atomic: any invalid, conflicting, or stale item means zero writes. After stale, reread the affected range and do not reuse pre-mutation anchors.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 		prepareArguments: prepareFileChangeArguments,

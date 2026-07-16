@@ -14,11 +14,11 @@ test("prepareReadAnchorsArguments converts quoted positive integers", () => {
 test("prepareFileChangeArguments parses JSON changes and wraps a single change", () => {
 	const prepared = prepareFileChangeArguments({
 		path: "src/a.ts",
-		changes: JSON.stringify({ operation: "replace", anchor: "1#AA", lines: "first\nsecond" }),
+		changes: JSON.stringify({ operation: "replace", anchor: "1#BH", lines: "first\nsecond" }),
 	});
 	assert.deepEqual(prepared, {
 		path: "src/a.ts",
-		changes: [{ operation: "replace", anchor: "1#AA", lines: ["first", "second"] }],
+		changes: [{ operation: "replace", anchor: "1#BH", lines: ["first", "second"] }],
 	});
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
 });
@@ -29,15 +29,15 @@ test("prepareFileChangeArguments normalizes range aliases and rendered anchor li
 		changes: [
 			{
 				op: "replace-range",
-				anchor: "10#AB:old first line",
-				end_anchor: "12#CD:old last line",
+				anchor: "10#BJ:old first line",
+				end_anchor: "12#JM:old last line",
 				lines: ["replacement"],
 			},
 		],
 	});
 	assert.deepEqual(prepared, {
 		path: "src/a.ts",
-		changes: [{ operation: "replace", anchor: "10#AB", end_anchor: "12#CD", lines: ["replacement"] }],
+		changes: [{ operation: "replace", anchor: "10#BJ", end_anchor: "12#JM", lines: ["replacement"] }],
 	});
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
 });
@@ -45,11 +45,11 @@ test("prepareFileChangeArguments normalizes range aliases and rendered anchor li
 test("prepareFileChangeArguments preserves ambiguous and unknown fields for schema rejection", () => {
 	const ambiguous = prepareFileChangeArguments({
 		path: "src/a.ts",
-		changes: [{ operation: "delete", anchor: "1#AA", lines: ["do not guess"] }],
+		changes: [{ operation: "delete", anchor: "1#BH", lines: ["do not guess"] }],
 	});
 	const unknown = prepareFileChangeArguments({
 		path: "src/a.ts",
-		changes: [{ operation: "replace", anchor: "1#AA", lines: ["next"], content: "legacy" }],
+		changes: [{ operation: "replace", anchor: "1#BH", lines: ["next"], content: "legacy" }],
 	});
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, ambiguous), false);
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, unknown), false);
@@ -58,7 +58,7 @@ test("prepareFileChangeArguments preserves ambiguous and unknown fields for sche
 test("prepareFileChangeArguments does not split embedded newlines in an existing lines array", () => {
 	const prepared = prepareFileChangeArguments({
 		path: "src/a.ts",
-		changes: [{ operation: "replace", anchor: "1#AA", lines: ["first\nsecond"] }],
+		changes: [{ operation: "replace", anchor: "1#BH", lines: ["first\nsecond"] }],
 	});
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), false);
 });

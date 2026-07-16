@@ -1,6 +1,7 @@
 import { generateDiffString, generateUnifiedPatch } from "@earendil-works/pi-coding-agent";
 import { readFile } from "node:fs/promises";
 import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
+import { ANCHOR_HASH_PATTERN } from "./file-changes.ts";
 import { parseBatchUpdatedAnchorContext } from "./post-edit-context.ts";
 
 export type HleditToolKind = "read_anchors" | "apply_file_changes";
@@ -92,7 +93,7 @@ function staleReadInstruction(result: Record<string, unknown>, path: string | un
 		} else if (typeof remap.requested === "string") {
 			anchor = remap.requested;
 		}
-		const match = anchor ? /^(\d+)#[A-Za-z0-9]+$/.exec(anchor) : undefined;
+		const match = anchor ? new RegExp(`^(\\d+)#${ANCHOR_HASH_PATTERN}$`).exec(anchor) : undefined;
 		return match ? [Number(match[1])] : [];
 	});
 	if (remappedLineNumbers.length === 0) {
@@ -103,7 +104,7 @@ function staleReadInstruction(result: Record<string, unknown>, path: string | un
 }
 
 function formatFailureResult(result: Record<string, unknown>, kind: HleditToolKind, context: HleditResultContext): string {
-	const lines = [kind === "apply_file_changes" ? "Changes were not applied." : "Anchor read failed."];
+	const lines = [kind === "apply_file_changes" ? "Atomic batch rejected; zero changes were applied." : "Anchor read failed."];
 	if (typeof result.error === "string") {
 		lines.push(`Error: ${result.error}`);
 	}

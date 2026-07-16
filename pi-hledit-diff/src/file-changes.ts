@@ -1,6 +1,7 @@
 import type { FileChangeParams } from "./schema.ts";
 
-export const ANCHOR_PATTERN = "^\\d+#[A-Za-z0-9]+$";
+export const ANCHOR_HASH_PATTERN = "[BHJKMNPQRSTVWXYZ]{2}";
+export const ANCHOR_PATTERN = `^\\d+#${ANCHOR_HASH_PATTERN}$`;
 
 type CliBatchEdit = {
 	op: "replace" | "delete" | "insert";
@@ -55,6 +56,28 @@ export function lineFromAnchor(anchor: unknown): number | undefined {
 	}
 	const match = anchor.match(/^(\d+)#/);
 	return match ? Number(match[1]) : undefined;
+}
+
+export function findSingleAnchorReplacementError(
+	params: FileChangeParams,
+	content: string,
+): string | undefined {
+	const sourceLines = content.split(/\r\n|\r|\n/);
+	for (const [index, change] of params.changes.entries()) {
+		if (change.operation !== "replace" || change.end_anchor || change.lines.length <= 1) {
+			continue;
+		}
+
+		const line = lineFromAnchor(change.anchor);
+		const anchoredText = line === undefined ? undefined : sourceLines[line - 1];
+		if (anchoredText !== undefined && change.lines[0] === anchoredText) {
+			return (
+				`change ${index}: single-anchor replace repeats the anchored line and adds more lines. ` +
+				"Use end_anchor to replace the existing inclusive block, or use insert before/after to keep the anchored line."
+			);
+		}
+	}
+	return undefined;
 }
 
 export function fileChangeLineRange(changes: unknown): string | undefined {

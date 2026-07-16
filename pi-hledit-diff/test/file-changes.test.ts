@@ -1,16 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildFileChangeRequest, fileChangeLineRange, lineFromAnchor } from "../src/file-changes.ts";
+import {
+	buildFileChangeRequest,
+	fileChangeLineRange,
+	findSingleAnchorReplacementError,
+	lineFromAnchor,
+} from "../src/file-changes.ts";
 import type { FileChangeParams } from "../src/schema.ts";
 
 test("buildFileChangeRequest translates every supported change", () => {
 	const params: FileChangeParams = {
 		path: "src/a.ts",
 		changes: [
-			{ operation: "replace", anchor: "1#AA", end_anchor: "2#BB", lines: ["next"] },
-			{ operation: "delete", anchor: "4#CC" },
-			{ operation: "insert", anchor: "6#DD", position: "after", lines: ["one", "two"] },
+			{ operation: "replace", anchor: "1#BH", end_anchor: "2#BB", lines: ["next"] },
+			{ operation: "delete", anchor: "4#JK" },
+			{ operation: "insert", anchor: "6#MN", position: "after", lines: ["one", "two"] },
 		],
 	};
 
@@ -18,9 +23,9 @@ test("buildFileChangeRequest translates every supported change", () => {
 		args: ["batch", "src/a.ts"],
 		stdin: JSON.stringify({
 			edits: [
-				{ op: "replace", pos: "1#AA", end_pos: "2#BB", lines: ["next"] },
-				{ op: "delete", pos: "4#CC", lines: [] },
-				{ op: "insert", pos: "6#DD", after: true, lines: ["one", "two"] },
+				{ op: "replace", pos: "1#BH", end_pos: "2#BB", lines: ["next"] },
+				{ op: "delete", pos: "4#JK", lines: [] },
+				{ op: "insert", pos: "6#MN", after: true, lines: ["one", "two"] },
 			],
 		}),
 	});
@@ -29,15 +34,50 @@ test("buildFileChangeRequest translates every supported change", () => {
 test("buildFileChangeRequest omits after for before inserts", () => {
 	const request = buildFileChangeRequest({
 		path: "src/a.ts",
-		changes: [{ operation: "insert", anchor: "6#DD", position: "before", lines: ["one"] }],
+		changes: [{ operation: "insert", anchor: "6#MN", position: "before", lines: ["one"] }],
 	});
 
-	assert.equal(request.stdin, '{"edits":[{"op":"insert","pos":"6#DD","lines":["one"]}]}');
+	assert.equal(request.stdin, '{"edits":[{"op":"insert","pos":"6#MN","lines":["one"]}]}');
+});
+
+test("findSingleAnchorReplacementError blocks accidental block expansion", () => {
+	const error = findSingleAnchorReplacementError(
+		{
+			path: "src/a.ts",
+			changes: [{ operation: "replace", anchor: "2#BH", lines: ["two", "inserted"] }],
+		},
+		"one\ntwo\nthree\n",
+	);
+
+	assert.match(error ?? "", /single-anchor replace repeats the anchored line/);
+});
+
+test("findSingleAnchorReplacementError allows explicit ranges and genuine line rewrites", () => {
+	assert.equal(
+		findSingleAnchorReplacementError(
+			{
+				path: "src/a.ts",
+				changes: [{ operation: "replace", anchor: "2#BH", end_anchor: "3#BB", lines: ["two", "inserted"] }],
+			},
+			"one\ntwo\nthree\n",
+		),
+		undefined,
+	);
+	assert.equal(
+		findSingleAnchorReplacementError(
+			{
+				path: "src/a.ts",
+				changes: [{ operation: "replace", anchor: "2#BH", lines: ["TWO", "inserted"] }],
+			},
+			"one\ntwo\nthree\n",
+		),
+		undefined,
+	);
 });
 
 test("fileChangeLineRange reports the anchored span", () => {
-	assert.equal(fileChangeLineRange([{ anchor: "10#AA", end_anchor: "12#BB" }, { anchor: "4#CC" }]), "4-12");
-	assert.equal(fileChangeLineRange([{ anchor: "4#CC" }]), "4");
+	assert.equal(fileChangeLineRange([{ anchor: "10#BH", end_anchor: "12#BB" }, { anchor: "4#JK" }]), "4-12");
+	assert.equal(fileChangeLineRange([{ anchor: "4#JK" }]), "4");
 	assert.equal(fileChangeLineRange([]), undefined);
 });
 

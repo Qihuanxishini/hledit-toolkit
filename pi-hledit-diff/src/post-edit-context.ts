@@ -1,3 +1,5 @@
+import { ANCHOR_HASH_PATTERN } from "./file-changes.ts";
+
 export type BatchUpdatedAnchorLine = {
 	line: number;
 	anchor: string;
@@ -55,7 +57,7 @@ export function parseBatchUpdatedAnchorContext(parsed: Record<string, unknown> |
 		if (
 			line !== offset + index ||
 			typeof item.anchor !== "string" ||
-			!new RegExp(`^${line}#[A-Za-z0-9]+$`).test(item.anchor) ||
+			!new RegExp(`^${line}#${ANCHOR_HASH_PATTERN}$`).test(item.anchor) ||
 			typeof item.text !== "string" ||
 			typeof textTruncated !== "boolean"
 		) {

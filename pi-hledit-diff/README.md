@@ -9,6 +9,12 @@
 - `hledit_read_anchors`：读取文本文件并返回 `LN#HASH` 锚点。
 - `hledit_apply_file_changes`：对一个文件原子提交一组非冲突修改，并直接返回修改后的新锚点。
 
+编辑语义：
+- 锚点格式严格跟随 CLI：`LN#[BHJKMNPQRSTVWXYZ]{2}`；格式不合规会在 schema 边界被拒绝，格式合规但内容伪造仍会被 CLI 判为 stale。
+- `replace` 未提供 `end_anchor` 时只消费一个源文件行；替换现有代码块必须提供包含端点的 `end_anchor`。
+- 若单锚点多行 `replace` 的首行与原锚点行完全相同，插件会判定为高风险块扩展并拒绝，避免保留旧函数体形成重复代码；应改用范围替换或 `insert`。
+- batch 是原子的：任一 change 非法、冲突或 stale 时均为零写入。
+
 插件会替换 Pi 的普通 `edit` 工具；如果 bundled CLI 缺失或 capability 不符合要求，则恢复内置 `edit`。
 
 ## 独立 TUI 渲染

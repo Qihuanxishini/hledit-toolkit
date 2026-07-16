@@ -7,7 +7,7 @@ test("formatBatchUpdatedAnchorContext formats CLI-provided anchors", () => {
 	const context = parseBatchUpdatedAnchorContext({
 		updatedAnchors: {
 			lines: [
-				{ line: 1, anchor: "1#AA", text: "one" },
+				{ line: 1, anchor: "1#BH", text: "one" },
 				{ line: 2, anchor: "2#BB", text: "TWO" },
 			],
 			offset: 1,
@@ -19,7 +19,7 @@ test("formatBatchUpdatedAnchorContext formats CLI-provided anchors", () => {
 	assert.ok(context);
 
 	assert.deepEqual(formatBatchUpdatedAnchorContext(context), {
-		text: "Updated anchors:\n1#AA:one\n2#BB:TWO\nUse these anchors for another change, or call hledit_read_anchors. Do not reuse anchors read before this mutation.",
+		text: "Updated anchors:\n1#BH:one\n2#BB:TWO\nUse these anchors for another change, or call hledit_read_anchors. Do not reuse anchors read before this mutation.",
 		offset: 1,
 		limit: 2,
 		truncated: false,
@@ -29,7 +29,7 @@ test("formatBatchUpdatedAnchorContext formats CLI-provided anchors", () => {
 test("formatBatchUpdatedAnchorContext preserves CLI truncation guidance", () => {
 	const context = parseBatchUpdatedAnchorContext({
 		updatedAnchors: {
-			lines: [{ line: 8, anchor: "8#AA", text: "partial", textTruncated: true }],
+			lines: [{ line: 8, anchor: "8#BH", text: "partial", textTruncated: true }],
 			offset: 8,
 			limit: 1,
 			desiredLimit: 25,
@@ -56,10 +56,11 @@ test("parseBatchUpdatedAnchorContext enforces the full batch contract", () => {
 	const malformed = [
 		{ ok: true },
 		{ updatedAnchors: { lines: [{ line: 1, anchor: "not-an-anchor", text: "x" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false } },
-		{ updatedAnchors: { lines: [{ line: 2, anchor: "2#AA", text: "x" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false } },
-		{ updatedAnchors: { lines: [{ line: 1, anchor: "1#AA", text: "x" }], offset: 1, limit: 2, desiredLimit: 2, truncated: false } },
-		{ updatedAnchors: { lines: [{ line: 1, anchor: "1#AA", text: "x" }], offset: 1, limit: 1, desiredLimit: 0, truncated: false } },
-		{ updatedAnchors: { lines: [{ line: 1, anchor: "1#AA", text: "x", textTruncated: "yes" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false } },
+		{ updatedAnchors: { lines: [{ line: 1, anchor: "1#AA", text: "x" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false } },
+		{ updatedAnchors: { lines: [{ line: 2, anchor: "2#BB", text: "x" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false } },
+		{ updatedAnchors: { lines: [{ line: 1, anchor: "1#BH", text: "x" }], offset: 1, limit: 2, desiredLimit: 2, truncated: false } },
+		{ updatedAnchors: { lines: [{ line: 1, anchor: "1#BH", text: "x" }], offset: 1, limit: 1, desiredLimit: 0, truncated: false } },
+		{ updatedAnchors: { lines: [{ line: 1, anchor: "1#BH", text: "x", textTruncated: "yes" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false } },
 	];
 
 	for (const value of malformed) {

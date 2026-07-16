@@ -14,7 +14,7 @@ test("parseRunObject parses stdout JSON before stderr", () => {
 test("textResult summarizes successful file changes", () => {
 	const result = textResult(
 		{
-			stdout: '{"ok":true,"editsApplied":2,"firstChangedLine":3,"lastChangedLine":5,"linesAdded":4,"linesDeleted":1,"updatedAnchors":{"lines":[{"line":3,"anchor":"3#AA","text":"changed"}],"offset":3,"limit":1,"desiredLimit":1,"truncated":false}}',
+			stdout: '{"ok":true,"editsApplied":2,"firstChangedLine":3,"lastChangedLine":5,"linesAdded":4,"linesDeleted":1,"updatedAnchors":{"lines":[{"line":3,"anchor":"3#BH","text":"changed"}],"offset":3,"limit":1,"desiredLimit":1,"truncated":false}}',
 			stderr: "",
 			exitCode: 0,
 		},
@@ -54,13 +54,13 @@ test("textResult requires editsApplied and updatedAnchors", () => {
 
 test("textResult gives stale changes a mandatory reread instruction", () => {
 	const result = textResult(
-		{ stdout: '{"ok":false,"error":"stale","message":"edit 0: anchor stale","remaps":[{"requested":"2#AA","current":"2#BB"}]}', stderr: "", exitCode: 0 },
+		{ stdout: '{"ok":false,"error":"stale","message":"edit 0: anchor stale","remaps":[{"requested":"2#BH","current":"2#BB"}]}', stderr: "", exitCode: 0 },
 		"apply_file_changes",
 		{ path: "src/a.ts" },
 	);
 
-	assert.match(result.content[0]?.text ?? "", /^Changes were not applied\.\nError: stale/m);
-	assert.match(result.content[0]?.text ?? "", /2#AA -> 2#BB/);
+	assert.match(result.content[0]?.text ?? "", /^Atomic batch rejected; zero changes were applied\.\nError: stale/m);
+	assert.match(result.content[0]?.text ?? "", /2#BH -> 2#BB/);
 	assert.match(result.content[0]?.text ?? "", /Call hledit_read_anchors\(\{ path: "src\/a\.ts", offset: 1, limit: 12 \}\) before retrying/);
 	assert.deepEqual(result.details, { disposition: "rejected" });
 	assert.equal(isFailedHleditResult(result.details), true);

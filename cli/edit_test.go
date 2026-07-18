@@ -562,3 +562,27 @@ func TestCmdReplacePreservesCRLFLineEndings(t *testing.T) {
 		t.Fatalf("target bytes = %q; want CRLF-preserved content", string(data))
 	}
 }
+
+func TestCmdReplaceDeletingOnlyLineProducesEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	target := editTestWriteTextFile(t, dir, "only.txt", "only\n")
+	contentSrc := editTestWriteTextFile(t, dir, "empty.txt", "")
+
+	out := editTestCaptureStdout(t, func() {
+		_ = cmdReplace(target, formatTag(1, "only"), contentSrc)
+	})
+
+	var got EditResult
+	editTestMustUnmarshal(t, out, &got)
+	if !got.OK || got.LinesAdded != 0 || got.LinesDeleted != 1 {
+		t.Fatalf("cmdReplace output = %#v; want successful deletion of the only line", got)
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("target bytes = %q; want an empty file", string(data))
+	}
+}

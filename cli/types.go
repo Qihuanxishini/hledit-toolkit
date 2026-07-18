@@ -101,6 +101,7 @@ type CLICapabilities struct {
 	Version             string `json:"version"`
 	BatchInsertAfter    bool   `json:"batchInsertAfter"`
 	BatchUpdatedAnchors bool   `json:"batchUpdatedAnchors"`
+	ReadRangeMetadata   bool   `json:"readRangeMetadata"`
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -115,9 +116,19 @@ type ReadLine struct {
 	TextTruncated bool   `json:"textTruncated,omitempty"`
 }
 
+// ReadRangeError reports a requested offset beyond the current file length.
+type ReadRangeError struct {
+	OK              bool   `json:"ok"`
+	Error           string `json:"error"`
+	Message         string `json:"message"`
+	RequestedOffset int    `json:"requestedOffset"`
+	TotalLines      int    `json:"totalLines"`
+}
+
 // ReadResult is written to stdout by read/read-range when --json is set.
 type ReadResult struct {
 	OK         bool       `json:"ok"`
+	TotalLines int        `json:"totalLines"`
 	Lines      []ReadLine `json:"lines"`
 	Truncated  bool       `json:"truncated"`
 	NextOffset int        `json:"nextOffset,omitempty"`

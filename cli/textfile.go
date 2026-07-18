@@ -60,7 +60,7 @@ func splitTextFile(text string) []string {
 
 func (f LoadedTextFile) JoinLines(lines []string) string {
 	joined := strings.Join(lines, f.LineEnding)
-	if f.HasTrailingNewline {
+	if f.HasTrailingNewline && len(lines) > 0 {
 		joined += f.LineEnding
 	}
 	return joined

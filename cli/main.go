@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-const version = "1.2.5"
+const version = "1.2.6"
 
 // splitArgs separates a command's args into flags and positionals so that
 // flags may appear before OR after the positional file argument (e.g.
@@ -203,6 +203,7 @@ func run(argv []string) int {
 			Version:             version,
 			BatchInsertAfter:    true,
 			BatchUpdatedAnchors: true,
+			ReadRangeMetadata:   true,
 		}))
 
 	case "-h", "--help", "help":

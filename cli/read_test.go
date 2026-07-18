@@ -231,7 +231,7 @@ func TestCmdReadRangeOffsetBeyondFileLengthEmitsRangeError(t *testing.T) {
 		}
 	})
 
-	var got EditError
+	var got ReadRangeError
 	if err := json.Unmarshal([]byte(output), &got); err != nil {
 		t.Fatalf("json.Unmarshal: %v (output=%q)", err, output)
 	}
@@ -240,6 +240,12 @@ func TestCmdReadRangeOffsetBeyondFileLengthEmitsRangeError(t *testing.T) {
 	}
 	if got.Error != "range" {
 		t.Fatalf("cmdReadRange range error = %q; want %q", got.Error, "range")
+	}
+	if got.RequestedOffset != 3 || got.TotalLines != 2 {
+		t.Fatalf("cmdReadRange range details = offset %d total %d; want offset 3 total 2", got.RequestedOffset, got.TotalLines)
+	}
+	if got.Message != "offset 3 exceeds file length 2" {
+		t.Fatalf("cmdReadRange range message = %q", got.Message)
 	}
 }
 
@@ -464,6 +470,9 @@ func TestCmdReadJSONSmallFile(t *testing.T) {
 	if !r.OK {
 		t.Fatalf("ok = false; want true")
 	}
+	if r.TotalLines != 2 {
+		t.Fatalf("totalLines = %d; want 2", r.TotalLines)
+	}
 	if r.Truncated {
 		t.Fatalf("truncated = true; want false")
 	}
@@ -502,6 +511,9 @@ func TestCmdReadJSONTruncation(t *testing.T) {
 	if !r.OK {
 		t.Fatalf("ok = false; want true")
 	}
+	if r.TotalLines != 2001 {
+		t.Fatalf("totalLines = %d; want 2001", r.TotalLines)
+	}
 	if !r.Truncated {
 		t.Fatalf("truncated = false; want true")
 	}
@@ -533,6 +545,9 @@ func TestCmdReadRangeJSONRange(t *testing.T) {
 	if !r.OK {
 		t.Fatalf("ok = false; want true")
 	}
+	if r.TotalLines != 5 {
+		t.Fatalf("totalLines = %d; want 5", r.TotalLines)
+	}
 	if !r.Truncated {
 		t.Fatalf("truncated = false; want true")
 	}
@@ -563,6 +578,9 @@ func TestCmdReadJSONGrepNoContext(t *testing.T) {
 	r := readTestParseJSON(t, output)
 	if !r.OK {
 		t.Fatalf("ok = false; want true")
+	}
+	if r.TotalLines != 5 {
+		t.Fatalf("totalLines = %d; want 5", r.TotalLines)
 	}
 	if r.Truncated {
 		t.Fatalf("truncated = true; want false")
@@ -622,6 +640,9 @@ func TestCmdReadJSONNoMatchReturnsEmptyArray(t *testing.T) {
 	if !r.OK {
 		t.Fatalf("ok = false; want true")
 	}
+	if r.TotalLines != 5 {
+		t.Fatalf("totalLines = %d; want 5", r.TotalLines)
+	}
 	if r.Lines == nil {
 		t.Fatalf("lines = null; want empty array []")
 	}
@@ -631,6 +652,26 @@ func TestCmdReadJSONNoMatchReturnsEmptyArray(t *testing.T) {
 	// Verify the raw JSON has "lines":[] not "lines":null
 	if !strings.Contains(output, `"lines":[]`) {
 		t.Fatalf("output missing \"lines\":[]; got %q", output)
+	}
+}
+
+func TestCmdReadJSONGrepExactByteBudgetAtEOF(t *testing.T) {
+	line := strings.Repeat("x", readOutputMaxBytes-len(formatTag(1, ""))-2)
+	if got := len(formatTag(1, line)) + 2 + len(line); got != readOutputMaxBytes {
+		t.Fatalf("fixture annotated bytes = %d; want %d", got, readOutputMaxBytes)
+	}
+	dir := t.TempDir()
+	path := readTestWriteFile(t, dir, "exact-budget.txt", line+"\n")
+
+	output := readTestCaptureStdout(t, func() {
+		if err := cmdRead(path, "x", 0, true); err != nil {
+			t.Fatalf("cmdRead json exact-budget returned error: %v", err)
+		}
+	})
+
+	r := readTestParseJSON(t, output)
+	if !r.OK || r.Truncated || r.NextOffset != 0 || len(r.Lines) != 1 || r.Lines[0].TextTruncated {
+		t.Fatalf("read result = %#v; want complete one-line EOF result", r)
 	}
 }
 
@@ -787,6 +828,9 @@ func TestCmdReadJSONLongLineTextTruncated(t *testing.T) {
 	var got ReadResult
 	if err := json.Unmarshal([]byte(output), &got); err != nil {
 		t.Fatalf("json.Unmarshal output: %v", err)
+	}
+	if got.TotalLines != 1 {
+		t.Fatalf("totalLines = %d; want 1", got.TotalLines)
 	}
 	if !got.Truncated || len(got.Lines) != 1 || !got.Lines[0].TextTruncated {
 		t.Fatalf("json truncation result = %+v; want truncated line", got)

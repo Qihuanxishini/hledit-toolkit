@@ -18,13 +18,14 @@ import { HLEDIT_INSTALL_HINT, parseHleditCapabilities, resolveHleditBin, runHled
 import { buildFileChangeRequest, findSingleAnchorReplacementError } from "./src/file-changes.ts";
 import { formatBatchUpdatedAnchorContext, type BatchUpdatedAnchorContext } from "./src/post-edit-context.ts";
 import { prepareFileChangeArguments, prepareReadAnchorsArguments } from "./src/prepare-arguments.ts";
-import { buildReadArgs, normalizeToolPath } from "./src/read-args.ts";
+import { buildReadArgs, normalizeReadRequest, normalizeToolPath } from "./src/read-args.ts";
 import {
+	applyFileChangesResult,
 	buildDiffDetails,
 	isFailedHleditResult,
 	parseRunObject,
+	readAnchorsResult,
 	readUtf8File,
-	textResult,
 	toolFailureResult,
 	type TextResult,
 } from "./src/result.ts";
@@ -81,13 +82,13 @@ async function runFileChangesWithDiff(
 		}
 
 		const run = await runHledit(request.args, request.stdin, ctx.cwd, signal);
-		const result = textResult(run, "apply_file_changes", { path: normalizedPath });
+		const result = applyFileChangesResult(run, { path: normalizedPath });
 		if (result.details.disposition !== "succeeded") {
 			return result;
 		}
 
 		const parsed = parseRunObject(run)!;
-		// textResult 已在外部 CLI 边界验证 updatedAnchors；内部链路直接信任该不变量。
+		// applyFileChangesResult 已在外部 CLI 边界验证 updatedAnchors；内部链路直接信任该不变量。
 		const updatedAnchorContext = parsed.updatedAnchors as BatchUpdatedAnchorContext;
 		const postEditContext = formatBatchUpdatedAnchorContext(updatedAnchorContext);
 		const postEditDetails = {
@@ -137,8 +138,8 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		],
 		parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 		prepareArguments: prepareReadAnchorsArguments,
-		renderCall(args: unknown, theme: RenderTheme) {
-			return renderHleditCall("read_anchors", args, theme);
+		renderCall(args: unknown, theme: RenderTheme, context: ToolRenderContextLike) {
+			return renderHleditCall("read_anchors", args, theme, context);
 		},
 		renderResult(result: TextResult, options: ToolRenderResultOptions, theme: RenderTheme, context: ToolRenderContextLike) {
 			return renderReadAnchorsResult(result, options, theme, context);
@@ -150,7 +151,8 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			_onUpdate: AgentToolUpdateCallback<unknown> | undefined,
 			ctx: ExtensionContext,
 		): Promise<TextResult> {
-			return textResult(await runHledit(buildReadArgs(params), undefined, ctx.cwd, signal), "read_anchors", { path: normalizeToolPath(params.path) });
+			const request = normalizeReadRequest(params);
+			return readAnchorsResult(await runHledit(buildReadArgs(request), undefined, ctx.cwd, signal), request);
 		},
 	}) as never);
 
@@ -168,8 +170,8 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 		prepareArguments: prepareFileChangeArguments,
-		renderCall(args: unknown, theme: RenderTheme) {
-			return renderHleditCall("apply_file_changes", args, theme);
+		renderCall(args: unknown, theme: RenderTheme, context: ToolRenderContextLike) {
+			return renderHleditCall("apply_file_changes", args, theme, context);
 		},
 		renderResult(result: TextResult, options: ToolRenderResultOptions, theme: RenderTheme, context: ToolRenderContextLike) {
 			return renderFileChangesResult(result, options, theme, context);
@@ -218,9 +220,9 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			const bin = resolveHleditBin();
 			const capabilities = parseHleditCapabilities(run);
 			if (capabilities) {
-				ctx.ui.notify(`hledit ready: ${bin} (${capabilities.version}; batch insert-after; inline updated anchors)`, "info");
+				ctx.ui.notify(`hledit ready: ${bin} (${capabilities.version}; structured read ranges; batch insert-after; inline updated anchors)`, "info");
 			} else if (run.exitCode === 0) {
-				ctx.ui.notify(`hledit incompatible: ${bin} does not report required batch insert-after and inline updated-anchor capabilities.\n\n${HLEDIT_INSTALL_HINT}`, "error");
+				ctx.ui.notify(`hledit incompatible: ${bin} does not report required structured-read and atomic-batch capabilities.\n\n${HLEDIT_INSTALL_HINT}`, "error");
 			} else {
 				ctx.ui.notify(`hledit failed: ${bin}\n\n${HLEDIT_INSTALL_HINT}`, "error");
 			}

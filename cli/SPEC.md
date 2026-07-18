@@ -18,10 +18,10 @@ hledit capabilities
 Outputs one JSON object describing behavior that integrations may require:
 
 ```json
-{ "ok": true, "version": "1.2.5", "batchInsertAfter": true, "batchUpdatedAnchors": true }
+{ "ok": true, "version": "1.2.6", "readRangeMetadata": true, "batchInsertAfter": true, "batchUpdatedAnchors": true }
 ```
 
-The bundled Pi extension requires both `batchInsertAfter:true` and `batchUpdatedAnchors:true`; a successful `help` command alone is not a compatibility guarantee.
+The bundled Pi extension requires `readRangeMetadata:true`, `batchInsertAfter:true`, and `batchUpdatedAnchors:true`; a successful `help` command alone is not a compatibility guarantee.
 
 ## 2. Verbs
 
@@ -43,7 +43,7 @@ Reads the entire file. Each line is emitted as:
 - Content includes the original line without trailing `\n` or `\r`.
 - `--grep` — substring match; only matching lines are emitted.
 - `--context` — include N lines before/after each match; overlapping windows merge.
-- `--json` — emit JSON `{ok, lines:[{line,anchor,text}], truncated, nextOffset}`.
+- `--json` — emit JSON `{ok, totalLines, lines:[{line,anchor,text,textTruncated?}], truncated, nextOffset?}`.
 
 **Truncation:** Stop at 50 KB of output or 2,000 lines, whichever is first. Append a trailing line:
 
@@ -74,7 +74,7 @@ Same output format as `read`. Same truncation behavior at 50 KB / 2,000 lines fr
 If `--offset` exceeds file length, emit:
 
 ```json
-{ "ok": false, "error": "range", "message": "offset 500 exceeds file length 120" }
+{ "ok": false, "error": "range", "message": "offset 500 exceeds file length 120", "requestedOffset": 500, "totalLines": 120 }
 ```
 
 ### 2.3 `anchors`
@@ -91,7 +91,7 @@ hledit anchors <file> [--offset <N>] [--limit <M>] [--grep <pattern>] [--context
 If `--offset` exceeds file length, emit:
 
 ```json
-{ "ok": false, "error": "range", "message": "offset 500 exceeds file length 120" }
+{ "ok": false, "error": "range", "message": "offset 500 exceeds file length 120", "requestedOffset": 500, "totalLines": 120 }
 ```
 
 ### 2.4 `replace`

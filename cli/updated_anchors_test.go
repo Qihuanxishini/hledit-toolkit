@@ -41,6 +41,17 @@ func TestBuildUpdatedAnchorContext(t *testing.T) {
 		}
 	})
 
+	t.Run("reports the actual count after byte truncation", func(t *testing.T) {
+		lines := make([]string, 5)
+		for i := range lines {
+			lines[i] = string(make([]byte, 1500))
+		}
+		got := buildUpdatedAnchorContext(lines, 3, 3, 1)
+		if got == nil || !got.Truncated || got.DesiredLimit != 5 || got.Limit != len(got.Lines) || len(got.Lines) >= 5 {
+			t.Fatalf("context metadata = %#v; want actual limit equal to returned lines after byte truncation", got)
+		}
+	})
+
 	t.Run("represents an empty file", func(t *testing.T) {
 		got := buildUpdatedAnchorContext([]string{}, 1, 1, 0)
 		if got == nil || got.Offset != 1 || got.Limit != 0 || len(got.Lines) != 0 || got.Truncated {

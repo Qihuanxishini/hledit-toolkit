@@ -44,12 +44,13 @@ npm run check
 
 ```json
 {
+  "readRangeMetadata": true,
   "batchInsertAfter": true,
   "batchUpdatedAnchors": true
 }
 ```
 
-batch 成功响应必须携带合法的 `updatedAnchors`。插件不保留旧 CLI 的修改后 `read-range` 回退路径。
+读取结果必须携带 `totalLines` 和严格截断元数据；batch 成功响应必须携带合法的 `updatedAnchors`。插件不保留旧 CLI 的读取或修改后回退路径。
 
 ## 开发仓库与运行目录
 

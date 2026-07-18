@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const EXTENSION_ROOT = fileURLToPath(new URL("../", import.meta.url));
 
-export const HLEDIT_INSTALL_HINT = `This extension requires its bundled Windows x64 hledit CLI with batch insert-after and inline updated-anchor support.
+export const HLEDIT_INSTALL_HINT = `This extension requires its bundled Windows x64 hledit CLI with structured read-range metadata, batch insert-after, and inline updated-anchor support.
 Reinstall pi-hledit-diff and verify that bin/hledit.exe is present.`;
 
 export const HLEDIT_RUN_TIMEOUT_MS = 30_000;
@@ -18,6 +18,7 @@ export type HleditRun = {
 
 export type HleditCapabilities = {
 	version: string;
+	readRangeMetadata: true;
 	batchInsertAfter: true;
 	batchUpdatedAnchors: true;
 };
@@ -36,12 +37,13 @@ export function parseHleditCapabilities(run: HleditRun): HleditCapabilities | un
 			record.ok !== true ||
 			typeof record.version !== "string" ||
 			record.version.length === 0 ||
+			record.readRangeMetadata !== true ||
 			record.batchInsertAfter !== true ||
 			record.batchUpdatedAnchors !== true
 		) {
 			return undefined;
 		}
-		return { version: record.version, batchInsertAfter: true, batchUpdatedAnchors: true };
+		return { version: record.version, readRangeMetadata: true, batchInsertAfter: true, batchUpdatedAnchors: true };
 	} catch {
 		return undefined;
 	}
@@ -72,21 +74,46 @@ export async function runHledit(
 		let stderr = "";
 		let outputBytes = 0;
 		let settled = false;
+		let terminationRequested = false;
+		let terminationResult: HleditRun | undefined;
 		let timeout: ReturnType<typeof setTimeout> | undefined;
 
 		const cleanup = () => {
 			if (timeout) clearTimeout(timeout);
 			signal?.removeEventListener("abort", abort);
 		};
-		const finish = (run: HleditRun, terminate = false) => {
+		const settle = (run: HleditRun) => {
 			if (settled) return;
 			settled = true;
 			cleanup();
-			if (terminate && !child.killed) child.kill();
 			resolveRun(run);
+		};
+		const requestTermination = (run: HleditRun) => {
+			if (settled || terminationRequested) return;
+			terminationRequested = true;
+			terminationResult = run;
+			cleanup();
+			// [喵喵喵]: 等待 CLI 进程退出后再释放 mutation queue，避免迟到写入并发 (2026-07-18)
+			if (child.exitCode !== null || child.signalCode !== null) {
+				settle(run);
+				return;
+			}
+			try {
+				child.kill();
+			} catch {
+				// 继续等待 close；kill 失败时也不能提前释放队列。
+			}
+		};
+		const finish = (run: HleditRun, terminate = false) => {
+			if (terminate) {
+				requestTermination(run);
+				return;
+			}
+			settle(terminationResult ?? run);
 		};
 		const abort = () => finish({ stdout: "hledit execution was aborted.", stderr: "", exitCode: 1 }, true);
 		const appendOutput = (target: "stdout" | "stderr", chunk: string) => {
+			if (settled || terminationRequested) return;
 			outputBytes += Buffer.byteLength(chunk, "utf8");
 			if (outputBytes > HLEDIT_MAX_OUTPUT_BYTES) {
 				finish({ stdout: `hledit output exceeded ${HLEDIT_MAX_OUTPUT_BYTES} bytes and was terminated.`, stderr: "", exitCode: 1 }, true);
@@ -100,9 +127,11 @@ export async function runHledit(
 		child.stderr.setEncoding("utf8");
 		child.stdout.on("data", (chunk: string) => appendOutput("stdout", chunk));
 		child.stderr.on("data", (chunk: string) => appendOutput("stderr", chunk));
-		child.on("error", (error) =>
-			finish({ stdout: `failed to run ${bin}: ${error.message}\n\n${HLEDIT_INSTALL_HINT}`, stderr, exitCode: 1 }),
-		);
+		child.on("error", (error) => {
+			if (!terminationRequested) {
+				settle({ stdout: `failed to run ${bin}: ${error.message}\n\n${HLEDIT_INSTALL_HINT}`, stderr, exitCode: 1 });
+			}
+		});
 		child.on("close", (exitCode) => finish({ stdout, stderr, exitCode }));
 		child.stdin.on("error", (error) => finish({ stdout: `failed to write hledit input: ${error.message}`, stderr, exitCode: 1 }, true));
 
@@ -114,6 +143,6 @@ export async function runHledit(
 		timeout = setTimeout(() => {
 			finish({ stdout: `hledit timed out after ${HLEDIT_RUN_TIMEOUT_MS} ms.`, stderr: "", exitCode: 1 }, true);
 		}, HLEDIT_RUN_TIMEOUT_MS);
-		child.stdin.end(stdin ?? "");
+		if (!terminationRequested) child.stdin.end(stdin ?? "");
 	});
 }

@@ -18,21 +18,45 @@ test("resolveHleditBin uses the fixed bundled CLI path", () => {
 test("runHledit executes the fixed bundled CLI", async () => {
 	const run = await runHledit(["capabilities"], undefined, process.cwd(), undefined);
 
-	assert.deepEqual(parseHleditCapabilities(run), { version: "1.2.5", batchInsertAfter: true, batchUpdatedAnchors: true });
+	assert.deepEqual(parseHleditCapabilities(run), { version: "1.2.6", readRangeMetadata: true, batchInsertAfter: true, batchUpdatedAnchors: true });
 });
 
-test("parseHleditCapabilities requires the patched batch capability", () => {
+test("runHledit reports an already-aborted invocation", async () => {
+	const controller = new AbortController();
+	controller.abort();
+
+	const run = await runHledit(["capabilities"], undefined, process.cwd(), controller.signal);
+
+	assert.deepEqual(run, { stdout: "hledit execution was aborted.", stderr: "", exitCode: 1 });
+});
+
+test("parseHleditCapabilities requires structured reads and patched batch capabilities", () => {
 	assert.deepEqual(
-		parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.5","batchInsertAfter":true,"batchUpdatedAnchors":true}', stderr: "", exitCode: 0 }),
-		{ version: "1.2.5", batchInsertAfter: true, batchUpdatedAnchors: true },
+		parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchUpdatedAnchors":true}', stderr: "", exitCode: 0 }),
+		{ version: "1.2.6", readRangeMetadata: true, batchInsertAfter: true, batchUpdatedAnchors: true },
 	);
 	assert.equal(
-		parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.4","batchInsertAfter":true}', stderr: "", exitCode: 0 }),
+		parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","batchInsertAfter":true,"batchUpdatedAnchors":true}', stderr: "", exitCode: 0 }),
 		undefined,
 	);
-	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.4"}', stderr: "", exitCode: 0 }), undefined);
-	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.4","batchInsertAfter":true}', stderr: "", exitCode: 1 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true}', stderr: "", exitCode: 0 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchUpdatedAnchors":true}', stderr: "", exitCode: 1 }), undefined);
 	assert.equal(parseHleditCapabilities({ stdout: "not json", stderr: "", exitCode: 0 }), undefined);
+});
+
+test("bundled read-range emits structured range metadata", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-diff-read-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "one\ntwo\nthree\n", "utf8");
+
+	const run = await runHledit(["read-range", target, "--offset", "2", "--limit", "1", "--json"], undefined, directory, undefined);
+	const parsed = JSON.parse(run.stdout) as Record<string, unknown>;
+
+	assert.equal(parsed.ok, true);
+	assert.equal(parsed.totalLines, 3);
+	assert.equal(parsed.truncated, true);
+	assert.equal(parsed.nextOffset, 3);
 });
 
 test("bundled batch emits plugin-compatible updated anchors", async (t) => {

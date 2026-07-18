@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { Box, visibleWidth } from "@earendil-works/pi-tui";
+import { Box, getCapabilities, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
 import { renderStandaloneDiff } from "../src/diff-renderer.ts";
 import { renderFileChangesResult, renderHleditCall, renderReadAnchorsResult, type RenderTheme } from "../src/render.ts";
 import type { TextResult } from "../src/result.ts";
@@ -33,6 +33,18 @@ test("renderHleditCall includes read range and grep", () => {
 	]);
 });
 
+test("renderHleditCall hyperlinks paths when the terminal supports them", () => {
+    const previous = getCapabilities();
+    setCapabilities({ ...previous, hyperlinks: true });
+    try {
+        const output = render(renderHleditCall("read_anchors", { path: "src/a.ts", offset: 1, limit: 2 }, theme, { cwd: process.cwd() }));
+        assert.match(output[0] ?? "", /\x1b\]8;;file:/);
+        assert.match(output[0] ?? "", /src\/a\.ts/);
+    } finally {
+        setCapabilities(previous);
+    }
+});
+
 test("renderHleditCall includes changed range and operation count", () => {
 	assert.deepEqual(
 		render(renderHleditCall("apply_file_changes", { path: "src/a.ts", changes: [{ anchor: "4#AA", end_anchor: "6#BB" }] }, theme)),
@@ -40,43 +52,112 @@ test("renderHleditCall includes changed range and operation count", () => {
 	);
 });
 
-test("renderReadAnchorsResult shows a structured collapsed preview", () => {
-	const text = Array.from({ length: 14 }, (_, index) => `${index + 1}#AA:line ${index + 1}`).join("\n");
-	const result: TextResult = { content: [{ type: "text", text }], details: { disposition: "succeeded" } };
-	const output = render(renderReadAnchorsResult(result, options(), theme, { args: { path: "notes.txt" } }), 80);
+test("renderReadAnchorsResult shows actual range, total lines, and EOF", () => {
+    const lines = Array.from({ length: 14 }, (_, index) => ({
+        line: index + 1,
+        anchor: `${index + 1}#AA`,
+        text: `line ${index + 1}`,
+        textTruncated: false,
+    }));
+    const result: TextResult = {
+        content: [{ type: "text", text: lines.map((line) => `${line.anchor}:${line.text}`).join("\n") }],
+        details: {
+            disposition: "succeeded",
+            read: {
+                path: "notes.txt",
+                requested: { offset: 1, limit: 20 },
+                actual: { firstLine: 1, lastLine: 14, lineCount: 14, totalLines: 14 },
+                lines,
+                truncated: false,
+                textTruncated: false,
+                eof: true,
+            },
+        },
+    };
+    const output = render(renderReadAnchorsResult(result, options(), theme, { args: { path: "notes.txt" } }), 80);
 
-	assert.equal(output[0], "↳ 14 anchored lines • 1-14");
-	assert.equal(output[2], " 1#AA │ line 1");
-	assert.ok(output.some((line) => line.includes("2 more anchored lines")));
-	assert.ok(output.every((line) => visibleWidth(line) <= 80));
+    assert.equal(output[0], "↳ 14 anchored lines • 1-14 of 14 • EOF");
+    assert.equal(output[2], " 1#AA │ line 1");
+    assert.ok(output.some((line) => line.includes("2 more anchored lines")));
+    assert.ok(output.every((line) => visibleWidth(line) <= 80));
 });
 
-test("renderReadAnchorsResult expands all anchors and reports backend truncation", () => {
-	const result: TextResult = {
-		content: [{ type: "text", text: "8#AA:first\n9#BB:second\n-- truncated: use read-range --offset 10 --" }],
-		details: { disposition: "succeeded" },
-	};
-	const output = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "notes.txt" } }), 80);
+test("renderReadAnchorsResult expands structured continuation details", () => {
+    const lines = [
+        { line: 8, anchor: "8#AA", text: "first", textTruncated: false },
+        { line: 9, anchor: "9#BB", text: "second", textTruncated: false },
+    ];
+    const result: TextResult = {
+        content: [{ type: "text", text: "8#AA:first\n9#BB:second\n-- showing lines 8-9 of 20; use offset 10 to continue --" }],
+        details: {
+            disposition: "succeeded",
+            read: {
+                path: "notes.txt",
+                requested: { offset: 8, limit: 2 },
+                actual: { firstLine: 8, lastLine: 9, lineCount: 2, totalLines: 20 },
+                lines,
+                truncated: true,
+                nextOffset: 10,
+                textTruncated: false,
+                eof: false,
+            },
+        },
+    };
+    const output = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "notes.txt" } }), 80);
 
-	assert.equal(output[0], "↳ 2 anchored lines • 8-9 • truncated");
-	assert.ok(output.includes("8#AA │ first"));
-	assert.ok(output.some((line) => line.includes("use read-range")));
+    assert.equal(output[0], "↳ 2 anchored lines • 8-9 of 20 • next 10");
+    assert.ok(output.includes("8#AA │ first"));
+    assert.ok(output.some((line) => line.includes("continue with offset 10")));
+});
+
+test("renderReadAnchorsResult folds structured errors to the actionable message", () => {
+    const result: TextResult = {
+        content: [{ type: "text", text: "offset 600 exceeds file length 599\nHint: Use an offset between 1 and 599.\nError: range" }],
+        details: {
+            disposition: "rejected",
+            error: {
+                code: "range",
+                message: "offset 600 exceeds file length 599",
+                hint: "Use an offset between 1 and 599.",
+                requestedOffset: 600,
+                totalLines: 599,
+            },
+        },
+    };
+
+    assert.deepEqual(render(renderReadAnchorsResult(result, options(), theme, { isError: true })), ["× offset 600 exceeds file length 599"]);
+    assert.ok(render(renderReadAnchorsResult(result, options(true), theme, { isError: true })).some((line) => line.includes("Use an offset between 1 and 599")));
 });
 
 test("renderReadAnchorsResult caches its final width and invalidates highlighted output", () => {
-	const result: TextResult = {
-		content: [{ type: "text", text: "1#AA:const alpha = 1;\n2#BB:const beta = alpha + 1;" }],
-		details: { disposition: "succeeded" },
-	};
-	const component = renderReadAnchorsResult(result, options(), theme, { args: { path: "sample.ts" } });
-	const first = component.render(80);
+    const lines = [
+        { line: 1, anchor: "1#AA", text: "const alpha = 1;", textTruncated: false },
+        { line: 2, anchor: "2#BB", text: "const beta = alpha + 1;", textTruncated: false },
+    ];
+    const result: TextResult = {
+        content: [{ type: "text", text: lines.map((line) => `${line.anchor}:${line.text}`).join("\n") }],
+        details: {
+            disposition: "succeeded",
+            read: {
+                path: "sample.ts",
+                requested: { offset: 1, limit: 2 },
+                actual: { firstLine: 1, lastLine: 2, lineCount: 2, totalLines: 2 },
+                lines,
+                truncated: false,
+                textTruncated: false,
+                eof: true,
+            },
+        },
+    };
+    const component = renderReadAnchorsResult(result, options(), theme, { args: { path: "sample.ts" } });
+    const first = component.render(80);
 
-	assert.strictEqual(component.render(80), first);
-	component.invalidate();
-	const refreshed = component.render(80);
-	assert.notStrictEqual(refreshed, first);
-	assert.deepEqual(refreshed, first);
-	assert.ok(refreshed.every((line) => visibleWidth(line) <= 80));
+    assert.strictEqual(component.render(80), first);
+    component.invalidate();
+    const refreshed = component.render(80);
+    assert.notStrictEqual(refreshed, first);
+    assert.deepEqual(refreshed, first);
+    assert.ok(refreshed.every((line) => visibleWidth(line) <= 80));
 });
 
 test("renderFileChangesResult renders an adaptive unified diff", () => {
@@ -196,4 +277,16 @@ test("renderFileChangesResult summarizes success without a diff", () => {
 	};
 
 	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {})), ["✓ 2 changes applied • lines 4-5 +3 -1"]);
+});
+
+test("renderFileChangesResult shows a diff warning without a diff", () => {
+	const result: TextResult = {
+		content: [{ type: "text", text: "Changes applied, but the diff is unavailable." }],
+		details: { disposition: "succeeded", editsApplied: 1, diffError: "unable to reread target.txt" },
+	};
+
+	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {})), [
+		"✓ 1 change applied",
+		"Diff warning: unable to reread target.txt",
+	]);
 });

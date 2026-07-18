@@ -16,6 +16,16 @@ func emitError(errType, message string) error {
 	})
 }
 
+func emitReadRangeError(offset, totalLines int) error {
+	return emitJSON(ReadRangeError{
+		OK:              false,
+		Error:           "range",
+		Message:         fmt.Sprintf("offset %d exceeds file length %d", offset, totalLines),
+		RequestedOffset: offset,
+		TotalLines:      totalLines,
+	})
+}
+
 const readOutputMaxBytes = 50 * 1024
 
 const lineTruncationSuffix = "… [line truncated]"
@@ -247,7 +257,10 @@ func collectMatchLines(lines []string, matchIdxs []int, offset, maxLines, maxByt
 			return result, true, 0
 		}
 		if byteCount >= maxBytes {
-			return result, true, ln + 1
+			if i < len(matchIdxs)-1 {
+				return result, true, ln + 1
+			}
+			return result, false, 0
 		}
 	}
 	remaining := len(matchIdxs) - startIdx - len(result)
@@ -328,7 +341,7 @@ func cmdReadPretty(path, grep string, contextN int, jsonOut bool, pretty bool) e
 		} else {
 			readLines, truncated, nextOffset = collectAnnotatedLines(lines, 0, 2000, readOutputMaxBytes)
 		}
-		return emitJSON(ReadResult{OK: true, Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
+		return emitJSON(ReadResult{OK: true, TotalLines: len(lines), Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
 	}
 
 	var buf bytes.Buffer
@@ -440,8 +453,7 @@ func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int,
 		offset = 1
 	}
 	if offset > len(lines) {
-		emitError("range", fmt.Sprintf("offset %d exceeds file length %d", offset, len(lines)))
-		return nil
+		return emitReadRangeError(offset, len(lines))
 	}
 
 	maxLines := limit
@@ -461,7 +473,7 @@ func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int,
 		} else {
 			readLines, truncated, nextOffset = collectAnnotatedLines(lines, offset-1, maxLines, readOutputMaxBytes)
 		}
-		return emitJSON(ReadResult{OK: true, Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
+		return emitJSON(ReadResult{OK: true, TotalLines: len(lines), Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
 	}
 
 	var buf bytes.Buffer
@@ -490,8 +502,7 @@ func cmdReadRangePretty(path string, offset, limit int, grep string, contextN in
 		offset = 1
 	}
 	if offset > len(lines) {
-		emitError("range", fmt.Sprintf("offset %d exceeds file length %d", offset, len(lines)))
-		return nil
+		return emitReadRangeError(offset, len(lines))
 	}
 
 	maxLines := limit
@@ -511,7 +522,7 @@ func cmdReadRangePretty(path string, offset, limit int, grep string, contextN in
 		} else {
 			readLines, truncated, nextOffset = collectAnnotatedLines(lines, offset-1, maxLines, readOutputMaxBytes)
 		}
-		return emitJSON(ReadResult{OK: true, Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
+		return emitJSON(ReadResult{OK: true, TotalLines: len(lines), Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
 	}
 
 	var buf bytes.Buffer

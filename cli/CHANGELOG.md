@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.6] — 2026-07-18
+
+### Added
+
+- Add `readRangeMetadata:true` capability for structured read consumers.
+- Include `totalLines` in successful JSON reads and explicit `requestedOffset` / `totalLines` metadata in range errors.
+
+### Fixed
+
+- Report the actual returned line count in byte-truncated `updatedAnchors` contexts.
+- Preserve a truly empty file when an edit deletes every logical line from a file with a trailing newline.
+- Avoid emitting a grep `nextOffset` past EOF when the last match exactly fills the JSON byte budget.
+
 ## [1.2.5] — 2026-07-15
 
 ### Added

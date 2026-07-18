@@ -1,9 +1,11 @@
 import { getLanguageFromPath, highlightCode, keyHint, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { getCapabilities, hyperlink, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { renderStandaloneDiff, type HleditRenderComponent, type HleditRenderTheme } from "./diff-renderer.ts";
 import { fileChangeLineRange } from "./file-changes.ts";
 import { MAX_READ_LIMIT, normalizeToolPath } from "./read-args.ts";
-import type { HleditToolKind, TextResult } from "./result.ts";
+import type { HleditReadMetadata, HleditToolKind, TextResult } from "./result.ts";
 
 export type RenderComponent = HleditRenderComponent;
 export type RenderTheme = HleditRenderTheme;
@@ -11,6 +13,7 @@ export type RenderTheme = HleditRenderTheme;
 export type ToolRenderContextLike = {
     args?: unknown;
     isError?: boolean;
+    cwd?: string;
     [key: string]: unknown;
 };
 
@@ -79,6 +82,16 @@ function pathFromContext(context: ToolRenderContextLike): string | undefined {
     return typeof args.path === "string" ? normalizeToolPath(args.path) : undefined;
 }
 
+function linkedToolPath(styledPath: string, path: string, context: ToolRenderContextLike): string {
+    if (typeof context.cwd !== "string") return styledPath;
+    try {
+        if (!getCapabilities().hyperlinks) return styledPath;
+        return hyperlink(styledPath, pathToFileURL(resolve(context.cwd, path)).href);
+    } catch {
+        return styledPath;
+    }
+}
+
 function parseAnchoredOutput(text: string): ParsedAnchoredOutput {
     const lines: AnchoredSourceLine[] = [];
     const notices: string[] = [];
@@ -94,6 +107,38 @@ function parseAnchoredOutput(text: string): ParsedAnchoredOutput {
         }
     }
     return { lines, notices };
+}
+
+type ReadRenderState = {
+    lines: AnchoredSourceLine[];
+    totalLines?: number;
+    nextOffset?: number;
+    textTruncated: boolean;
+    eof: boolean;
+    legacyNotices: string[];
+};
+
+function readRenderState(result: TextResult): ReadRenderState {
+    const read = result.details.read as HleditReadMetadata | undefined;
+    if (read) {
+        return {
+            lines: read.lines.map((line) => ({ anchor: line.anchor, lineNumber: line.line, content: line.text })),
+            totalLines: read.actual.totalLines,
+            ...(read.nextOffset !== undefined ? { nextOffset: read.nextOffset } : {}),
+            textTruncated: read.textTruncated,
+            eof: read.eof,
+            legacyNotices: [],
+        };
+    }
+
+    // 历史会话中的旧结果没有结构化 details；只在渲染旧记录时保留文本回退。
+    const legacy = parseAnchoredOutput(getText(result));
+    return {
+        lines: legacy.lines,
+        textTruncated: legacy.notices.some((notice) => notice.includes("line truncated")),
+        eof: false,
+        legacyNotices: legacy.notices,
+    };
 }
 
 function resolveLanguage(path: string | undefined): string | undefined {
@@ -157,15 +202,21 @@ function createAnchoredSourceRowsComponent(
 function renderFailure(result: TextResult, expanded: boolean, theme: RenderTheme): RenderComponent {
     const rawLines = getText(result).split(/\r?\n/).filter(Boolean);
     const first = rawLines[0] ?? "Tool failed.";
+    const structuredMessage = result.details.error?.message;
     const errorLine = rawLines.find((line) => line.startsWith("Error:"));
-    const summary = errorLine ? `${first} ${errorLine.replace(/^Error:\s*/, "")}` : first;
+    const summary = structuredMessage ?? (errorLine ? `${first} ${errorLine.replace(/^Error:\s*/, "")}` : first);
     return component((width) => {
         if (!expanded) return [truncateToWidth(theme.fg("error", `× ${summary}`), width, "")];
         return rawLines.map((line, index) => truncateToWidth(theme.fg(index === 0 ? "error" : "muted", index === 0 ? `× ${line}` : `  ${line}`), width, ""));
     });
 }
 
-export function renderHleditCall(kind: HleditToolKind, args: unknown, theme: RenderTheme): RenderComponent {
+export function renderHleditCall(
+    kind: HleditToolKind,
+    args: unknown,
+    theme: RenderTheme,
+    context: ToolRenderContextLike = {},
+): RenderComponent {
     const input = isRecord(args) ? args : {};
     const path = typeof input.path === "string" ? normalizeToolPath(input.path) : undefined;
     const offset = typeof input.offset === "number" && input.offset > 0 ? input.offset : undefined;
@@ -176,7 +227,8 @@ export function renderHleditCall(kind: HleditToolKind, args: unknown, theme: Ren
     const operationCount = kind === "apply_file_changes" && Array.isArray(input.changes) ? input.changes.length : undefined;
     const grep = kind === "read_anchors" && typeof input.grep === "string" ? input.grep : undefined;
     const title = theme.fg("toolTitle", theme.bold(kind === "read_anchors" ? "read anchors" : "apply changes"));
-    const target = path ? theme.fg("accent", path) + (range ? theme.fg("warning", `:${range}`) : "") : theme.fg("dim", "…");
+    const styledPath = path ? linkedToolPath(theme.fg("accent", path), path, context) : undefined;
+    const target = styledPath ? styledPath + (range ? theme.fg("warning", `:${range}`) : "") : theme.fg("dim", "…");
     const suffix = operationCount !== undefined
         ? theme.fg("muted", ` (${operationCount} ${operationCount === 1 ? "operation" : "operations"})`)
         : grep
@@ -198,35 +250,46 @@ export function renderReadAnchorsResult(
         return renderFailure(result, options.expanded, theme);
     }
 
-    const parsed = parseAnchoredOutput(getText(result));
+    const read = readRenderState(result);
     const path = pathFromContext(context);
-    const visible = options.expanded ? parsed.lines : parsed.lines.slice(0, COLLAPSED_ANCHOR_LINES);
+    const visible = options.expanded ? read.lines : read.lines.slice(0, COLLAPSED_ANCHOR_LINES);
     const sourceRowsComponent = createAnchoredSourceRowsComponent(visible, path, theme);
     return component((width) => {
         if (width === 0) return [];
-        if (parsed.lines.length === 0) {
-            return [truncateToWidth(theme.fg("muted", "↳ no anchored lines"), width, "")];
-        }
 
-        const firstLine = parsed.lines[0]?.lineNumber;
-        const lastLine = parsed.lines[parsed.lines.length - 1]?.lineNumber;
+        const firstLine = read.lines[0]?.lineNumber;
+        const lastLine = read.lines[read.lines.length - 1]?.lineNumber;
         const range = formatLineRange(firstLine, lastLine);
+        const actualRange = read.totalLines !== undefined
+            ? range ? `${range} of ${read.totalLines}` : `0 of ${read.totalLines}`
+            : range;
         const header = [
-            theme.fg("toolOutput", `↳ ${theme.bold(String(parsed.lines.length))} anchored ${parsed.lines.length === 1 ? "line" : "lines"}`),
-            range ? theme.fg("muted", `• ${range}`) : "",
-            parsed.notices.length > 0 ? theme.fg("warning", "• truncated") : "",
+            theme.fg("toolOutput", read.lines.length === 0
+                ? "↳ no anchored lines"
+                : `↳ ${theme.bold(String(read.lines.length))} anchored ${read.lines.length === 1 ? "line" : "lines"}`),
+            actualRange ? theme.fg("muted", `• ${actualRange}`) : "",
+            read.nextOffset !== undefined ? theme.fg("warning", `• next ${read.nextOffset}`) : "",
+            read.textTruncated ? theme.fg("warning", "• line truncated") : "",
+            read.eof ? theme.fg("muted", "• EOF") : "",
+            read.legacyNotices.length > 0 ? theme.fg("warning", "• truncated") : "",
         ].filter(Boolean).join(" ");
-        if (width < 18) return [truncateToWidth(header, width, "")];
+        if (read.lines.length === 0 || width < 18) return [truncateToWidth(header, width, "")];
 
         const output = [
             truncateToWidth(header, width, ""),
             theme.fg("dim", "─".repeat(width)),
             ...sourceRowsComponent.render(width),
         ];
-        if (!options.expanded && parsed.lines.length > visible.length) {
-            output.push("", truncateToWidth(theme.fg("muted", `… ${parsed.lines.length - visible.length} more anchored lines • ${expandHint()}`), width, ""));
+        if (!options.expanded && read.lines.length > visible.length) {
+            output.push("", truncateToWidth(theme.fg("muted", `… ${read.lines.length - visible.length} more anchored lines • ${expandHint()}`), width, ""));
         }
-        for (const notice of parsed.notices) {
+        if (read.nextOffset !== undefined) {
+            output.push(truncateToWidth(theme.fg("warning", `continue with offset ${read.nextOffset}`), width, ""));
+        }
+        if (read.textTruncated) {
+            output.push(truncateToWidth(theme.fg("warning", "source line text was truncated; line-offset continuation cannot recover the omitted text"), width, ""));
+        }
+        for (const notice of read.legacyNotices) {
             output.push(truncateToWidth(theme.fg("warning", notice), width, ""));
         }
         return output;
@@ -265,16 +328,21 @@ export function renderFileChangesResult(
     }
 
     const path = pathFromContext(context);
+    const diffWarning = typeof result.details.diffError === "string" ? result.details.diffError : undefined;
     const diff = typeof result.details.diff === "string" ? result.details.diff : "";
     const diffComponent = renderStandaloneDiff(diff, path, options.expanded, theme);
     if (!diffComponent) {
         const summary = successfulChangeSummary(result, theme);
-        return component((width) => [truncateToWidth(summary, width, "")]);
+        return component((width) => {
+            if (width === 0) return [];
+            const lines = [truncateToWidth(summary, width, "")];
+            if (diffWarning) lines.push(truncateToWidth(theme.fg("warning", `Diff warning: ${diffWarning}`), width, ""));
+            return lines;
+        });
     }
 
     const updatedAnchors = options.expanded ? parseAnchoredOutput(getText(result)).lines : [];
     const updatedAnchorRows = createAnchoredSourceRowsComponent(updatedAnchors, path, theme);
-    const diffWarning = typeof result.details.diffError === "string" ? result.details.diffError : undefined;
     if (updatedAnchors.length === 0 && !diffWarning) return diffComponent;
 
     return component((width) => {

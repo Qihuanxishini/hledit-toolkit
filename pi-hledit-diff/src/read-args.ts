@@ -7,6 +7,13 @@ export type ReadArgsParams = {
 	grep?: string;
 };
 
+export type NormalizedReadRequest = {
+	path: string;
+	offset: number;
+	limit: number;
+	grep?: string;
+};
+
 export function normalizeToolPath(path: string): string {
 	const cleaned = path.replace(/^@/, "");
 	const msysDrive = cleaned.match(/^\/([A-Za-z])\/(.*)$/);
@@ -25,16 +32,30 @@ function toReadLimit(v: number | undefined): number | undefined {
 	return limit === undefined ? undefined : Math.min(limit, MAX_READ_LIMIT);
 }
 
-export function buildReadArgs(params: ReadArgsParams): string[] {
-	const offset = toPositiveInteger(params.offset);
-	const limit = toReadLimit(params.limit);
+export function normalizeReadRequest(params: ReadArgsParams): NormalizedReadRequest {
 	const grep = params.grep || undefined;
-	const path = normalizeToolPath(params.path);
+	return {
+		path: normalizeToolPath(params.path),
+		offset: toPositiveInteger(params.offset) ?? 1,
+		limit: toReadLimit(params.limit) ?? MAX_READ_LIMIT,
+		...(grep ? { grep } : {}),
+	};
+}
 
-	const args = ["read-range", path, "--offset", String(offset ?? 1), "--limit", String(limit ?? MAX_READ_LIMIT)];
+export function buildReadArgs(params: ReadArgsParams): string[] {
+	const request = normalizeReadRequest(params);
+	const args = [
+		"read-range",
+		request.path,
+		"--offset",
+		String(request.offset),
+		"--limit",
+		String(request.limit),
+		"--json",
+	];
 
-	if (grep) {
-		args.push("--grep", grep);
+	if (request.grep) {
+		args.push("--grep", request.grep);
 	}
 
 	return args;

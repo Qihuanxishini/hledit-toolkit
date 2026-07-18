@@ -21,7 +21,7 @@
 
 插件自行渲染两个工具，不依赖 `pi-tool-display` 或其他渲染扩展：
 
-- 锚点读取使用独立的 `LN#HASH` gutter、源码语法高亮和紧凑预览；展开工具结果后显示全部已读取锚点。
+- 锚点读取使用独立的 `LN#HASH` gutter、源码语法高亮和紧凑预览；摘要显示实际范围、文件总行数、EOF 或下一 offset，展开后显示全部已读取锚点。
 - 文件修改按每次 `render(width)` 的可用内容宽度实时重排：120 列及以上显示 old/new 双栏，更窄时显示统一 diff。
 - 新增行使用主题衍生的淡绿色背景，删除行使用淡红色背景，并保留增删前景色、行号和语法高亮。
 - diff 提供宽度保护和折叠提示；展开后还会显示 CLI 返回的新锚点。
@@ -41,12 +41,13 @@ bin/hledit.exe
 ```json
 {
   "ok": true,
+  "readRangeMetadata": true,
   "batchInsertAfter": true,
   "batchUpdatedAnchors": true
 }
 ```
 
-成功的 batch 响应必须包含合法的 `updatedAnchors`。插件不会为旧 CLI 再执行一次修改后 `read-range`。
+成功的 JSON 读取必须包含合法的 `totalLines`、锚点行和截断状态；成功的 batch 响应必须包含合法的 `updatedAnchors`。插件不会为旧 CLI 保留文本读取解析或修改后 `read-range` 回退。
 
 ## 开发
 

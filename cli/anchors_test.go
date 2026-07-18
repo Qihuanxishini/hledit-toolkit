@@ -200,6 +200,9 @@ func TestCmdAnchorsJSON(t *testing.T) {
 	if !r.OK {
 		t.Fatalf("ok = false; want true")
 	}
+	if r.TotalLines != 2 {
+		t.Fatalf("totalLines = %d; want 2", r.TotalLines)
+	}
 	if r.Truncated {
 		t.Fatalf("truncated = true; want false")
 	}
@@ -238,6 +241,9 @@ func TestCmdAnchorsJSONTruncation(t *testing.T) {
 	}
 	if !r.Truncated {
 		t.Fatalf("truncated = false; want true")
+	}
+	if r.TotalLines != 2001 {
+		t.Fatalf("totalLines = %d; want 2001", r.TotalLines)
 	}
 	if len(r.Lines) != 2000 {
 		t.Fatalf("lines count = %d; want 2000", len(r.Lines))

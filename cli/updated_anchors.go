@@ -70,7 +70,7 @@ func buildUpdatedAnchorContext(lines []string, firstChanged, lastChanged, linesA
 	return &UpdatedAnchorContext{
 		Lines:        readLines,
 		Offset:       offset,
-		Limit:        limit,
+		Limit:        len(readLines),
 		DesiredLimit: desiredLimit,
 		Truncated:    desiredLimit > updatedAnchorMaxLines || truncatedByBytes,
 	}

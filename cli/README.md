@@ -122,7 +122,7 @@ This monorepo includes the [`pi-hledit-diff`](../pi-hledit-diff/) extension. It 
 - `hledit_read_anchors`
 - `hledit_apply_file_changes`
 
-The extension requires both `batchInsertAfter:true` and `batchUpdatedAnchors:true`. It does not use the legacy single-tool `op` protocol or a post-edit `read-range` fallback.
+The extension requires `readRangeMetadata:true`, `batchInsertAfter:true`, and `batchUpdatedAnchors:true`. It consumes structured JSON reads and does not use the legacy single-tool `op` protocol or a post-edit `read-range` fallback.
 
 After installing the extension in Pi, reload it:
 
@@ -156,7 +156,7 @@ hledit batch [--check] <file>
 `--grep` matches substrings. `--context N` adds N lines before/after each match. `--pretty` adds ANSI styling for human reading; `--json` stays machine-readable and unstyled.
 `<content-source>` is either `-` for stdin or a file path.
 
-`hledit capabilities` emits machine-readable JSON for integrations. This tree reports both `batchInsertAfter:true` and `batchUpdatedAnchors:true`; clients using the patched batch protocol should require both fields.
+`hledit capabilities` emits machine-readable JSON for integrations. This tree reports `readRangeMetadata:true`, `batchInsertAfter:true`, and `batchUpdatedAnchors:true`; structured-read and patched-batch clients should require all three fields.
 
 ## Examples
 
@@ -214,7 +214,7 @@ printf '' | hledit replace-range main.go 12#NK 18#VR -
 ## Output
 
 Read emits `LN#HH:TEXT`; anchors emits `ANCHOR<TAB>TEXT`.
-`--json` emits `{ok, lines:[{line,anchor,text}], truncated, nextOffset}`.
+`--json` emits `{ok, totalLines, lines:[{line,anchor,text,textTruncated?}], truncated, nextOffset?}`; an offset past EOF returns `requestedOffset` and `totalLines`.
 
 ```text
 1#WV:package main

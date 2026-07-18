@@ -62,6 +62,54 @@ test("apply tool exposes JSON-string argument preparation to Pi", () => {
 	);
 });
 
+test("read tool returns structured ranges and actionable EOF errors", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	assert.ok(readTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-read-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	await writeFile(join(directory, "target.txt"), "one\ntwo\nthree\n", "utf8");
+	const context = { cwd: directory };
+
+	const readResult = await readTool.execute("read", { path: "target.txt", offset: 2, limit: 1 } as never, undefined, undefined, context);
+	assert.equal(readResult.details.disposition, "succeeded");
+	assert.deepEqual(readResult.details.read?.actual, { firstLine: 2, lastLine: 2, lineCount: 1, totalLines: 3 });
+	assert.equal(readResult.details.read?.nextOffset, 3);
+	assert.match(readResult.content[0]?.text ?? "", /showing lines 2-2 of 3; use offset 3 to continue/);
+
+	const rangeError = await readTool.execute("read", { path: "target.txt", offset: 4, limit: 1 } as never, undefined, undefined, context);
+	assert.equal(rangeError.details.disposition, "rejected");
+	assert.equal(rangeError.details.error?.message, "offset 4 exceeds file length 3");
+	assert.equal(rangeError.content[0]?.text.split("\n", 1)[0], "offset 4 exceeds file length 3");
+});
+
+test("read tool accepts a grep result that exactly fills the byte budget at EOF", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	assert.ok(readTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-exact-budget-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	// 1#XX、冒号和换行共 6 bytes，使锚点行恰好填满 CLI 的 50 KiB 预算。
+	const line = "x".repeat(50 * 1024 - 6);
+	await writeFile(join(directory, "target.txt"), `${line}\n`, "utf8");
+
+	const result = await readTool.execute(
+		"read",
+		{ path: "target.txt", offset: 1, limit: 2000, grep: "x" } as never,
+		undefined,
+		undefined,
+		{ cwd: directory },
+	);
+
+	assert.equal(result.details.disposition, "succeeded");
+	assert.deepEqual(result.details.read?.actual, { firstLine: 1, lastLine: 1, lineCount: 1, totalLines: 1 });
+	assert.equal(result.details.read?.truncated, false);
+	assert.equal(result.details.read?.nextOffset, undefined);
+	assert.equal(result.details.read?.textTruncated, false);
+});
+
 test("apply tool returns inline updated anchors from bundled batch", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
@@ -89,6 +137,63 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 	assert.match(applyResult.content[0]?.text ?? "", /Updated anchors:/);
 	assert.match(applyResult.content[0]?.text ?? "", /TWO/);
 	assert.equal(await readFile(join(directory, "target.txt"), "utf8"), "one\nTWO\nthree\n");
+});
+
+test("apply tool accepts byte-truncated updated anchor contexts", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-long-context-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	const originalLines = Array.from({ length: 10 }, (_, index) => `line-${index + 1}-${"x".repeat(1500)}`);
+	await writeFile(target, `${originalLines.join("\n")}\n`, "utf8");
+	const context = { cwd: directory };
+
+	const readResult = await readTool.execute("read", { path: "target.txt", offset: 5, limit: 1 } as never, undefined, undefined, context);
+	const anchor = readResult.details.read?.lines[0]?.anchor;
+	assert.ok(anchor);
+	const applyResult = await applyTool.execute(
+		"apply",
+		{ path: "target.txt", changes: [{ operation: "replace", anchor, lines: ["CHANGED"] }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+
+	assert.equal(applyResult.details.disposition, "succeeded");
+	assert.match(applyResult.content[0]?.text ?? "", /Updated anchors were truncated/);
+	assert.equal((await readFile(target, "utf8")).split(/\r?\n/)[4], "CHANGED");
+});
+
+test("apply tool deleting the only line leaves an empty file", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-empty-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "only\n", "utf8");
+	const context = { cwd: directory };
+
+	const readResult = await readTool.execute("read", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
+	const anchor = readResult.details.read?.lines[0]?.anchor;
+	assert.ok(anchor);
+	const applyResult = await applyTool.execute(
+		"apply",
+		{ path: "target.txt", changes: [{ operation: "delete", anchor }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+
+	assert.equal(applyResult.details.disposition, "succeeded");
+	assert.match(applyResult.content[0]?.text ?? "", /\(file empty\)/);
+	assert.equal(await readFile(target, "utf8"), "");
 });
 
 test("apply tool rejects accidental single-anchor block expansion without writing", async (t) => {

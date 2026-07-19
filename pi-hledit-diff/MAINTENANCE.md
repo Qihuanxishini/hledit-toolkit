@@ -178,6 +178,7 @@ CLI 必须拒绝且不得写入：
 {
   "ok": true,
   "editsApplied": 1,
+  "contentChanged": true,
   "updatedAnchors": {
     "lines": [{"line":12,"anchor":"12#BJ","text":"updated"}],
     "offset": 10,
@@ -197,8 +198,12 @@ CLI 必须拒绝且不得写入：
 - 行号从 `offset` 开始连续；
 - anchor 行号与 `line` 一致；
 - `text` 与 `textTruncated` 类型正确。
+- `contentChanged` 若存在则必须为 boolean；bundled CLI 始终返回该字段；
+- `warnings` 若存在则必须是 string array，并同时进入模型正文与 TUI。
 
 CLI 默认使用修改区域前后 2 行、最多 20 行和约 4096 bytes 的窗口。发生截断时，插件要求模型用 `hledit_read_anchors` 定向重读。
+
+当 `contentChanged:false` 时，CLI 已验证全部操作但没有触碰目标文件；插件将其显示为 no-op，仍消费返回的新锚点并完成队列内的 post-read。
 
 ## 失败语义
 
@@ -254,7 +259,7 @@ go vet ./...
 go test ./...
 ```
 
-测试必须覆盖 capability、严格 schema、参数归一化、结构化读取的实际范围/总行数/EOF/续读/单行截断/越界错误、batch 协议、单锚点重复护栏、stale 时 CLI 零写入、新锚点结构、tool error 升级，以及 bundled CLI 与插件的端到端调用。
+测试必须覆盖 capability、严格 schema、参数归一化、结构化读取的实际范围/总行数/EOF/续读/单行截断/越界错误、batch 协议、未知 JSON 字段拒绝、UTF-8/BOM 边界、单锚点重复护栏、stale 时 CLI 零写入、新锚点结构、中文错误摘要、tool error 升级，以及 bundled CLI 与插件的端到端调用。
 
 ## 构建 bundled CLI
 

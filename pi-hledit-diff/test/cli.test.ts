@@ -18,7 +18,7 @@ test("resolveHleditBin uses the fixed bundled CLI path", () => {
 test("runHledit executes the fixed bundled CLI", async () => {
 	const run = await runHledit(["capabilities"], undefined, process.cwd(), undefined);
 
-	assert.deepEqual(parseHleditCapabilities(run), { version: "1.2.6", readRangeMetadata: true, batchInsertAfter: true, batchUpdatedAnchors: true });
+	assert.deepEqual(parseHleditCapabilities(run), { version: "1.4.0", readRangeMetadata: true, batchInsertAfter: true, batchUpdatedAnchors: true });
 });
 
 test("runHledit reports an already-aborted invocation", async () => {
@@ -27,7 +27,7 @@ test("runHledit reports an already-aborted invocation", async () => {
 
 	const run = await runHledit(["capabilities"], undefined, process.cwd(), controller.signal);
 
-	assert.deepEqual(run, { stdout: "hledit execution was aborted.", stderr: "", exitCode: 1 });
+	assert.deepEqual(run, { stdout: "hledit 执行已取消。", stderr: "", exitCode: 1 });
 });
 
 test("parseHleditCapabilities requires structured reads and patched batch capabilities", () => {

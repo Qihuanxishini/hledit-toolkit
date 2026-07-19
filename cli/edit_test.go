@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func editTestCaptureStdout(t *testing.T, fn func()) string {
@@ -124,7 +125,7 @@ func TestCmdReplace(t *testing.T) {
 
 		var got EditResult
 		editTestMustUnmarshal(t, out, &got)
-		if !got.OK || got.FirstChangedLine != 2 || got.LinesAdded != 1 || got.LinesDeleted != 1 {
+		if !got.OK || !got.ContentChanged || got.FirstChangedLine != 2 || got.LinesAdded != 1 || got.LinesDeleted != 1 {
 			t.Fatalf("cmdReplace output = %#v; want ok true firstChangedLine 2 lines +1 -1", got)
 		}
 		if strings.Contains(out, "delta") {
@@ -137,6 +138,37 @@ func TestCmdReplace(t *testing.T) {
 		}
 		if string(data) != "alpha\ndelta\ncharlie\n" {
 			t.Fatalf("target content = %q; want %q", string(data), "alpha\ndelta\ncharlie\n")
+		}
+	})
+
+	t.Run("same replacement is a no-op", func(t *testing.T) {
+		dir := t.TempDir()
+		target := editTestWriteLinesFile(t, dir, "target.txt", "alpha", "bravo")
+		contentSrc := editTestWriteLinesFile(t, dir, "content.txt", "bravo")
+		anchor := formatTag(2, "bravo")
+		fixedTime := time.Unix(1_600_000_000, 0)
+		if err := os.Chtimes(target, fixedTime, fixedTime); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		out := editTestCaptureStdout(t, func() {
+			_ = cmdReplace(target, anchor, contentSrc)
+		})
+		var got EditResult
+		editTestMustUnmarshal(t, out, &got)
+		if !got.OK || got.ContentChanged {
+			t.Fatalf("cmdReplace output = %#v; want successful no-op", got)
+		}
+		after, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !after.ModTime().Equal(before.ModTime()) {
+			t.Fatalf("no-op changed modification time: before %v, after %v", before.ModTime(), after.ModTime())
 		}
 	})
 

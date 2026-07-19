@@ -25,6 +25,14 @@ function normalizePositiveInteger(value: unknown): unknown {
 	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : value;
 }
 
+function normalizeNonNegativeInteger(value: unknown): unknown {
+	if (typeof value !== "string" || !/^\d+$/.test(value)) {
+		return value;
+	}
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) ? parsed : value;
+}
+
 function normalizeAnchor(value: unknown): unknown {
 	if (typeof value !== "string") {
 		return value;
@@ -85,6 +93,7 @@ export function prepareReadAnchorsArguments(args: unknown): ReadAnchorsParams {
 		...parsed,
 		offset: normalizePositiveInteger(parsed.offset),
 		limit: normalizePositiveInteger(parsed.limit),
+		context: normalizeNonNegativeInteger(parsed.context),
 	} as ReadAnchorsParams;
 }
 

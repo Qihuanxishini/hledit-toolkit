@@ -6,7 +6,7 @@
 
 插件注册两个职责明确的工具：
 
-- `hledit_read_anchors`：读取文本文件并返回 `LN#HASH` 锚点。
+- `hledit_read_anchors`：读取文本文件并返回 `LN#HASH` 锚点；grep 读取可用 `context` 同时返回匹配行前后的锚点。
 - `hledit_apply_file_changes`：对一个文件原子提交一组非冲突修改，并直接返回修改后的新锚点。
 
 编辑语义：
@@ -14,6 +14,10 @@
 - `replace` 未提供 `end_anchor` 时只消费一个源文件行；替换现有代码块必须提供包含端点的 `end_anchor`。
 - 若单锚点多行 `replace` 的首行与原锚点行完全相同，插件会判定为高风险块扩展并拒绝，避免保留旧函数体形成重复代码；应改用范围替换或 `insert`。
 - batch 是原子的：任一 change 非法、冲突或 stale 时均为零写入。
+- 已验证但内容相同的 batch 返回 no-op，不触碰目标文件；模型正文和 TUI 不再误报为已修改。
+- 写入会保留 symlink、使用唯一临时文件，并明确拒绝有多个 hardlink 的目标。
+- 仅接受有效 UTF-8 文本，并在修改时保留已有 UTF-8 BOM。
+- 工具名称和协议字段保持稳定；Pi 中的调用摘要、结果、错误、警告和重试指引统一使用简体中文。
 
 插件会替换 Pi 的普通 `edit` 工具；如果 bundled CLI 缺失或 capability 不符合要求，则恢复内置 `edit`。
 

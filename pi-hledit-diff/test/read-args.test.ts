@@ -15,16 +15,17 @@ test("buildReadArgs ignores invalid offset and clamps oversized limit", () => {
     assert.deepEqual(buildReadArgs({ path: "src/a.ts", offset: 0, limit: MAX_READ_LIMIT + 100 }), ["read-range", "src/a.ts", "--offset", "1", "--limit", String(MAX_READ_LIMIT), "--json"]);
 });
 
-test("buildReadArgs passes grep filters", () => {
-    assert.deepEqual(buildReadArgs({ path: "src/a.ts", grep: "function" }), ["read-range", "src/a.ts", "--offset", "1", "--limit", String(MAX_READ_LIMIT), "--json", "--grep", "function"]);
+test("buildReadArgs passes grep filters and context", () => {
+    assert.deepEqual(buildReadArgs({ path: "src/a.ts", grep: "function", context: 2 }), ["read-range", "src/a.ts", "--offset", "1", "--limit", String(MAX_READ_LIMIT), "--json", "--grep", "function", "--context", "2"]);
 });
 
 test("normalizeReadRequest exposes the exact requested range", () => {
-    assert.deepEqual(normalizeReadRequest({ path: "@src/a.ts", offset: 10, limit: MAX_READ_LIMIT + 10, grep: "token" }), {
+    assert.deepEqual(normalizeReadRequest({ path: "@src/a.ts", offset: 10, limit: MAX_READ_LIMIT + 10, grep: "token", context: 0 }), {
         path: "src/a.ts",
         offset: 10,
         limit: MAX_READ_LIMIT,
         grep: "token",
+        context: 0,
     });
 });
 

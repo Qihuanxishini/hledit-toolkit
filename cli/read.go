@@ -42,6 +42,10 @@ func readFileLines(path string) ([]string, bool) {
 		emitError("binary", "file appears to be binary")
 		return nil, true
 	}
+	if errors.Is(err, errInvalidUTF8) {
+		emitError("encoding", "file is not valid UTF-8")
+		return nil, true
+	}
 	emitError("io", err.Error())
 	return nil, true
 }
@@ -319,10 +323,6 @@ func emitMatchLines(buf *bytes.Buffer, lines []string, matchIdxs []int, offset, 
 	}
 }
 
-func cmdRead(path, grep string, contextN int, jsonOut bool) error {
-	return cmdReadPretty(path, grep, contextN, jsonOut, false)
-}
-
 func cmdReadPretty(path, grep string, contextN int, jsonOut bool, pretty bool) error {
 	lines, errored := readFileLines(path)
 	if errored {
@@ -439,10 +439,6 @@ func emitAnchorMatchLines(buf *bytes.Buffer, lines []string, matchIdxs []int, of
 	}
 }
 
-func cmdAnchors(path string, offset, limit int, grep string, contextN int, jsonOut bool) error {
-	return cmdAnchorsPretty(path, offset, limit, grep, contextN, jsonOut, false)
-}
-
 func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int, jsonOut bool, pretty bool) error {
 	lines, errored := readFileLines(path)
 	if errored {
@@ -486,10 +482,6 @@ func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int,
 
 	fmt.Print(buf.String())
 	return nil
-}
-
-func cmdReadRange(path string, offset, limit int, grep string, contextN int, jsonOut bool) error {
-	return cmdReadRangePretty(path, offset, limit, grep, contextN, jsonOut, false)
 }
 
 func cmdReadRangePretty(path string, offset, limit int, grep string, contextN int, jsonOut bool, pretty bool) error {

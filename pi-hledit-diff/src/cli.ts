@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 
 const EXTENSION_ROOT = fileURLToPath(new URL("../", import.meta.url));
 
-export const HLEDIT_INSTALL_HINT = `This extension requires its bundled Windows x64 hledit CLI with structured read-range metadata, batch insert-after, and inline updated-anchor support.
-Reinstall pi-hledit-diff and verify that bin/hledit.exe is present.`;
+export const HLEDIT_INSTALL_HINT = `此扩展需要随包提供的 Windows x64 hledit CLI，并要求其支持结构化范围读取、批量向后插入和修改后锚点回传。
+请重新同步或安装 pi-hledit-diff，并确认 bin/hledit.exe 存在。`;
 
 export const HLEDIT_RUN_TIMEOUT_MS = 30_000;
 export const HLEDIT_MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -66,7 +66,7 @@ export async function runHledit(
 			child = spawn(bin, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			resolveRun({ stdout: `failed to run ${bin}: ${message}\n\n${HLEDIT_INSTALL_HINT}`, stderr: "", exitCode: 1 });
+			resolveRun({ stdout: `无法启动 hledit：${bin}\n\n${HLEDIT_INSTALL_HINT}`, stderr: message, exitCode: 1 });
 			return;
 		}
 
@@ -111,12 +111,12 @@ export async function runHledit(
 			}
 			settle(terminationResult ?? run);
 		};
-		const abort = () => finish({ stdout: "hledit execution was aborted.", stderr: "", exitCode: 1 }, true);
+		const abort = () => finish({ stdout: "hledit 执行已取消。", stderr: "", exitCode: 1 }, true);
 		const appendOutput = (target: "stdout" | "stderr", chunk: string) => {
 			if (settled || terminationRequested) return;
 			outputBytes += Buffer.byteLength(chunk, "utf8");
 			if (outputBytes > HLEDIT_MAX_OUTPUT_BYTES) {
-				finish({ stdout: `hledit output exceeded ${HLEDIT_MAX_OUTPUT_BYTES} bytes and was terminated.`, stderr: "", exitCode: 1 }, true);
+				finish({ stdout: `hledit 输出超过 ${HLEDIT_MAX_OUTPUT_BYTES} 字节，已终止进程。`, stderr: "", exitCode: 1 }, true);
 				return;
 			}
 			if (target === "stdout") stdout += chunk;
@@ -129,11 +129,11 @@ export async function runHledit(
 		child.stderr.on("data", (chunk: string) => appendOutput("stderr", chunk));
 		child.on("error", (error) => {
 			if (!terminationRequested) {
-				settle({ stdout: `failed to run ${bin}: ${error.message}\n\n${HLEDIT_INSTALL_HINT}`, stderr, exitCode: 1 });
+				settle({ stdout: `无法启动 hledit：${bin}\n\n${HLEDIT_INSTALL_HINT}`, stderr: error.message || stderr, exitCode: 1 });
 			}
 		});
 		child.on("close", (exitCode) => finish({ stdout, stderr, exitCode }));
-		child.stdin.on("error", (error) => finish({ stdout: `failed to write hledit input: ${error.message}`, stderr, exitCode: 1 }, true));
+		child.stdin.on("error", (error) => finish({ stdout: "无法向 hledit 发送批次输入，进程已终止。", stderr: error.message || stderr, exitCode: 1 }, true));
 
 		if (signal?.aborted) {
 			abort();
@@ -141,7 +141,7 @@ export async function runHledit(
 		}
 		signal?.addEventListener("abort", abort, { once: true });
 		timeout = setTimeout(() => {
-			finish({ stdout: `hledit timed out after ${HLEDIT_RUN_TIMEOUT_MS} ms.`, stderr: "", exitCode: 1 }, true);
+			finish({ stdout: `hledit 在 ${HLEDIT_RUN_TIMEOUT_MS / 1000} 秒内未完成，已终止进程。`, stderr: "", exitCode: 1 }, true);
 		}, HLEDIT_RUN_TIMEOUT_MS);
 		if (!terminationRequested) child.stdin.end(stdin ?? "");
 	});

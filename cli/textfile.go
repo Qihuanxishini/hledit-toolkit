@@ -5,14 +5,21 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"unicode/utf8"
 )
 
-var errBinaryFile = errors.New("file appears to be binary")
+var (
+	errBinaryFile  = errors.New("file appears to be binary")
+	errInvalidUTF8 = errors.New("file is not valid UTF-8")
+)
+
+const utf8BOM = "\xEF\xBB\xBF"
 
 type LoadedTextFile struct {
 	Lines              []string
 	LineEnding         string
 	HasTrailingNewline bool
+	HasUTF8BOM         bool
 }
 
 func loadTextFile(path string) (LoadedTextFile, error) {
@@ -31,6 +38,14 @@ func parseTextFile(content []byte) (LoadedTextFile, error) {
 	if bytes.IndexByte(content[:searchLimit], 0x00) >= 0 {
 		return LoadedTextFile{}, errBinaryFile
 	}
+	if !utf8.Valid(content) {
+		return LoadedTextFile{}, errInvalidUTF8
+	}
+
+	hasUTF8BOM := bytes.HasPrefix(content, []byte(utf8BOM))
+	if hasUTF8BOM {
+		content = content[len(utf8BOM):]
+	}
 
 	lineEnding := "\n"
 	if bytes.Contains(content, []byte("\r\n")) {
@@ -44,6 +59,7 @@ func parseTextFile(content []byte) (LoadedTextFile, error) {
 		Lines:              lines,
 		LineEnding:         lineEnding,
 		HasTrailingNewline: hasTrailingNewline,
+		HasUTF8BOM:         hasUTF8BOM,
 	}, nil
 }
 
@@ -62,6 +78,9 @@ func (f LoadedTextFile) JoinLines(lines []string) string {
 	joined := strings.Join(lines, f.LineEnding)
 	if f.HasTrailingNewline && len(lines) > 0 {
 		joined += f.LineEnding
+	}
+	if f.HasUTF8BOM {
+		joined = utf8BOM + joined
 	}
 	return joined
 }

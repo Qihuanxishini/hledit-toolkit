@@ -70,13 +70,13 @@ async function runFileChangesWithDiff(
 	return withFileMutationQueue(absolutePath, async () => {
 		const before = await readUtf8File(absolutePath);
 		if ("error" in before) {
-			return toolFailureResult(`Changes were not applied: unable to read ${normalizedPath} before editing: ${before.error}`);
+			return toolFailureResult(`修改前无法读取 ${normalizedPath}，因此未执行任何修改。请检查路径、权限和文件编码。`);
 		}
 
 		const singleAnchorReplacementError = findSingleAnchorReplacementError(params, before.content);
 		if (singleAnchorReplacementError) {
 			return toolFailureResult(
-				`Atomic batch rejected; zero changes were applied.\n${singleAnchorReplacementError}`,
+				`原子批次已拒绝，未写入任何内容。\n${singleAnchorReplacementError}`,
 				"rejected",
 			);
 		}
@@ -103,11 +103,12 @@ async function runFileChangesWithDiff(
 		if ("error" in after) {
 			return {
 				...result,
-				content: appendResultText(result, `${postEditContext.text}\n\nChanges were applied, but the diff is unavailable: ${after.error}`),
+				content: appendResultText(result, `${postEditContext.text}\n\n修改已应用，但重新读取文件以生成差异时失败。`),
 				details: {
 					...result.details,
 					...postEditDetails,
-					diffError: `unable to read ${normalizedPath} after editing: ${after.error}`,
+					diffError: `修改已应用，但无法重新读取 ${normalizedPath} 以生成差异。`,
+					diffErrorRaw: after.error,
 				},
 			};
 		}
@@ -129,12 +130,12 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool(({
 		name: HLEDIT_READ_ANCHORS_TOOL,
-		label: "Read Anchors",
-		description: "Read a text file and return stale-safe LN#HASH anchors for a later change.",
-		promptSnippet: "Read text-file anchors before applying anchored changes",
+		label: "读取锚点",
+		description: "读取文本文件，并返回可用于后续 stale-safe 修改的 LN#HASH 锚点。",
+		promptSnippet: "修改文本文件前读取最新锚点",
 		promptGuidelines: [
-			"Call hledit_read_anchors immediately before changing a text file; copy LN#HASH anchors exactly and never invent them.",
-			"When the location is known, read only the affected range with offset and limit. In output like 51#BJ:text, the anchor is only 51#BJ.",
+			"修改文本文件前立即调用 hledit_read_anchors；必须原样复制 LN#HASH，绝不能编造锚点。",
+			"位置已知时，只用 offset 和 limit 读取受影响范围。输出 51#BJ:text 中，锚点仅为 51#BJ。",
 		],
 		parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 		prepareArguments: prepareReadAnchorsArguments,
@@ -158,15 +159,15 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool(({
 		name: HLEDIT_APPLY_FILE_CHANGES_TOOL,
-		label: "Apply File Changes",
-		description: "Apply one atomic set of non-conflicting stale-safe changes to one text file.",
-		promptSnippet: "Atomically apply anchored changes to one text file",
+		label: "应用文件修改",
+		description: "对一个文本文件原子应用一组互不冲突的 stale-safe 修改。",
+		promptSnippet: "原子应用一个文件的锚点修改",
 		promptGuidelines: [
-			"Use hledit_apply_file_changes once for all complete, non-conflicting changes in one file. Its lines arrays contain raw file text only, never anchors or diff markers.",
-			"A replace without end_anchor consumes exactly one source line even when lines contains multiple output lines. To replace an existing block, always supply the inclusive end_anchor.",
-			"Never include placeholder anchors such as #??/#XX, operation:read, or unfinished changes. Read anchors in a separate hledit_read_anchors call first.",
-			"Delete uses { operation: \"delete\", anchor, end_anchor? } without lines. Insert requires { operation: \"insert\", anchor, position: \"before\" | \"after\", lines }.",
-			"The batch is atomic: any invalid, conflicting, or stale item means zero writes. After stale, reread the affected range and do not reuse pre-mutation anchors.",
+			"对同一文件的一组完整、互不冲突的修改，只调用一次 hledit_apply_file_changes。lines 只能包含原始文件文本，不能带锚点或 diff 标记。",
+			"replace 未提供 end_anchor 时只消费一个源文件行，即使 lines 含多行也是如此。替换现有代码块时，必须提供包含首尾的 end_anchor。",
+			"hledit_apply_file_changes 中不得出现 #??/#XX 等占位锚点、operation:read 或未完成的修改；必须先单独调用 hledit_read_anchors。",
+			"delete 使用 { operation: \"delete\", anchor, end_anchor? }，不带 lines；insert 使用 { operation: \"insert\", anchor, position: \"before\" | \"after\", lines }。",
+			"hledit_apply_file_changes 是原子批次：任一项无效、冲突或锚点失效都会零写入。锚点失效后必须重新读取受影响范围，不得复用旧锚点。",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 		prepareArguments: prepareFileChangeArguments,
@@ -206,7 +207,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		if (!warnedHleditUnavailable) {
-			const message = `hledit unavailable; kept Pi's built-in edit tool active. Run /hledit-status for details.\n\n${HLEDIT_INSTALL_HINT}`;
+			const message = `hledit 当前不可用，已保留 Pi 内置 edit 工具。可运行 /hledit-status 查看详情。\n\n${HLEDIT_INSTALL_HINT}`;
 			if (ctx.hasUI) ctx.ui.notify(message, "warning");
 			else console.warn(message);
 			warnedHleditUnavailable = true;
@@ -214,17 +215,17 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("hledit-status", {
-		description: "Check the configured hledit binary",
+		description: "检查随扩展附带的 hledit CLI 状态",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const run = await runHledit(["capabilities"], undefined, ctx.cwd, undefined);
 			const bin = resolveHleditBin();
 			const capabilities = parseHleditCapabilities(run);
 			if (capabilities) {
-				ctx.ui.notify(`hledit ready: ${bin} (${capabilities.version}; structured read ranges; batch insert-after; inline updated anchors)`, "info");
+				ctx.ui.notify(`hledit 已就绪：${bin}（版本 ${capabilities.version}；支持结构化范围读取、批量向后插入和修改后锚点回传）`, "info");
 			} else if (run.exitCode === 0) {
-				ctx.ui.notify(`hledit incompatible: ${bin} does not report required structured-read and atomic-batch capabilities.\n\n${HLEDIT_INSTALL_HINT}`, "error");
+				ctx.ui.notify(`hledit 版本不兼容：${bin} 未声明所需的结构化读取和原子批次能力。\n\n${HLEDIT_INSTALL_HINT}`, "error");
 			} else {
-				ctx.ui.notify(`hledit failed: ${bin}\n\n${HLEDIT_INSTALL_HINT}`, "error");
+				ctx.ui.notify(`hledit 启动失败：${bin}\n\n${HLEDIT_INSTALL_HINT}`, "error");
 			}
 		},
 	});

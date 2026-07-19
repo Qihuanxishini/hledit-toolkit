@@ -4,78 +4,155 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestAtomicWrite(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "test-atomic-write")
+func atomicWriteMustSucceed(t *testing.T, path string, content []byte) {
+	t.Helper()
+	warning, err := atomicWrite(path, content)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("atomicWrite(%q) failed: %v", path, err)
 	}
-	defer os.RemoveAll(tmpDir)
-
-	targetFile := filepath.Join(tmpDir, "test.txt")
-	content := []byte("hello world")
-
-	// Test 1: Write new file
-	err = atomicWrite(targetFile, content)
-	if err != nil {
-		t.Fatalf("atomicWrite failed: %v", err)
-	}
-
-	// Verify content
-	got, err := os.ReadFile(targetFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, content) {
-		t.Errorf("expected %q, got %q", string(content), string(got))
-	}
-
-	// Verify no temp file left behind
-	files, _ := os.ReadDir(tmpDir)
-	for _, f := range files {
-		if f.Name() == filepath.Base(targetFile)+".hledit.tmp" {
-			t.Errorf("found leftover temp file: %s", f.Name())
-		}
-	}
-
-	// Test 2: Overwrite existing file
-	newContent := []byte("new content")
-	err = atomicWrite(targetFile, newContent)
-	if err != nil {
-		t.Fatalf("atomicWrite failed during overwrite: %v", err)
-	}
-
-	got, err = os.ReadFile(targetFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, newContent) {
-		t.Errorf("expected %q, got %q", string(newContent), string(got))
+	if warning != "" {
+		t.Fatalf("atomicWrite(%q) warning = %q; want none", path, warning)
 	}
 }
 
-func TestAtomicWriteErrors(t *testing.T) {
-	tmpDir := t.TempDir()
+func assertNoAtomicTempFiles(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".hledit-") {
+			t.Fatalf("found leftover temporary file %q", entry.Name())
+		}
+	}
+}
 
-	// Create error: parent directory does not exist, so os.Create(tmp) fails.
-	missingParentTarget := filepath.Join(tmpDir, "missing", "test.txt")
-	if err := atomicWrite(missingParentTarget, []byte("x")); err == nil {
-		t.Fatal("expected create error for missing parent directory")
+func TestAtomicWrite(t *testing.T) {
+	t.Run("creates and overwrites with no temporary residue", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "test.txt")
+		atomicWriteMustSucceed(t, target, []byte("hello world"))
+		beforeOverwrite, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		atomicWriteMustSucceed(t, target, []byte("new content"))
+
+		got, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, []byte("new content")) {
+			t.Fatalf("target content = %q; want %q", got, "new content")
+		}
+		afterOverwrite, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if afterOverwrite.Mode().Perm() != beforeOverwrite.Mode().Perm() {
+			t.Fatalf("target permissions = %v; want preserved %v", afterOverwrite.Mode().Perm(), beforeOverwrite.Mode().Perm())
+		}
+		assertNoAtomicTempFiles(t, dir)
+	})
+
+	t.Run("does not reuse the legacy fixed temporary path", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "test.txt")
+		legacyTemp := target + ".hledit.tmp"
+		if err := os.WriteFile(target, []byte("old"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(legacyTemp, []byte("sentinel"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		atomicWriteMustSucceed(t, target, []byte("new"))
+		legacyContent, err := os.ReadFile(legacyTemp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(legacyContent) != "sentinel" {
+			t.Fatalf("legacy temporary path changed to %q", legacyContent)
+		}
+		assertNoAtomicTempFiles(t, dir)
+	})
+
+	t.Run("preserves a symlink and updates its target", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "target.txt")
+		link := filepath.Join(dir, "link.txt")
+		if err := os.WriteFile(target, []byte("old"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("symlinks are unavailable in this environment: %v", err)
+		}
+
+		atomicWriteMustSucceed(t, link, []byte("new"))
+		linkInfo, err := os.Lstat(link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if linkInfo.Mode()&os.ModeSymlink == 0 {
+			t.Fatal("atomic write replaced the symlink itself")
+		}
+		targetContent, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(targetContent) != "new" {
+			t.Fatalf("symlink target content = %q; want new", targetContent)
+		}
+	})
+
+	t.Run("rejects files with multiple hard links", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "target.txt")
+		alias := filepath.Join(dir, "alias.txt")
+		if err := os.WriteFile(target, []byte("old"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(target, alias); err != nil {
+			t.Skipf("hard links are unavailable in this environment: %v", err)
+		}
+
+		warning, err := atomicWrite(target, []byte("new"))
+		if err == nil || !strings.Contains(err.Error(), "hard links") {
+			t.Fatalf("atomicWrite error = %v; want explicit hard-link rejection", err)
+		}
+		if warning != "" {
+			t.Fatalf("hard-link rejection warning = %q; want none", warning)
+		}
+		for _, path := range []string{target, alias} {
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(content) != "old" {
+				t.Fatalf("%s content = %q; want unchanged", path, content)
+			}
+		}
+	})
+}
+
+func TestAtomicWriteErrors(t *testing.T) {
+	dir := t.TempDir()
+	missingParentTarget := filepath.Join(dir, "missing", "test.txt")
+	if _, err := atomicWrite(missingParentTarget, []byte("x")); err == nil {
+		t.Fatal("expected error for missing parent directory")
 	}
 
-	// Rename error: target path is an existing directory. Creating
-	// target.hledit.tmp succeeds next to it, but renaming a file over a
-	// directory should fail and clean up the temp file.
-	targetDir := filepath.Join(tmpDir, "target-dir")
+	targetDir := filepath.Join(dir, "target-dir")
 	if err := os.Mkdir(targetDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := atomicWrite(targetDir, []byte("x")); err == nil {
-		t.Fatal("expected rename error when target is a directory")
+	if _, err := atomicWrite(targetDir, []byte("x")); err == nil {
+		t.Fatal("expected error when target is a directory")
 	}
-	if _, err := os.Stat(targetDir + ".hledit.tmp"); !os.IsNotExist(err) {
-		t.Fatalf("expected temp cleanup after rename error, stat err=%v", err)
-	}
+	assertNoAtomicTempFiles(t, dir)
 }

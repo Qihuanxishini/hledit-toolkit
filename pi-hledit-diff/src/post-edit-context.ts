@@ -72,12 +72,12 @@ export function parseBatchUpdatedAnchorContext(parsed: Record<string, unknown> |
 export function formatBatchUpdatedAnchorContext(context: BatchUpdatedAnchorContext): PostEditContextResult {
 	const truncated = context.truncated || context.lines.some((line) => line.textTruncated);
 	const output = [
-		"Updated anchors:",
-		context.lines.map((line) => `${line.anchor}:${line.text}`).join("\n") || "(file empty)",
-		"Use these anchors for another change, or call hledit_read_anchors. Do not reuse anchors read before this mutation.",
+		"更新后的锚点：",
+		context.lines.map((line) => `${line.anchor}:${line.text}`).join("\n") || "（文件为空）",
+		"后续修改请使用这些新锚点，或重新调用 hledit_read_anchors。不要继续使用本次修改前读取的锚点。",
 	];
 	if (truncated) {
-		output.push(`Updated anchors were truncated. Call hledit_read_anchors with offset:${context.offset} limit:${context.desiredLimit}.`);
+		output.push(`锚点上下文已截断；请调用 hledit_read_anchors，并使用 offset:${context.offset}、limit:${context.desiredLimit}。`);
 	}
 
 	return {

@@ -28,7 +28,7 @@ test("readAnchorsResult exposes actual range, total lines, and continuation", ()
         { path: "src/a.ts", offset: 2, limit: 2 },
     );
 
-    assert.equal(result.content[0]?.text, "2#BH:two\n3#BJ:three\n-- showing lines 2-3 of 5; use offset 4 to continue --");
+    assert.equal(result.content[0]?.text, "2#BH:two\n3#BJ:three\n-- 已显示第 2-3 行（文件共 5 行）；继续读取请使用 offset 4 --");
     assert.equal(result.details.disposition, "succeeded");
     assert.deepEqual(result.details.read?.requested, { offset: 2, limit: 2 });
     assert.deepEqual(result.details.read?.actual, { firstLine: 2, lastLine: 3, lineCount: 2, totalLines: 5 });
@@ -46,7 +46,7 @@ test("readAnchorsResult marks a completed range as EOF", () => {
         { path: "src/a.ts", offset: 4, limit: 20 },
     );
 
-    assert.match(result.content[0]?.text ?? "", /showing lines 4-5 of 5; end of file/);
+    assert.match(result.content[0]?.text ?? "", /已显示第 4-5 行（文件共 5 行）；已到文件末尾/);
     assert.equal(result.details.read?.eof, true);
     assert.equal(result.details.read?.nextOffset, undefined);
 });
@@ -61,18 +61,33 @@ test("readAnchorsResult returns actionable structured range errors", () => {
         { path: "src/a.ts", offset: 600, limit: 40 },
     );
 
-    assert.equal(result.content[0]?.text, "offset 600 exceeds file length 599\nHint: Use an offset between 1 and 599.\nError: range");
+    assert.equal(result.content[0]?.text, "起始行 600 超出文件范围（文件共 599 行）。\n建议：请将 offset 设为 1 到 599 之间的整数。\n错误代码：range");
     assert.deepEqual(result.details, {
         disposition: "rejected",
         error: {
             code: "range",
-            message: "offset 600 exceeds file length 599",
-            hint: "Use an offset between 1 and 599.",
+            message: "起始行 600 超出文件范围（文件共 599 行）。",
+			rawMessage: "offset 600 exceeds file length 599",
+            hint: "请将 offset 设为 1 到 599 之间的整数。",
             requestedOffset: 600,
             totalLines: 599,
         },
     });
     assert.equal(isFailedHleditResult(result.details), true);
+});
+
+test("readAnchorsResult localizes invalid UTF-8 errors", () => {
+	const result = readAnchorsResult(
+		{ stdout: '{"ok":false,"error":"encoding","message":"file is not valid UTF-8"}', stderr: "", exitCode: 0 },
+		{ path: "src/a.ts", offset: 1, limit: 20 },
+	);
+
+	assert.equal(result.content[0]?.text, "目标文件不是有效的 UTF-8 文本，已拒绝读取以避免损坏原始字节。\n错误代码：encoding");
+	assert.deepEqual(result.details.error, {
+		code: "encoding",
+		message: "目标文件不是有效的 UTF-8 文本，已拒绝读取以避免损坏原始字节。",
+		rawMessage: "file is not valid UTF-8",
+	});
 });
 
 test("readAnchorsResult distinguishes source-line truncation from pagination", () => {
@@ -87,7 +102,7 @@ test("readAnchorsResult distinguishes source-line truncation from pagination", (
 
     assert.equal(result.details.read?.textTruncated, true);
     assert.equal(result.details.read?.nextOffset, undefined);
-    assert.match(result.content[0]?.text ?? "", /no line-offset continuation is available/);
+    assert.match(result.content[0]?.text ?? "", /按行续读无法恢复被省略的行内文本/);
 });
 
 test("readAnchorsResult rejects non-sequential unfiltered output", () => {
@@ -101,30 +116,32 @@ test("readAnchorsResult rejects non-sequential unfiltered output", () => {
     );
 
     assert.equal(result.details.disposition, "unavailable");
-    assert.match(result.content[0]?.text ?? "", /incompatible response/);
+    assert.match(result.content[0]?.text ?? "", /不兼容的响应/);
 });
 
 test("readAnchorsResult formats a complete empty filtered result", () => {
     const result = readAnchorsResult(
         { stdout: '{"ok":true,"totalLines":5,"lines":[],"truncated":false}', stderr: "", exitCode: 0 },
-        { path: "src/a.ts", offset: 1, limit: 20, grep: "missing" },
+        { path: "src/a.ts", offset: 1, limit: 20, grep: "missing", context: 2 },
     );
 
-    assert.equal(result.content[0]?.text, '-- no lines containing "missing" in 5 total lines --');
+    assert.equal(result.content[0]?.text, '-- 文件共 5 行，未找到包含 "missing" 的内容 --');
     assert.deepEqual(result.details.read?.actual, { lineCount: 0, totalLines: 5 });
+    assert.deepEqual(result.details.read?.requested, { offset: 1, limit: 20, grep: "missing", context: 2 });
 });
 
 test("applyFileChangesResult summarizes successful file changes", () => {
     const result = applyFileChangesResult({
-        stdout: '{"ok":true,"editsApplied":2,"firstChangedLine":3,"lastChangedLine":5,"linesAdded":4,"linesDeleted":1,"updatedAnchors":{"lines":[{"line":3,"anchor":"3#BH","text":"changed"}],"offset":3,"limit":1,"desiredLimit":1,"truncated":false}}',
+        stdout: '{"ok":true,"editsApplied":2,"contentChanged":true,"firstChangedLine":3,"lastChangedLine":5,"linesAdded":4,"linesDeleted":1,"updatedAnchors":{"lines":[{"line":3,"anchor":"3#BH","text":"changed"}],"offset":3,"limit":1,"desiredLimit":1,"truncated":false}}',
         stderr: "",
         exitCode: 0,
     });
 
-    assert.equal(result.content[0]?.text, "Changes applied.\nChanges applied: 2\nChanged lines: 3-5\nLines: +4 -1");
+    assert.equal(result.content[0]?.text, "修改已应用。\n已应用操作：2 项\n影响行：3-5\n行数变化：+4 -1");
     assert.deepEqual(result.details, {
         disposition: "succeeded",
         editsApplied: 2,
+        contentChanged: true,
         firstChangedLine: 3,
         lastChangedLine: 5,
         linesAdded: 4,
@@ -133,14 +150,38 @@ test("applyFileChangesResult summarizes successful file changes", () => {
     assert.equal(isFailedHleditResult(result.details), false);
 });
 
+test("applyFileChangesResult reports a successful no-op", () => {
+    const result = applyFileChangesResult({
+        stdout: '{"ok":true,"editsApplied":1,"contentChanged":false,"firstChangedLine":3,"lastChangedLine":3,"linesAdded":1,"linesDeleted":1,"updatedAnchors":{"lines":[{"line":3,"anchor":"3#BH","text":"unchanged"}],"offset":3,"limit":1,"desiredLimit":1,"truncated":false}}',
+        stderr: "",
+        exitCode: 0,
+    });
+
+    assert.equal(result.content[0]?.text, "无需修改。\n已检查操作：1 项");
+    assert.equal(result.details.disposition, "succeeded");
+    assert.equal(result.details.contentChanged, false);
+});
+
+test("applyFileChangesResult preserves post-write durability warnings", () => {
+    const result = applyFileChangesResult({
+        stdout: '{"ok":true,"editsApplied":1,"contentChanged":true,"warnings":["file was replaced, but directory metadata could not be synchronized: access denied"],"updatedAnchors":{"lines":[{"line":1,"anchor":"1#BH","text":"changed"}],"offset":1,"limit":1,"desiredLimit":1,"truncated":false}}',
+        stderr: "",
+        exitCode: 0,
+    });
+
+    assert.equal(result.content[0]?.text, "修改已应用。\n已应用操作：1 项\n警告：\n- 文件内容已成功替换，但目录元数据未能同步；断电等极端场景下，持久性保证可能降低。");
+    assert.deepEqual(result.details.warnings, ["文件内容已成功替换，但目录元数据未能同步；断电等极端场景下，持久性保证可能降低。"]);
+    assert.deepEqual(result.details.rawWarnings, ["file was replaced, but directory metadata could not be synchronized: access denied"]);
+});
+
 test("applyFileChangesResult warns that an unverified success may have changed the file", () => {
 	const result = applyFileChangesResult({ stdout: "unexpected output", stderr: "", exitCode: 0 });
 	const text = result.content[0]?.text ?? "";
 
-	assert.match(text, /incompatible success response/);
-	assert.match(text, /file may have changed/);
-	assert.match(text, /call hledit_read_anchors/);
-	assert.doesNotMatch(text, /^Changes were not applied/);
+	assert.match(text, /不兼容的成功响应/);
+	assert.match(text, /文件可能已经变化/);
+	assert.match(text, /调用 hledit_read_anchors/);
+	assert.doesNotMatch(text, /^未执行任何修改/);
 	assert.deepEqual(result.details, { disposition: "unavailable" });
 	assert.equal(isFailedHleditResult(result.details), true);
 });
@@ -153,20 +194,56 @@ test("applyFileChangesResult requires editsApplied and updatedAnchors", () => {
     assert.deepEqual(missing.details, { disposition: "unavailable" });
     assert.deepEqual(invalid.details, { disposition: "unavailable", editsApplied: -1 });
     assert.deepEqual(missingAnchors.details, { disposition: "unavailable", editsApplied: 1 });
-    assert.match(missingAnchors.content[0]?.text ?? "", /valid updatedAnchors/);
+    assert.match(missingAnchors.content[0]?.text ?? "", /有效 updatedAnchors/);
 });
 
 test("applyFileChangesResult gives stale changes a mandatory reread instruction", () => {
     const result = applyFileChangesResult(
-        { stdout: '{"ok":false,"error":"stale","message":"edit 0: anchor stale","remaps":[{"requested":"2#BH","current":"2#BB"}]}', stderr: "", exitCode: 0 },
+        { stdout: '{"ok":false,"error":"stale","message":"edit 0: anchor stale","failed":0,"remaps":[{"requested":"2#BH","current":"2#BB"}]}', stderr: "", exitCode: 0 },
         { path: "src/a.ts" },
     );
 
-    assert.match(result.content[0]?.text ?? "", /^Atomic batch rejected; zero changes were applied\.\nError: stale/m);
+    assert.match(result.content[0]?.text ?? "", /^原子批次已拒绝，未写入任何内容。\n原因：第 1 项修改使用的锚点已失效。\n错误代码：stale/m);
     assert.match(result.content[0]?.text ?? "", /2#BH -> 2#BB/);
-    assert.match(result.content[0]?.text ?? "", /Call hledit_read_anchors\(\{ path: "src\/a\.ts", offset: 1, limit: 12 \}\) before retrying/);
-    assert.deepEqual(result.details, { disposition: "rejected" });
+    assert.match(result.content[0]?.text ?? "", /重试前请调用 hledit_read_anchors\(\{ path: "src\/a\.ts", offset: 1, limit: 12 \}\)/);
+    assert.deepEqual(result.details, {
+		disposition: "rejected",
+		error: { code: "stale", message: "第 1 项修改使用的锚点已失效。", rawMessage: "edit 0: anchor stale" },
+	});
     assert.equal(isFailedHleditResult(result.details), true);
+});
+
+test("applyFileChangesResult surfaces the hardlink rejection reason", () => {
+	const rawMessage = 'refusing atomic write to "target.txt": file has 2 hard links; preserving link identity would require a non-atomic in-place write';
+	const result = applyFileChangesResult({
+		stdout: JSON.stringify({ ok: false, error: "io", message: rawMessage }),
+		stderr: "",
+		exitCode: 0,
+	});
+
+	assert.match(result.content[0]?.text ?? "", /目标文件存在 2 个 hardlink/);
+	assert.doesNotMatch(result.content[0]?.text ?? "", /preserving link identity/);
+	assert.deepEqual(result.details.error, {
+		code: "io",
+		message: "目标文件存在 2 个 hardlink。为同时保证原子性和链接身份，本次写入已拒绝。",
+		rawMessage,
+	});
+});
+
+test("applyFileChangesResult localizes unknown batch fields", () => {
+	const rawMessage = 'invalid batch request: json: unknown field "linez"';
+	const result = applyFileChangesResult({
+		stdout: JSON.stringify({ ok: false, error: "invalid", message: rawMessage, failed: -1 }),
+		stderr: "",
+		exitCode: 0,
+	});
+
+	assert.match(result.content[0]?.text ?? "", /批次 JSON 包含不支持的字段 "linez"/);
+	assert.deepEqual(result.details.error, {
+		code: "invalid",
+		message: '批次 JSON 包含不支持的字段 "linez"；请检查字段拼写。',
+		rawMessage,
+	});
 });
 
 test("readAnchorsResult identifies unavailable CLI runs", () => {
@@ -180,7 +257,7 @@ test("readAnchorsResult identifies unavailable CLI runs", () => {
 });
 
 test("toolFailureResult carries a framework-visible rejected disposition", () => {
-    const result = toolFailureResult("Changes were not applied: invalid request", "rejected");
+    const result = toolFailureResult("修改未执行：请求无效", "rejected");
 
     assert.deepEqual(result.details, { disposition: "rejected" });
     assert.equal(isFailedHleditResult(result.details), true);

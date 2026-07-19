@@ -66,9 +66,9 @@ const SPLIT_SEPARATOR = " │ ";
 
 function expandHint(): string {
 	try {
-		return keyHint("app.tools.expand", "to expand");
+		return keyHint("app.tools.expand", "展开详情");
 	} catch {
-		return "Ctrl+O to expand";
+		return "按 Ctrl+O 展开";
 	}
 }
 
@@ -398,8 +398,8 @@ function renderSplit(
 	const separator = theme.fg("dim", SPLIT_SEPARATOR);
 	const rows: string[] = [];
 
-	const oldLabel = fitToWidth(theme.fg("muted", theme.bold("old")), leftWidth);
-	const newLabel = fitToWidth(theme.fg("muted", theme.bold("new")), rightWidth);
+	const oldLabel = fitToWidth(theme.fg("muted", theme.bold("修改前")), leftWidth);
+	const newLabel = fitToWidth(theme.fg("muted", theme.bold("修改后")), rightWidth);
 	rows.push(`${oldLabel}${separator}${newLabel}`);
 	rows.push(theme.fg("dim", "─".repeat(width)));
 
@@ -420,12 +420,12 @@ function renderSplit(
 
 function diffSummary(parsed: ParsedDiff, theme: HleditRenderTheme, mode?: "split" | "unified"): string {
 	const pieces = [
-		theme.fg("toolOutput", `↳ ${theme.bold("diff")}`),
+		theme.fg("toolOutput", `↳ ${theme.bold("差异")}`),
 		theme.fg("toolDiffAdded", `+${parsed.added}`),
 		theme.fg("toolDiffRemoved", `-${parsed.removed}`),
-		theme.fg("muted", `• ${parsed.hunks} ${parsed.hunks === 1 ? "hunk" : "hunks"}`),
+		theme.fg("muted", `• ${parsed.hunks} 个变更块`),
 	];
-	if (mode) pieces.push(theme.fg("dim", `• ${mode}`));
+	if (mode) pieces.push(theme.fg("dim", `• ${mode === "split" ? "双栏" : "统一"}`));
 	return pieces.join(" ");
 }
 
@@ -434,8 +434,8 @@ function applyLineLimit(lines: string[], expanded: boolean, width: number, theme
 	if (lines.length <= limit) return lines;
 	const remaining = lines.length - limit;
 	const hint = expanded
-		? `… ${remaining} more diff lines`
-		: `… ${remaining} more diff lines • ${expandHint()}`;
+		? `… 还有 ${remaining} 行差异`
+		: `… 还有 ${remaining} 行差异 • ${expandHint()}`;
 	return [...lines.slice(0, limit), "", truncateToWidth(theme.fg(expanded ? "warning" : "muted", hint), width, "")];
 }
 

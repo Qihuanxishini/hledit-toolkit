@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func batchTestRun(t *testing.T, target string, req BatchEditRequest, checkOnly bool) string {
@@ -16,6 +17,11 @@ func batchTestRun(t *testing.T, target string, req BatchEditRequest, checkOnly b
 	if err != nil {
 		t.Fatal(err)
 	}
+	return batchTestRunPayload(t, target, payload, checkOnly)
+}
+
+func batchTestRunPayload(t *testing.T, target string, payload []byte, checkOnly bool) string {
+	t.Helper()
 
 	oldStdin := os.Stdin
 	oldStdout := os.Stdout
@@ -96,6 +102,47 @@ func batchTestCheckReq(t *testing.T, target string, edits ...BatchEditOp) string
 	return out
 }
 
+func TestCmdBatchRejectsUnknownJSONFields(t *testing.T) {
+	dir := t.TempDir()
+	target := editTestWriteLinesFile(t, dir, "target.txt", "alpha")
+	payload, err := json.Marshal(map[string]any{
+		"edits": []map[string]any{{
+			"op":    "replace",
+			"pos":   formatTag(1, "alpha"),
+			"linez": []string{"beta"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := batchTestRunPayload(t, target, payload, false)
+	var result BatchEditError
+	batchTestMustUnmarshal(t, out, &result)
+	if result.OK || result.Error != "invalid" || !strings.Contains(result.Message, `unknown field "linez"`) {
+		t.Fatalf("result = %+v; want invalid unknown-field error", result)
+	}
+	if got := batchTestReadLines(t, target); len(got) != 1 || got[0] != "alpha" {
+		t.Fatalf("file changed to %#v; want unchanged", got)
+	}
+}
+
+func TestCmdBatchRejectsTrailingJSON(t *testing.T) {
+	dir := t.TempDir()
+	target := editTestWriteLinesFile(t, dir, "target.txt", "alpha")
+	payload := []byte(`{"edits":[{"op":"replace","pos":"` + formatTag(1, "alpha") + `","lines":["beta"]}]} {}`)
+
+	out := batchTestRunPayload(t, target, payload, false)
+	var result BatchEditError
+	batchTestMustUnmarshal(t, out, &result)
+	if result.OK || result.Error != "invalid" || !strings.Contains(result.Message, "exactly one JSON object") {
+		t.Fatalf("result = %+v; want trailing-JSON rejection", result)
+	}
+	if got := batchTestReadLines(t, target); len(got) != 1 || got[0] != "alpha" {
+		t.Fatalf("file changed to %#v; want unchanged", got)
+	}
+}
+
 func TestCmdBatch(t *testing.T) {
 	t.Run("replace range uses end_pos", func(t *testing.T) {
 		dir := t.TempDir()
@@ -113,6 +160,9 @@ func TestCmdBatch(t *testing.T) {
 		if !got.OK {
 			t.Fatalf("batch failed: %#v", got)
 		}
+		if !got.ContentChanged {
+			t.Fatal("changed batch reported contentChanged=false")
+		}
 		if got.FirstChangedLine != 2 {
 			t.Fatalf("firstChangedLine = %d, want 2", got.FirstChangedLine)
 		}
@@ -124,6 +174,38 @@ func TestCmdBatch(t *testing.T) {
 		}
 		if want := []string{"alpha", "delta", "delta"}; !equalLines(batchTestReadLines(t, target), want) {
 			t.Fatalf("target lines = %#v, want %#v", batchTestReadLines(t, target), want)
+		}
+	})
+
+	t.Run("same replacement is a no-op", func(t *testing.T) {
+		dir := t.TempDir()
+		target := editTestWriteLinesFile(t, dir, "target.txt", "alpha", "bravo")
+		fixedTime := time.Unix(1_600_000_000, 0)
+		if err := os.Chtimes(target, fixedTime, fixedTime); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		out := batchTestWriteReq(t, target, BatchEditOp{
+			OP: "replace", Pos: formatTag(2, "bravo"), Lines: []string{"bravo"},
+		})
+		var got BatchEditResult
+		batchTestMustUnmarshal(t, out, &got)
+		if !got.OK || got.ContentChanged || got.EditsApplied != 1 {
+			t.Fatalf("batch output = %#v; want successful one-operation no-op", got)
+		}
+		if got.UpdatedAnchors == nil {
+			t.Fatal("no-op batch result did not include updated anchors")
+		}
+		after, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !after.ModTime().Equal(before.ModTime()) {
+			t.Fatalf("no-op changed modification time: before %v, after %v", before.ModTime(), after.ModTime())
 		}
 	})
 

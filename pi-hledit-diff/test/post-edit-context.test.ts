@@ -19,7 +19,7 @@ test("formatBatchUpdatedAnchorContext formats CLI-provided anchors", () => {
 	assert.ok(context);
 
 	assert.deepEqual(formatBatchUpdatedAnchorContext(context), {
-		text: "Updated anchors:\n1#BH:one\n2#BB:TWO\nUse these anchors for another change, or call hledit_read_anchors. Do not reuse anchors read before this mutation.",
+		text: "更新后的锚点：\n1#BH:one\n2#BB:TWO\n后续修改请使用这些新锚点，或重新调用 hledit_read_anchors。不要继续使用本次修改前读取的锚点。",
 		offset: 1,
 		limit: 2,
 		truncated: false,
@@ -40,7 +40,7 @@ test("formatBatchUpdatedAnchorContext preserves CLI truncation guidance", () => 
 
 	const result = formatBatchUpdatedAnchorContext(context);
 	assert.equal(result.truncated, true);
-	assert.match(result.text, /offset:8 limit:25/);
+	assert.match(result.text, /offset:8、limit:25/);
 });
 
 test("formatBatchUpdatedAnchorContext formats an empty file", () => {
@@ -49,7 +49,7 @@ test("formatBatchUpdatedAnchorContext formats an empty file", () => {
 	});
 	assert.ok(context);
 
-	assert.match(formatBatchUpdatedAnchorContext(context).text, /\(file empty\)/);
+	assert.match(formatBatchUpdatedAnchorContext(context).text, /（文件为空）/);
 });
 
 test("parseBatchUpdatedAnchorContext enforces the full batch contract", () => {

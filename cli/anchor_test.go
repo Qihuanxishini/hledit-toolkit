@@ -42,51 +42,6 @@ func TestParseAnchor(t *testing.T) {
 	}
 }
 
-func TestValidateAnchor(t *testing.T) {
-	tests := []struct {
-		name    string
-		lines   []string
-		anchor  Anchor
-		wantErr string
-	}{
-		{
-			name:   "good anchor",
-			lines:  []string{"func main() {", "", "return"},
-			anchor: Anchor{Line: 1, Hash: computeLineHash(1, "func main() {")},
-		},
-		{
-			name:    "stale hash",
-			lines:   []string{"func main() {"},
-			anchor:  Anchor{Line: 1, Hash: computeLineHash(1, "different content")},
-			wantErr: "expected hash",
-		},
-		{
-			name:    "out of range",
-			lines:   []string{"func main() {"},
-			anchor:  Anchor{Line: 2, Hash: "WS"},
-			wantErr: "out of range",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateAnchor(tt.lines, tt.anchor)
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("validateAnchor(%v, %#v) unexpected error: %v", tt.lines, tt.anchor, err)
-				}
-				return
-			}
-			if err == nil {
-				t.Fatalf("validateAnchor(%v, %#v) = nil; want error containing %q", tt.lines, tt.anchor, tt.wantErr)
-			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("validateAnchor(%v, %#v) error = %q; want substring %q", tt.lines, tt.anchor, err.Error(), tt.wantErr)
-			}
-		})
-	}
-}
-
 func TestValidateAnchors(t *testing.T) {
 	t.Run("all good", func(t *testing.T) {
 		lines := []string{"alpha", "", "beta"}

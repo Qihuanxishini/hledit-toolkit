@@ -72,8 +72,8 @@ export function findSingleAnchorReplacementError(
 		const anchoredText = line === undefined ? undefined : sourceLines[line - 1];
 		if (anchoredText !== undefined && change.lines[0] === anchoredText) {
 			return (
-				`change ${index}: single-anchor replace repeats the anchored line and adds more lines. ` +
-				"Use end_anchor to replace the existing inclusive block, or use insert before/after to keep the anchored line."
+				`第 ${index + 1} 项修改使用单锚点 replace，但 lines 的首行重复了原锚点行，同时又追加了更多行。` +
+				"若要替换现有代码块，请提供包含首尾的 end_anchor；若要保留锚点行，请改用 insert 并明确 before 或 after。"
 			);
 		}
 	}

@@ -49,7 +49,7 @@ test("findSingleAnchorReplacementError blocks accidental block expansion", () =>
 		"one\ntwo\nthree\n",
 	);
 
-	assert.match(error ?? "", /single-anchor replace repeats the anchored line/);
+	assert.match(error ?? "", /单锚点 replace.*首行重复了原锚点行/);
 });
 
 test("findSingleAnchorReplacementError allows explicit ranges and genuine line rewrites", () => {

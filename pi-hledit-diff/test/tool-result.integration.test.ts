@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -76,12 +76,22 @@ test("read tool returns structured ranges and actionable EOF errors", async (t) 
 	assert.equal(readResult.details.disposition, "succeeded");
 	assert.deepEqual(readResult.details.read?.actual, { firstLine: 2, lastLine: 2, lineCount: 1, totalLines: 3 });
 	assert.equal(readResult.details.read?.nextOffset, 3);
-	assert.match(readResult.content[0]?.text ?? "", /showing lines 2-2 of 3; use offset 3 to continue/);
+	assert.match(readResult.content[0]?.text ?? "", /已显示第 2-2 行（文件共 3 行）；继续读取请使用 offset 3/);
+
+	const grepContextResult = await readTool.execute(
+		"read",
+		{ path: "target.txt", grep: "two", context: 1 } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(grepContextResult.details.disposition, "succeeded");
+	assert.deepEqual(grepContextResult.details.read?.lines.map((line) => line.text), ["one", "two", "three"]);
 
 	const rangeError = await readTool.execute("read", { path: "target.txt", offset: 4, limit: 1 } as never, undefined, undefined, context);
 	assert.equal(rangeError.details.disposition, "rejected");
-	assert.equal(rangeError.details.error?.message, "offset 4 exceeds file length 3");
-	assert.equal(rangeError.content[0]?.text.split("\n", 1)[0], "offset 4 exceeds file length 3");
+	assert.equal(rangeError.details.error?.message, "起始行 4 超出文件范围（文件共 3 行）。");
+	assert.equal(rangeError.content[0]?.text.split("\n", 1)[0], "起始行 4 超出文件范围（文件共 3 行）。");
 });
 
 test("read tool accepts a grep result that exactly fills the byte budget at EOF", async (t) => {
@@ -134,9 +144,42 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 	);
 
 	assert.equal(applyResult.details.disposition, "succeeded");
-	assert.match(applyResult.content[0]?.text ?? "", /Updated anchors:/);
+	assert.match(applyResult.content[0]?.text ?? "", /更新后的锚点：/);
 	assert.match(applyResult.content[0]?.text ?? "", /TWO/);
 	assert.equal(await readFile(join(directory, "target.txt"), "utf8"), "one\nTWO\nthree\n");
+});
+
+test("apply tool reports a no-op without touching the target", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-noop-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "one\ntwo\nthree\n", "utf8");
+	const fixedTime = new Date("2020-09-13T12:26:40.000Z");
+	await utimes(target, fixedTime, fixedTime);
+	const before = await stat(target);
+	const context = { cwd: directory };
+
+	const readResult = await readTool.execute("read", { path: "target.txt", offset: 2, limit: 1 } as never, undefined, undefined, context);
+	const anchor = readResult.details.read?.lines[0]?.anchor;
+	assert.ok(anchor);
+	const applyResult = await applyTool.execute(
+		"apply",
+		{ path: "target.txt", changes: [{ operation: "replace", anchor, lines: ["two"] }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+
+	const after = await stat(target);
+	assert.equal(applyResult.details.disposition, "succeeded");
+	assert.equal(applyResult.details.contentChanged, false);
+	assert.match(applyResult.content[0]?.text ?? "", /无需修改/);
+	assert.equal(after.mtimeMs, before.mtimeMs);
 });
 
 test("apply tool accepts byte-truncated updated anchor contexts", async (t) => {
@@ -164,7 +207,7 @@ test("apply tool accepts byte-truncated updated anchor contexts", async (t) => {
 	);
 
 	assert.equal(applyResult.details.disposition, "succeeded");
-	assert.match(applyResult.content[0]?.text ?? "", /Updated anchors were truncated/);
+	assert.match(applyResult.content[0]?.text ?? "", /锚点上下文已截断/);
 	assert.equal((await readFile(target, "utf8")).split(/\r?\n/)[4], "CHANGED");
 });
 
@@ -192,7 +235,7 @@ test("apply tool deleting the only line leaves an empty file", async (t) => {
 	);
 
 	assert.equal(applyResult.details.disposition, "succeeded");
-	assert.match(applyResult.content[0]?.text ?? "", /\(file empty\)/);
+	assert.match(applyResult.content[0]?.text ?? "", /（文件为空）/);
 	assert.equal(await readFile(target, "utf8"), "");
 });
 
@@ -220,6 +263,6 @@ test("apply tool rejects accidental single-anchor block expansion without writin
 	);
 
 	assert.equal(applyResult.details.disposition, "rejected");
-	assert.match(applyResult.content[0]?.text ?? "", /Atomic batch rejected; zero changes were applied/);
+	assert.match(applyResult.content[0]?.text ?? "", /原子批次已拒绝，未写入任何内容/);
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
 });

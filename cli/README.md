@@ -225,14 +225,15 @@ Read emits `LN#HH:TEXT`; anchors emits `ANCHOR<TAB>TEXT`.
 Write commands emit JSON:
 
 ```json
-{"ok":true,"firstChangedLine":6,"lastChangedLine":6}
+{"ok":true,"contentChanged":true,"firstChangedLine":6,"lastChangedLine":6}
 ```
 
-Batch adds `editsApplied`. A successful write also returns a bounded `updatedAnchors` window; `--check` instead adds `checked:true` and does not write.
+Batch adds `editsApplied`. A successful write also returns a bounded `updatedAnchors` window; `--check` instead adds `checked:true` and does not write. If validated replacement content is already present, `contentChanged:false` is returned and the target is not touched.
 
 ```json
 {
   "ok": true,
+  "contentChanged": true,
   "firstChangedLine": 2,
   "lastChangedLine": 4,
   "editsApplied": 2,
@@ -268,18 +269,24 @@ Anchors are `LN#HH`:
 
 ## Behavior notes
 
-- Writes are atomic: temp file + rename.
+- Writes resolve symlink targets, use unique temporary siblings, preserve existing permission bits, and atomically replace the real target.
 - All anchors in a write are validated before writing.
+- Input must be valid UTF-8; an existing UTF-8 BOM is hidden from line text and preserved across writes.
+- Batch JSON rejects unknown fields and trailing values so misspelled protocol fields cannot silently change edit semantics.
+- Files with multiple hard links are rejected rather than silently breaking link identity or weakening atomicity.
+- Validated no-op replacements return `contentChanged:false` without touching the filesystem.
 - Batch insert supports `"after": true`; insert and replace/delete operations may not target the same anchor or range.
-- Logical failures (`stale`, `invalid`, `binary`, `range`, `io`) are reported as JSON on stdout.
+- Logical failures (`stale`, `invalid`, `binary`, `encoding`, `range`, `io`) are reported as JSON on stdout.
 - CLI misuse exits `2`; unrecoverable infrastructure failures exit `1`; normal logical outcomes exit `0`.
 
 ## Failure modes
 
 - stale anchor -> re-read and retry
 - binary file -> stop and use a text file
+- invalid UTF-8 -> convert the file explicitly before editing; hledit will not rewrite undecodable bytes
 - invalid anchor or CLI misuse -> fix args
 - I/O error -> check path and permissions
+- hard-link rejection -> choose a regular single-link target; hledit will not pick between atomicity and shared-inode updates
 - text `read` output may append a truncation sentinel; use `--json` for machine parsing
 
 ## When not to use it

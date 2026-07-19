@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 )
@@ -34,6 +36,7 @@ type EditResult struct {
 	LastChangedLine  int      `json:"lastChangedLine,omitempty"`
 	LinesAdded       int      `json:"linesAdded"`
 	LinesDeleted     int      `json:"linesDeleted"`
+	ContentChanged   bool     `json:"contentChanged"`
 	Warnings         []string `json:"warnings,omitempty"`
 }
 
@@ -82,6 +85,8 @@ type BatchEditResult struct {
 	LinesAdded       int                   `json:"linesAdded"`
 	LinesDeleted     int                   `json:"linesDeleted"`
 	EditsApplied     int                   `json:"editsApplied"`
+	ContentChanged   bool                  `json:"contentChanged"`
+	Warnings         []string              `json:"warnings,omitempty"`
 	Checked          bool                  `json:"checked,omitempty"`
 	UpdatedAnchors   *UpdatedAnchorContext `json:"updatedAnchors,omitempty"`
 }
@@ -138,15 +143,27 @@ type ReadResult struct {
 // Batch edit types
 // ────────────────────────────────────────────────────────────────────────────
 
-// parseBatchRequest unmarshals a BatchEditRequest from stdin.
+// parseBatchRequest 只接受一个字段闭合的 JSON 对象，避免拼写错误被静默忽略后改变编辑语义。
 func parseBatchRequest() (BatchEditRequest, error) {
 	var req BatchEditRequest
 	data, err := readStdin()
 	if err != nil {
 		return req, err
 	}
-	err = json.Unmarshal(data, &req)
-	return req, err
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		return req, err
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return req, errors.New("batch request must contain exactly one JSON object")
+		}
+		return req, err
+	}
+	return req, nil
 }
 
 func readStdin() ([]byte, error) {

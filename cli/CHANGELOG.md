@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.4.0] — 2026-07-19
+
+### Added
+
+- Reject invalid UTF-8 input before reading or editing, and preserve an existing UTF-8 BOM across writes.
+- Reject unknown fields and trailing JSON values in batch requests instead of silently accepting misspelled protocol fields.
+
+### Changed
+
+- Remove unused validation and pass-through helpers so anchor validation and JSON emission each have one production path.
+
+## [1.3.0] — 2026-07-19
+
+### Added
+
+- Report `contentChanged` for successful edits and skip filesystem writes when validated replacement content is unchanged.
+- Return model-visible warnings when content was replaced but parent-directory durability synchronization failed.
+
+### Changed
+
+- Resolve symlink targets before atomic replacement so edits preserve the symlink itself.
+- Use unique temporary siblings, preserve existing permission bits, and synchronize replacement metadata.
+- Reject files with multiple hard links rather than silently breaking link identity or weakening atomicity.
+
 ## [1.2.6] — 2026-07-18
 
 ### Added

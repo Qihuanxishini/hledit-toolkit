@@ -28,8 +28,8 @@ function render(component: { render(width: number): string[] }, width = 120): st
 }
 
 test("renderHleditCall includes read range and grep", () => {
-	assert.deepEqual(render(renderHleditCall("read_anchors", { path: "src/a.ts", offset: 3, limit: 5, grep: "token" }, theme)), [
-		'read anchors src/a.ts:3-7 contains "token"',
+	assert.deepEqual(render(renderHleditCall("read_anchors", { path: "src/a.ts", offset: 3, limit: 5, grep: "token", context: 2 }, theme)), [
+		'查找锚点 src/a.ts 包含 "token"（上下文 ±2 行；从第 3 行开始；最多 5 行）',
 	]);
 });
 
@@ -48,7 +48,7 @@ test("renderHleditCall hyperlinks paths when the terminal supports them", () => 
 test("renderHleditCall includes changed range and operation count", () => {
 	assert.deepEqual(
 		render(renderHleditCall("apply_file_changes", { path: "src/a.ts", changes: [{ anchor: "4#AA", end_anchor: "6#BB" }] }, theme)),
-		["apply changes src/a.ts:4-6 (1 operation)"],
+		["应用修改 src/a.ts:4-6（1 项操作）"],
 	);
 });
 
@@ -76,9 +76,9 @@ test("renderReadAnchorsResult shows actual range, total lines, and EOF", () => {
     };
     const output = render(renderReadAnchorsResult(result, options(), theme, { args: { path: "notes.txt" } }), 80);
 
-    assert.equal(output[0], "↳ 14 anchored lines • 1-14 of 14 • EOF");
+    assert.equal(output[0], "↳ 14 行锚点 • 第 1-14 行 / 共 14 行 • 已到文件末尾");
     assert.equal(output[2], " 1#AA │ line 1");
-    assert.ok(output.some((line) => line.includes("2 more anchored lines")));
+    assert.ok(output.some((line) => line.includes("还有 2 行锚点")));
     assert.ok(output.every((line) => visibleWidth(line) <= 80));
 });
 
@@ -105,28 +105,29 @@ test("renderReadAnchorsResult expands structured continuation details", () => {
     };
     const output = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "notes.txt" } }), 80);
 
-    assert.equal(output[0], "↳ 2 anchored lines • 8-9 of 20 • next 10");
+    assert.equal(output[0], "↳ 2 行锚点 • 第 8-9 行 / 共 20 行 • 下一页从第 10 行开始");
     assert.ok(output.includes("8#AA │ first"));
-    assert.ok(output.some((line) => line.includes("continue with offset 10")));
+    assert.ok(output.some((line) => line.includes("继续读取请使用 offset 10")));
 });
 
 test("renderReadAnchorsResult folds structured errors to the actionable message", () => {
     const result: TextResult = {
-        content: [{ type: "text", text: "offset 600 exceeds file length 599\nHint: Use an offset between 1 and 599.\nError: range" }],
+        content: [{ type: "text", text: "起始行 600 超出文件范围（文件共 599 行）。\n建议：请将 offset 设为 1 到 599 之间的整数。\n错误代码：range" }],
         details: {
             disposition: "rejected",
             error: {
                 code: "range",
-                message: "offset 600 exceeds file length 599",
-                hint: "Use an offset between 1 and 599.",
+                message: "起始行 600 超出文件范围（文件共 599 行）。",
+				rawMessage: "offset 600 exceeds file length 599",
+                hint: "请将 offset 设为 1 到 599 之间的整数。",
                 requestedOffset: 600,
                 totalLines: 599,
             },
         },
     };
 
-    assert.deepEqual(render(renderReadAnchorsResult(result, options(), theme, { isError: true })), ["× offset 600 exceeds file length 599"]);
-    assert.ok(render(renderReadAnchorsResult(result, options(true), theme, { isError: true })).some((line) => line.includes("Use an offset between 1 and 599")));
+    assert.deepEqual(render(renderReadAnchorsResult(result, options(), theme, { isError: true })), ["× 起始行 600 超出文件范围（文件共 599 行）。"]);
+    assert.ok(render(renderReadAnchorsResult(result, options(true), theme, { isError: true })).some((line) => line.includes("请将 offset 设为 1 到 599")));
 });
 
 test("renderReadAnchorsResult caches its final width and invalidates highlighted output", () => {
@@ -171,7 +172,7 @@ test("renderFileChangesResult renders an adaptive unified diff", () => {
 	};
 	const output = render(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }), 72);
 
-	assert.equal(output[0], "↳ diff +2 -1 • 1 hunk • unified");
+	assert.equal(output[0], "↳ 差异 +2 -1 • 1 个变更块 • 统一");
 	assert.ok(output.some((line) => line.includes("▌") && line.includes("beta")));
 	assert.ok(output.some((line) => line.includes("▌") && line.includes("BETA")));
 	assert.ok(output.every((line) => visibleWidth(line) <= 72));
@@ -184,8 +185,8 @@ test("renderFileChangesResult switches to split layout on wide terminals", () =>
 	};
 	const output = render(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }), 120);
 
-	assert.equal(output[0], "↳ diff +1 -1 • 1 hunk • split");
-	assert.ok(output.some((line) => line.includes("old") && line.includes("new")));
+	assert.equal(output[0], "↳ 差异 +1 -1 • 1 个变更块 • 双栏");
+	assert.ok(output.some((line) => line.includes("修改前") && line.includes("修改后")));
 	assert.ok(output.some((line) => line.includes("beta") && line.includes("BETA")));
 	assert.ok(output.every((line) => visibleWidth(line) <= 120));
 });
@@ -197,8 +198,8 @@ test("renderFileChangesResult reflows the same component when width crosses the 
 	};
 	const component = renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } });
 
-	assert.equal(render(component, 120)[0], "↳ diff +1 -1 • 1 hunk • split");
-	assert.equal(render(component, 119)[0], "↳ diff +1 -1 • 1 hunk • unified");
+	assert.equal(render(component, 120)[0], "↳ 差异 +1 -1 • 1 个变更块 • 双栏");
+	assert.equal(render(component, 119)[0], "↳ 差异 +1 -1 • 1 个变更块 • 统一");
 });
 
 test("standalone diff caches an unchanged width and invalidates theme-dependent output", () => {
@@ -221,8 +222,8 @@ test("default Pi tool box preserves responsive reflow", () => {
 	const box = new Box(1, 1);
 	box.addChild(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }));
 
-	assert.ok(box.render(122).some((line) => line.includes("• split")));
-	assert.ok(box.render(121).some((line) => line.includes("• unified")));
+	assert.ok(box.render(122).some((line) => line.includes("• 双栏")));
+	assert.ok(box.render(121).some((line) => line.includes("• 统一")));
 });
 
 test("renderFileChangesResult gives added and removed code rows distinct tinted backgrounds", () => {
@@ -243,14 +244,14 @@ test("renderFileChangesResult gives added and removed code rows distinct tinted 
 
 test("renderFileChangesResult caches expanded anchors without mutating the diff result", () => {
 	const result: TextResult = {
-		content: [{ type: "text", text: "Changes applied.\n\nUpdated anchors:\n2#ZZ:BETA" }],
+		content: [{ type: "text", text: "修改已应用。\n\n更新后的锚点：\n2#ZZ:BETA" }],
 		details: { disposition: "succeeded", diff: "-2 beta\n+2 BETA", editsApplied: 1 },
 	};
 	const component = renderFileChangesResult(result, options(true), theme, { args: { path: "notes.txt" } });
 	const first = component.render(72);
 
 	assert.strictEqual(component.render(72), first);
-	assert.equal(first.filter((line) => line.includes("updated anchors")).length, 1);
+	assert.equal(first.filter((line) => line.includes("更新后的锚点")).length, 1);
 	assert.ok(first.includes("2#ZZ │ BETA"));
 	assert.ok(first.every((line) => visibleWidth(line) <= 72));
 
@@ -262,12 +263,15 @@ test("renderFileChangesResult caches expanded anchors without mutating the diff 
 
 test("renderFileChangesResult folds failures unless expanded", () => {
 	const result: TextResult = {
-		content: [{ type: "text", text: "Changes were not applied.\nError: stale\nCurrent anchor hints:\n- 2#AA -> 2#BB" }],
-		details: { disposition: "rejected" },
+		content: [{ type: "text", text: "原子批次已拒绝，未写入任何内容。\n原因：目标文件存在 2 个 hardlink。为同时保证原子性和链接身份，本次写入已拒绝。\n错误代码：io" }],
+		details: {
+			disposition: "rejected",
+			error: { code: "io", message: "目标文件存在 2 个 hardlink。为同时保证原子性和链接身份，本次写入已拒绝。" },
+		},
 	};
 
-	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {})), ["× Changes were not applied. stale"]);
-	assert.ok(render(renderFileChangesResult(result, options(true), theme, {})).some((line) => line.includes("2#AA -> 2#BB")));
+	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {})), ["× 目标文件存在 2 个 hardlink。为同时保证原子性和链接身份，本次写入已拒绝。"]);
+	assert.ok(render(renderFileChangesResult(result, options(true), theme, {})).some((line) => line.includes("错误代码：io")));
 });
 
 test("renderFileChangesResult summarizes success without a diff", () => {
@@ -276,17 +280,38 @@ test("renderFileChangesResult summarizes success without a diff", () => {
 		details: { disposition: "succeeded", editsApplied: 2, firstChangedLine: 4, lastChangedLine: 5, linesAdded: 3, linesDeleted: 1 },
 	};
 
-	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {})), ["✓ 2 changes applied • lines 4-5 +3 -1"]);
+	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {})), ["✓ 已应用 2 项修改 • 第 4-5 行 +3 -1"]);
+});
+
+test("renderFileChangesResult identifies a no-op", () => {
+	const result: TextResult = {
+		content: [{ type: "text", text: "No changes were needed." }],
+		details: { disposition: "succeeded", editsApplied: 1, contentChanged: false, firstChangedLine: 4, lastChangedLine: 4, linesAdded: 1, linesDeleted: 1 },
+	};
+
+	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {})), ["✓ 无需修改 • 已检查 1 项操作"]);
 });
 
 test("renderFileChangesResult shows a diff warning without a diff", () => {
 	const result: TextResult = {
-		content: [{ type: "text", text: "Changes applied, but the diff is unavailable." }],
-		details: { disposition: "succeeded", editsApplied: 1, diffError: "unable to reread target.txt" },
+		content: [{ type: "text", text: "修改已应用，但无法生成差异。" }],
+		details: { disposition: "succeeded", editsApplied: 1, diffError: "修改已应用，但无法重新读取 target.txt 以生成差异。" },
 	};
 
 	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {})), [
-		"✓ 1 change applied",
-		"Diff warning: unable to reread target.txt",
+		"✓ 已应用 1 项修改",
+		"差异警告：修改已应用，但无法重新读取 target.txt 以生成差异。",
+	]);
+});
+
+test("renderFileChangesResult shows a durability warning", () => {
+	const result: TextResult = {
+		content: [{ type: "text", text: "Changes applied." }],
+		details: { disposition: "succeeded", editsApplied: 1, warnings: ["文件内容已成功替换，但目录元数据未能同步；断电等极端场景下，持久性保证可能降低。"] },
+	};
+
+	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {})), [
+		"✓ 已应用 1 项修改",
+		"写入警告：文件内容已成功替换，但目录元数据未能同步；断电等极端场景下，持久性保证可能降低。",
 	]);
 });

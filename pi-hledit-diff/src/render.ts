@@ -33,9 +33,9 @@ const COLLAPSED_ANCHOR_LINES = 12;
 
 function expandHint(): string {
     try {
-        return keyHint("app.tools.expand", "to expand");
+        return keyHint("app.tools.expand", "展开详情");
     } catch {
-        return "Ctrl+O to expand";
+        return "按 Ctrl+O 展开";
     }
 }
 
@@ -107,6 +107,16 @@ function parseAnchoredOutput(text: string): ParsedAnchoredOutput {
         }
     }
     return { lines, notices };
+}
+
+function localizeLegacyNotice(notice: string): string {
+    if (notice.includes("source text truncated") || notice.includes("line truncated")) return "历史工具结果中的源文件内容已截断。";
+    if (notice.includes("truncated")) return "历史工具结果已截断。";
+    const rangeContinuation = /showing lines (\d+)-(\d+) of (\d+); use offset (\d+) to continue/.exec(notice);
+    if (rangeContinuation) return `历史工具结果已显示第 ${rangeContinuation[1]}-${rangeContinuation[2]} 行（文件共 ${rangeContinuation[3]} 行）；继续读取请使用 offset ${rangeContinuation[4]}。`;
+    const rangeEOF = /showing lines (\d+)-(\d+) of (\d+); end of file/.exec(notice);
+    if (rangeEOF) return `历史工具结果已显示第 ${rangeEOF[1]}-${rangeEOF[2]} 行（文件共 ${rangeEOF[3]} 行），并已到文件末尾。`;
+    return "历史工具结果包含额外的分页提示；如需继续操作，请重新调用 hledit_read_anchors。";
 }
 
 type ReadRenderState = {
@@ -201,10 +211,11 @@ function createAnchoredSourceRowsComponent(
 
 function renderFailure(result: TextResult, expanded: boolean, theme: RenderTheme): RenderComponent {
     const rawLines = getText(result).split(/\r?\n/).filter(Boolean);
-    const first = rawLines[0] ?? "Tool failed.";
+    const first = rawLines[0] ?? "工具执行失败。";
     const structuredMessage = result.details.error?.message;
-    const errorLine = rawLines.find((line) => line.startsWith("Error:"));
-    const summary = structuredMessage ?? (errorLine ? `${first} ${errorLine.replace(/^Error:\s*/, "")}` : first);
+    const reasonLine = rawLines.find((line) => line.startsWith("原因：") || line.startsWith("Message:"));
+    const fallbackReason = reasonLine?.replace(/^(?:原因：|Message:\s*)/, "") ?? rawLines[1];
+    const summary = structuredMessage ?? (fallbackReason ? `${first} ${fallbackReason}` : first);
     return component((width) => {
         if (!expanded) return [truncateToWidth(theme.fg("error", `× ${summary}`), width, "")];
         return rawLines.map((line, index) => truncateToWidth(theme.fg(index === 0 ? "error" : "muted", index === 0 ? `× ${line}` : `  ${line}`), width, ""));
@@ -221,19 +232,26 @@ export function renderHleditCall(
     const path = typeof input.path === "string" ? normalizeToolPath(input.path) : undefined;
     const offset = typeof input.offset === "number" && input.offset > 0 ? input.offset : undefined;
     const limit = typeof input.limit === "number" && input.limit > 0 ? input.limit : undefined;
-    const range = kind === "read_anchors"
-        ? formatLineRange(offset ?? 1, (offset ?? 1) + (limit ?? MAX_READ_LIMIT) - 1)
-        : fileChangeLineRange(input.changes);
-    const operationCount = kind === "apply_file_changes" && Array.isArray(input.changes) ? input.changes.length : undefined;
     const grep = kind === "read_anchors" && typeof input.grep === "string" ? input.grep : undefined;
-    const title = theme.fg("toolTitle", theme.bold(kind === "read_anchors" ? "read anchors" : "apply changes"));
+    const range = kind === "read_anchors"
+		? grep ? undefined : formatLineRange(offset ?? 1, (offset ?? 1) + (limit ?? MAX_READ_LIMIT) - 1)
+		: fileChangeLineRange(input.changes);
+    const operationCount = kind === "apply_file_changes" && Array.isArray(input.changes) ? input.changes.length : undefined;
+    const grepContext = kind === "read_anchors" && typeof input.context === "number" && Number.isInteger(input.context) && input.context > 0 ? input.context : undefined;
+    const title = theme.fg("toolTitle", theme.bold(kind === "read_anchors" ? grep ? "查找锚点" : "读取锚点" : "应用修改"));
     const styledPath = path ? linkedToolPath(theme.fg("accent", path), path, context) : undefined;
     const target = styledPath ? styledPath + (range ? theme.fg("warning", `:${range}`) : "") : theme.fg("dim", "…");
-    const suffix = operationCount !== undefined
-        ? theme.fg("muted", ` (${operationCount} ${operationCount === 1 ? "operation" : "operations"})`)
-        : grep
-            ? theme.fg("muted", ` contains ${JSON.stringify(grep)}`)
-            : "";
+    let suffix = "";
+    if (operationCount !== undefined) {
+        suffix = theme.fg("muted", `（${operationCount} 项操作）`);
+    } else if (grep) {
+        const options = [
+            grepContext === undefined ? "" : `上下文 ±${grepContext} 行`,
+            offset === undefined || offset === 1 ? "" : `从第 ${offset} 行开始`,
+            limit === undefined ? "" : `最多 ${limit} 行`,
+        ].filter(Boolean);
+        suffix = theme.fg("muted", ` 包含 ${JSON.stringify(grep)}${options.length === 0 ? "" : `（${options.join("；")}）`}`);
+    }
     return component((width) => [truncateToWidth(`${title} ${target}${suffix}`, width, "")]);
 }
 
@@ -244,7 +262,7 @@ export function renderReadAnchorsResult(
     context: ToolRenderContextLike,
 ): RenderComponent {
     if (options.isPartial) {
-        return component((width) => [truncateToWidth(theme.fg("warning", "reading anchors…"), width, "")]);
+        return component((width) => [truncateToWidth(theme.fg("warning", "正在读取锚点…"), width, "")]);
     }
     if (result.details.disposition !== "succeeded" || context.isError) {
         return renderFailure(result, options.expanded, theme);
@@ -261,17 +279,17 @@ export function renderReadAnchorsResult(
         const lastLine = read.lines[read.lines.length - 1]?.lineNumber;
         const range = formatLineRange(firstLine, lastLine);
         const actualRange = read.totalLines !== undefined
-            ? range ? `${range} of ${read.totalLines}` : `0 of ${read.totalLines}`
-            : range;
+			? range ? `第 ${range} 行 / 共 ${read.totalLines} 行` : `0 行 / 共 ${read.totalLines} 行`
+			: range ? `第 ${range} 行` : undefined;
         const header = [
             theme.fg("toolOutput", read.lines.length === 0
-                ? "↳ no anchored lines"
-                : `↳ ${theme.bold(String(read.lines.length))} anchored ${read.lines.length === 1 ? "line" : "lines"}`),
+				? "↳ 未找到锚点"
+				: `↳ ${theme.bold(String(read.lines.length))} 行锚点`),
             actualRange ? theme.fg("muted", `• ${actualRange}`) : "",
-            read.nextOffset !== undefined ? theme.fg("warning", `• next ${read.nextOffset}`) : "",
-            read.textTruncated ? theme.fg("warning", "• line truncated") : "",
-            read.eof ? theme.fg("muted", "• EOF") : "",
-            read.legacyNotices.length > 0 ? theme.fg("warning", "• truncated") : "",
+            read.nextOffset !== undefined ? theme.fg("warning", `• 下一页从第 ${read.nextOffset} 行开始`) : "",
+            read.textTruncated ? theme.fg("warning", "• 行内容已截断") : "",
+            read.eof ? theme.fg("muted", "• 已到文件末尾") : "",
+            read.legacyNotices.some((notice) => notice.includes("truncated")) ? theme.fg("warning", "• 历史输出已截断") : "",
         ].filter(Boolean).join(" ");
         if (read.lines.length === 0 || width < 18) return [truncateToWidth(header, width, "")];
 
@@ -281,22 +299,27 @@ export function renderReadAnchorsResult(
             ...sourceRowsComponent.render(width),
         ];
         if (!options.expanded && read.lines.length > visible.length) {
-            output.push("", truncateToWidth(theme.fg("muted", `… ${read.lines.length - visible.length} more anchored lines • ${expandHint()}`), width, ""));
+            output.push("", truncateToWidth(theme.fg("muted", `… 还有 ${read.lines.length - visible.length} 行锚点 • ${expandHint()}`), width, ""));
         }
         if (read.nextOffset !== undefined) {
-            output.push(truncateToWidth(theme.fg("warning", `continue with offset ${read.nextOffset}`), width, ""));
+            output.push(truncateToWidth(theme.fg("warning", `继续读取请使用 offset ${read.nextOffset}`), width, ""));
         }
         if (read.textTruncated) {
-            output.push(truncateToWidth(theme.fg("warning", "source line text was truncated; line-offset continuation cannot recover the omitted text"), width, ""));
+            output.push(truncateToWidth(theme.fg("warning", "源文件行内容已截断；调整 offset 无法恢复该行被省略的文本"), width, ""));
         }
         for (const notice of read.legacyNotices) {
-            output.push(truncateToWidth(theme.fg("warning", notice), width, ""));
+            output.push(truncateToWidth(theme.fg("warning", localizeLegacyNotice(notice)), width, ""));
         }
         return output;
     }, () => sourceRowsComponent.invalidate());
 }
 
 function successfulChangeSummary(result: TextResult, theme: RenderTheme): string {
+    if (result.details.contentChanged === false) {
+        const edits = typeof result.details.editsApplied === "number" ? result.details.editsApplied : undefined;
+        const checked = edits === undefined ? "无需修改" : `无需修改 • 已检查 ${edits} 项操作`;
+        return `${theme.fg("success", "✓")} ${theme.fg("toolOutput", checked)}`;
+    }
     const edits = typeof result.details.editsApplied === "number" ? result.details.editsApplied : undefined;
     const first = typeof result.details.firstChangedLine === "number" ? result.details.firstChangedLine : undefined;
     const last = typeof result.details.lastChangedLine === "number" ? result.details.lastChangedLine : undefined;
@@ -304,10 +327,10 @@ function successfulChangeSummary(result: TextResult, theme: RenderTheme): string
     const deleted = typeof result.details.linesDeleted === "number" ? result.details.linesDeleted : undefined;
     const pieces = [
         theme.fg("success", "✓"),
-        theme.fg("toolOutput", edits === undefined ? "changes applied" : `${edits} ${edits === 1 ? "change" : "changes"} applied`),
+        theme.fg("toolOutput", edits === undefined ? "修改已应用" : `已应用 ${edits} 项修改`),
     ];
     const range = formatLineRange(first, last);
-    if (range) pieces.push(theme.fg("muted", `• lines ${range}`));
+    if (range) pieces.push(theme.fg("muted", `• 第 ${range} 行`));
     if (added !== undefined || deleted !== undefined) {
         pieces.push(theme.fg("toolDiffAdded", `+${added ?? 0}`), theme.fg("toolDiffRemoved", `-${deleted ?? 0}`));
     }
@@ -321,7 +344,7 @@ export function renderFileChangesResult(
     context: ToolRenderContextLike,
 ): RenderComponent {
     if (options.isPartial) {
-        return component((width) => [truncateToWidth(theme.fg("warning", "applying anchored changes…"), width, "")]);
+        return component((width) => [truncateToWidth(theme.fg("warning", "正在应用锚点修改…"), width, "")]);
     }
     if (result.details.disposition !== "succeeded" || context.isError) {
         return renderFailure(result, options.expanded, theme);
@@ -330,20 +353,24 @@ export function renderFileChangesResult(
     const path = pathFromContext(context);
     const diffWarning = typeof result.details.diffError === "string" ? result.details.diffError : undefined;
     const diff = typeof result.details.diff === "string" ? result.details.diff : "";
+    const writeWarnings = Array.isArray(result.details.warnings)
+        ? result.details.warnings.filter((warning): warning is string => typeof warning === "string")
+        : [];
     const diffComponent = renderStandaloneDiff(diff, path, options.expanded, theme);
     if (!diffComponent) {
         const summary = successfulChangeSummary(result, theme);
         return component((width) => {
             if (width === 0) return [];
             const lines = [truncateToWidth(summary, width, "")];
-            if (diffWarning) lines.push(truncateToWidth(theme.fg("warning", `Diff warning: ${diffWarning}`), width, ""));
+            if (diffWarning) lines.push(truncateToWidth(theme.fg("warning", `差异警告：${diffWarning}`), width, ""));
+            for (const warning of writeWarnings) lines.push(truncateToWidth(theme.fg("warning", `写入警告：${warning}`), width, ""));
             return lines;
         });
     }
 
     const updatedAnchors = options.expanded ? parseAnchoredOutput(getText(result)).lines : [];
     const updatedAnchorRows = createAnchoredSourceRowsComponent(updatedAnchors, path, theme);
-    if (updatedAnchors.length === 0 && !diffWarning) return diffComponent;
+    if (updatedAnchors.length === 0 && !diffWarning && writeWarnings.length === 0) return diffComponent;
 
     return component((width) => {
         if (width === 0) return [];
@@ -351,28 +378,19 @@ export function renderFileChangesResult(
         if (updatedAnchors.length > 0) {
             lines.push(
                 "",
-                truncateToWidth(theme.fg("muted", theme.bold("updated anchors")), width, ""),
+                truncateToWidth(theme.fg("muted", theme.bold("更新后的锚点")), width, ""),
                 ...updatedAnchorRows.render(width),
             );
         }
         if (diffWarning) {
-            lines.push(truncateToWidth(theme.fg("warning", `Diff warning: ${diffWarning}`), width, ""));
+            lines.push(truncateToWidth(theme.fg("warning", `差异警告：${diffWarning}`), width, ""));
+        }
+        for (const warning of writeWarnings) {
+            lines.push(truncateToWidth(theme.fg("warning", `写入警告：${warning}`), width, ""));
         }
         return lines;
     }, () => {
         diffComponent.invalidate();
         updatedAnchorRows.invalidate();
     });
-}
-
-export function renderFallbackResult(
-    kind: HleditToolKind,
-    result: TextResult,
-    theme: RenderTheme,
-    context: ToolRenderContextLike,
-): RenderComponent {
-    const options = { expanded: false, isPartial: false } as ToolRenderResultOptions;
-    return kind === "read_anchors"
-        ? renderReadAnchorsResult(result, options, theme, context)
-        : renderFileChangesResult(result, options, theme, context);
 }

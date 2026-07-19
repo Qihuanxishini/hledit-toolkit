@@ -5,9 +5,9 @@ import { Value } from "typebox/value";
 import { prepareFileChangeArguments, prepareReadAnchorsArguments } from "../src/prepare-arguments.ts";
 import { HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, HLEDIT_READ_ANCHORS_PARAMS_SCHEMA } from "../src/schema.ts";
 
-test("prepareReadAnchorsArguments converts quoted positive integers", () => {
-	const prepared = prepareReadAnchorsArguments({ path: "src/a.ts", offset: "3", limit: "20" });
-	assert.deepEqual(prepared, { path: "src/a.ts", offset: 3, limit: 20 });
+test("prepareReadAnchorsArguments converts quoted read integers", () => {
+	const prepared = prepareReadAnchorsArguments({ path: "src/a.ts", offset: "3", limit: "20", context: "0" });
+	assert.deepEqual(prepared, { path: "src/a.ts", offset: 3, limit: 20, context: 0 });
 	assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, prepared), true);
 });
 

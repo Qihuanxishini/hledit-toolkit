@@ -6,7 +6,7 @@
 hledit <verb> [flags] <file> [anchor] [end-anchor] <content-source>
 ```
 
-- Logical outcomes (success, stale anchors, invalid anchors/content, binary/range/io errors) exit 0 and are reported on stdout.
+- Logical outcomes (success, stale anchors, invalid anchors/content, binary/encoding/range/io errors) exit 0 and are reported on stdout.
 - CLI misuse exits 2 with usage on stderr; unrecoverable infrastructure failures exit 1.
 
 ### 1.1 `capabilities`
@@ -18,7 +18,7 @@ hledit capabilities
 Outputs one JSON object describing behavior that integrations may require:
 
 ```json
-{ "ok": true, "version": "1.2.6", "readRangeMetadata": true, "batchInsertAfter": true, "batchUpdatedAnchors": true }
+{ "ok": true, "version": "1.4.0", "readRangeMetadata": true, "batchInsertAfter": true, "batchUpdatedAnchors": true }
 ```
 
 The bundled Pi extension requires `readRangeMetadata:true`, `batchInsertAfter:true`, and `batchUpdatedAnchors:true`; a successful `help` command alone is not a compatibility guarantee.
@@ -56,6 +56,14 @@ Reads the entire file. Each line is emitted as:
 ```json
 { "ok": false, "error": "binary", "message": "file appears to be binary" }
 ```
+
+**Text encoding:** Non-binary input must be valid UTF-8. Invalid UTF-8 emits:
+
+```json
+{ "ok": false, "error": "encoding", "message": "file is not valid UTF-8" }
+```
+
+An existing UTF-8 BOM is excluded from line text and hashes, then restored on write.
 
 ### 2.2 `read-range`
 
@@ -169,6 +177,7 @@ Reads a JSON `BatchEditRequest` from stdin:
 Validation:
 
 - All anchors are validated against the original file state before any write.
+- The JSON decoder rejects unknown fields and any additional top-level JSON value; protocol typos never degrade into a different edit.
 - `replace` and `delete` use optional `end_pos` as an inclusive range end; if omitted, they target only `pos`.
 - `replace` and `delete` require `pos.Line <= end_pos.Line` when `end_pos` is provided.
 - `insert` requires non-empty `lines`, rejects `end_pos`, and inserts before `pos` unless `after:true` is set.
@@ -211,11 +220,17 @@ Every write invocation validates all anchors and content before writing. If any 
 
 Single-edit verbs apply one operation. `batch` sorts non-overlapping edits by original-file boundary and rebuilds the output once with a forward cursor. This preserves all original anchor references without repeatedly copying the file.
 
-### 4.3 Atomic writes
+### 4.3 No-op detection
 
-1. Write new content to `<file>.hledit.tmp`.
-2. `os.Rename` the temp file over the original.
-3. If the process dies mid-write, the original file is intact (rename is atomic on POSIX).
+After rebuilding a validated edit, compare its logical lines with the loaded lines. If they are identical, return `contentChanged:false` and do not create, sync, rename, or otherwise touch a filesystem entry. Operation counts and attempted line metadata remain available for diagnostics.
+
+### 4.4 Atomic writes
+
+1. Resolve an existing symlink to its real target so replacement preserves the symlink entry.
+2. Reject non-regular targets and files with more than one hard link. Preserving hard-link identity would require a non-atomic in-place write.
+3. Create a unique temporary sibling, preserve existing permission bits, write all content, sync, and close it.
+4. Replace the real target with the temporary sibling. POSIX implementations rename then sync the parent directory; Windows uses `MoveFileExW` with replace-existing and write-through flags.
+5. Remove any temporary sibling left by a pre-commit failure. A post-rename parent-sync failure is returned as a successful write with a durability warning, never as a zero-change rejection.
 
 ## 5. Stale Detection & Error Response
 
@@ -239,17 +254,18 @@ When any anchor's hash doesn't match the current file content:
 
 ## 6. Success Response
 
-Single writes may include `lastChangedLine`:
+Single writes include `contentChanged`; successful writes may also include `lastChangedLine` and `warnings`:
 
 ```json
-{ "ok": true, "firstChangedLine": 5, "lastChangedLine": 5 }
+{ "ok": true, "contentChanged": true, "firstChangedLine": 5, "lastChangedLine": 5 }
 ```
 
-Batch writes include `firstChangedLine`, `lastChangedLine`, `editsApplied`, and a bounded `updatedAnchors` object. `--check` adds `checked:true`, does not write, and omits `updatedAnchors`.
+Batch writes include `contentChanged`, `firstChangedLine`, `lastChangedLine`, `editsApplied`, and a bounded `updatedAnchors` object. `--check` adds `checked:true`, does not write, and omits `updatedAnchors`. A no-op batch still returns fresh `updatedAnchors`, but sets `contentChanged:false` and does not touch the target file.
 
 ```json
 {
   "ok": true,
+  "contentChanged": true,
   "firstChangedLine": 5,
   "lastChangedLine": 5,
   "editsApplied": 1,

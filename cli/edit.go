@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -50,6 +51,10 @@ func loadEditableFile(path string) (LoadedTextFile, error) {
 		emitError("binary", "file appears to be binary")
 		return LoadedTextFile{}, err
 	}
+	if errors.Is(err, errInvalidUTF8) {
+		emitError("encoding", "file is not valid UTF-8")
+		return LoadedTextFile{}, err
+	}
 	emitError("io", targetFileErrorMessage(path, err))
 	return LoadedTextFile{}, err
 }
@@ -59,20 +64,24 @@ func emitJSON(v any) error {
 	enc.SetEscapeHTML(false)
 	return enc.Encode(v)
 }
-func emitJSONError(e EditError) error {
-	return emitJSON(e)
-}
 
-func emitResult(firstChanged, lastChanged, linesAdded, linesDeleted int) error {
-	return emitJSON(EditResult{OK: true, FirstChangedLine: firstChanged, LastChangedLine: lastChanged, LinesAdded: linesAdded, LinesDeleted: linesDeleted})
+func emitResult(firstChanged, lastChanged, linesAdded, linesDeleted int, contentChanged bool, warning string) error {
+	result := EditResult{
+		OK: true, FirstChangedLine: firstChanged, LastChangedLine: lastChanged,
+		LinesAdded: linesAdded, LinesDeleted: linesDeleted, ContentChanged: contentChanged,
+	}
+	if warning != "" {
+		result.Warnings = []string{warning}
+	}
+	return emitJSON(result)
 }
 
 func emitStaleError(remaps []Remap, msg string) error {
-	return emitJSONError(EditError{OK: false, Error: "stale", Remaps: remaps, Message: msg})
+	return emitJSON(EditError{OK: false, Error: "stale", Remaps: remaps, Message: msg})
 }
 
 func emitInvalidError(msg string) error {
-	return emitJSONError(EditError{OK: false, Error: "invalid", Message: msg})
+	return emitJSON(EditError{OK: false, Error: "invalid", Message: msg})
 }
 
 // editOp applies a validated edit operation to the file.
@@ -117,13 +126,19 @@ func editOp(
 		return nil
 	}
 
-	joined := file.JoinLines(result)
-	if werr := atomicWrite(path, []byte(joined)); werr != nil {
-		emitError("io", werr.Error())
-		return nil
+	contentChanged := !slices.Equal(lines, result)
+	writeWarning := ""
+	if contentChanged {
+		joined := file.JoinLines(result)
+		var werr error
+		writeWarning, werr = atomicWrite(path, []byte(joined))
+		if werr != nil {
+			emitError("io", werr.Error())
+			return nil
+		}
 	}
 
-	emitResult(firstChanged, lastChanged, linesAdded, linesDeleted)
+	emitResult(firstChanged, lastChanged, linesAdded, linesDeleted, contentChanged, writeWarning)
 	return nil
 }
 
@@ -216,13 +231,12 @@ func cmdBatch(path string, checkOnly bool) error {
 
 	// Parse all anchors first, before any edits are applied.
 	type parsedEdit struct {
-		op      string
-		pos     Anchor
-		endPos  *Anchor
-		after   bool
-		lines   []string
-		lineNum int // original line number for this edit
-		index   int
+		op     string
+		pos    Anchor
+		endPos *Anchor
+		after  bool
+		lines  []string
+		index  int
 	}
 
 	parsed := make([]parsedEdit, len(req.Edits))
@@ -246,11 +260,7 @@ func cmdBatch(path string, checkOnly bool) error {
 			endPos = &ep
 		}
 
-		newLines, cerr := readContentLinesFromOps(e.Lines)
-		if cerr != nil {
-			emitBatchInvalidError(fmt.Sprintf("edit %d: %s", i, cerr.Error()), i)
-			return nil
-		}
+		newLines := e.Lines
 
 		switch e.OP {
 		case "replace", "delete":
@@ -317,13 +327,12 @@ func cmdBatch(path string, checkOnly bool) error {
 		}
 
 		parsed[i] = parsedEdit{
-			op:      e.OP,
-			pos:     pos,
-			endPos:  endPos,
-			after:   e.After,
-			lines:   newLines,
-			index:   i,
-			lineNum: pos.Line,
+			op:     e.OP,
+			pos:    pos,
+			endPos: endPos,
+			after:  e.After,
+			lines:  newLines,
+			index:  i,
 		}
 	}
 
@@ -388,7 +397,7 @@ func cmdBatch(path string, checkOnly bool) error {
 	linesDeleted := 0
 	summaryEdits := append([]parsedEdit(nil), parsed...)
 	sort.SliceStable(summaryEdits, func(i, j int) bool {
-		return summaryEdits[i].lineNum < summaryEdits[j].lineNum
+		return summaryEdits[i].pos.Line < summaryEdits[j].pos.Line
 	})
 	lineShift := 0
 	for _, e := range summaryEdits {
@@ -399,7 +408,7 @@ func cmdBatch(path string, checkOnly bool) error {
 				deleted = e.endPos.Line - e.pos.Line + 1
 			}
 		}
-		changeStart := e.lineNum + lineShift
+		changeStart := e.pos.Line + lineShift
 		changeEnd := changeStart
 		switch e.op {
 		case "insert":
@@ -425,18 +434,6 @@ func cmdBatch(path string, checkOnly bool) error {
 		lineShift += len(e.lines) - deleted
 	}
 
-	if checkOnly {
-		return emitJSON(BatchEditResult{
-			OK:               true,
-			FirstChangedLine: firstChanged,
-			LastChangedLine:  lastChanged,
-			LinesAdded:       linesAdded,
-			LinesDeleted:     linesDeleted,
-			EditsApplied:     len(parsed),
-			Checked:          true,
-		})
-	}
-
 	// 所有锚点都基于原文件且修改互不重叠，因此按原始边界一次重建即可，避免每个 edit 复制整份文件。
 	editBoundary := func(e parsedEdit) int {
 		if e.op == "insert" && e.after {
@@ -450,7 +447,7 @@ func cmdBatch(path string, checkOnly bool) error {
 		if iBoundary != jBoundary {
 			return iBoundary < jBoundary
 		}
-		return parsed[i].lineNum < parsed[j].lineNum
+		return parsed[i].pos.Line < parsed[j].pos.Line
 	})
 
 	finalLineCount := len(lines) + linesAdded - linesDeleted
@@ -481,21 +478,36 @@ func cmdBatch(path string, checkOnly bool) error {
 	}
 	lines = append(rebuilt, lines[cursor:]...)
 
-	joined := file.JoinLines(lines)
-	if werr := atomicWrite(path, []byte(joined)); werr != nil {
-		emitError("io", werr.Error())
-		return nil
-	}
-
-	return emitJSON(BatchEditResult{
+	contentChanged := !slices.Equal(file.Lines, lines)
+	result := BatchEditResult{
 		OK:               true,
 		FirstChangedLine: firstChanged,
 		LastChangedLine:  lastChanged,
 		LinesAdded:       linesAdded,
 		LinesDeleted:     linesDeleted,
 		EditsApplied:     len(parsed),
-		UpdatedAnchors:   buildUpdatedAnchorContext(lines, firstChanged, lastChanged, linesAdded),
-	})
+		ContentChanged:   contentChanged,
+	}
+	if checkOnly {
+		result.Checked = true
+		return emitJSON(result)
+	}
+
+	result.UpdatedAnchors = buildUpdatedAnchorContext(lines, firstChanged, lastChanged, linesAdded)
+	if !contentChanged {
+		return emitJSON(result)
+	}
+
+	joined := file.JoinLines(lines)
+	writeWarning, werr := atomicWrite(path, []byte(joined))
+	if werr != nil {
+		emitError("io", werr.Error())
+		return nil
+	}
+	if writeWarning != "" {
+		result.Warnings = []string{writeWarning}
+	}
+	return emitJSON(result)
 }
 
 func emitBatchError(msg string, remaps []Remap, failed int) error {
@@ -514,13 +526,4 @@ func emitBatchErrorType(errType, msg string, remaps []Remap, failed int) error {
 		Remaps:  remaps,
 		Failed:  failed,
 	})
-}
-
-// readContentLinesFromOps reads content from inline lines (used by batch).
-// Empty lines slice means delete.
-func readContentLinesFromOps(lines []string) ([]string, error) {
-	if len(lines) == 0 {
-		return []string{}, nil
-	}
-	return lines, nil
 }

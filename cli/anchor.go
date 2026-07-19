@@ -27,19 +27,6 @@ func parseAnchor(s string) (Anchor, error) {
 	return Anchor{Line: lineNum, Hash: matches[2]}, nil
 }
 
-// validateAnchor checks if the anchor matches the current content of the line.
-func validateAnchor(lines []string, a Anchor) error {
-	if a.Line < 1 || a.Line > len(lines) {
-		return fmt.Errorf("anchor line %d out of range (file has %d lines)", a.Line, len(lines))
-	}
-
-	actualHash := computeLineHash(a.Line, lines[a.Line-1])
-	if actualHash != a.Hash {
-		return fmt.Errorf("anchor %d#%s: expected hash %s, got %s", a.Line, a.Hash, a.Hash, actualHash)
-	}
-	return nil
-}
-
 // validateAnchors iterates through a set of anchors and returns remaps for any stale ones.
 // Out-of-range anchors are treated as stale with an empty Current tag.
 func validateAnchors(lines []string, anchors []Anchor) (remaps []Remap, firstBad int) {

@@ -5,6 +5,7 @@ export type ReadArgsParams = {
 	offset?: number;
 	limit?: number;
 	grep?: string;
+	context?: number;
 };
 
 export type NormalizedReadRequest = {
@@ -12,6 +13,7 @@ export type NormalizedReadRequest = {
 	offset: number;
 	limit: number;
 	grep?: string;
+	context?: number;
 };
 
 export function normalizeToolPath(path: string): string {
@@ -27,6 +29,10 @@ function toPositiveInteger(v: number | undefined): number | undefined {
 	return v !== undefined && Number.isInteger(v) && v > 0 ? v : undefined;
 }
 
+function toNonNegativeInteger(v: number | undefined): number | undefined {
+	return v !== undefined && Number.isInteger(v) && v >= 0 ? v : undefined;
+}
+
 function toReadLimit(v: number | undefined): number | undefined {
 	const limit = toPositiveInteger(v);
 	return limit === undefined ? undefined : Math.min(limit, MAX_READ_LIMIT);
@@ -34,11 +40,13 @@ function toReadLimit(v: number | undefined): number | undefined {
 
 export function normalizeReadRequest(params: ReadArgsParams): NormalizedReadRequest {
 	const grep = params.grep || undefined;
+	const context = toNonNegativeInteger(params.context);
 	return {
 		path: normalizeToolPath(params.path),
 		offset: toPositiveInteger(params.offset) ?? 1,
 		limit: toReadLimit(params.limit) ?? MAX_READ_LIMIT,
 		...(grep ? { grep } : {}),
+		...(context !== undefined ? { context } : {}),
 	};
 }
 
@@ -56,6 +64,9 @@ export function buildReadArgs(params: ReadArgsParams): string[] {
 
 	if (request.grep) {
 		args.push("--grep", request.grep);
+	}
+	if (request.context !== undefined) {
+		args.push("--context", String(request.context));
 	}
 
 	return args;

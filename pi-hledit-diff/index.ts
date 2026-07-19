@@ -130,7 +130,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool(({
 		name: HLEDIT_READ_ANCHORS_TOOL,
-		label: "读取锚点",
+		label: "Read Anchors",
 		description: "读取文本文件，并返回可用于后续 stale-safe 修改的 LN#HASH 锚点。",
 		promptSnippet: "修改文本文件前读取最新锚点",
 		promptGuidelines: [
@@ -159,7 +159,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool(({
 		name: HLEDIT_APPLY_FILE_CHANGES_TOOL,
-		label: "应用文件修改",
+		label: "Apply File Changes",
 		description: "对一个文本文件原子应用一组互不冲突的 stale-safe 修改。",
 		promptSnippet: "原子应用一个文件的锚点修改",
 		promptGuidelines: [

@@ -29,7 +29,7 @@ function render(component: { render(width: number): string[] }, width = 120): st
 
 test("renderHleditCall includes read range and grep", () => {
 	assert.deepEqual(render(renderHleditCall("read_anchors", { path: "src/a.ts", offset: 3, limit: 5, grep: "token", context: 2 }, theme)), [
-		'查找锚点 src/a.ts 包含 "token"（上下文 ±2 行；从第 3 行开始；最多 5 行）',
+		'read anchors src/a.ts 包含 "token"（上下文 ±2 行；从第 3 行开始；最多 5 行）',
 	]);
 });
 
@@ -48,7 +48,7 @@ test("renderHleditCall hyperlinks paths when the terminal supports them", () => 
 test("renderHleditCall includes changed range and operation count", () => {
 	assert.deepEqual(
 		render(renderHleditCall("apply_file_changes", { path: "src/a.ts", changes: [{ anchor: "4#AA", end_anchor: "6#BB" }] }, theme)),
-		["应用修改 src/a.ts:4-6（1 项操作）"],
+		["apply changes src/a.ts:4-6（1 项操作）"],
 	);
 });
 

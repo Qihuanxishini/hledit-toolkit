@@ -238,7 +238,7 @@ export function renderHleditCall(
 		: fileChangeLineRange(input.changes);
     const operationCount = kind === "apply_file_changes" && Array.isArray(input.changes) ? input.changes.length : undefined;
     const grepContext = kind === "read_anchors" && typeof input.context === "number" && Number.isInteger(input.context) && input.context > 0 ? input.context : undefined;
-    const title = theme.fg("toolTitle", theme.bold(kind === "read_anchors" ? grep ? "查找锚点" : "读取锚点" : "应用修改"));
+    const title = theme.fg("toolTitle", theme.bold(kind === "read_anchors" ? "read anchors" : "apply changes"));
     const styledPath = path ? linkedToolPath(theme.fg("accent", path), path, context) : undefined;
     const target = styledPath ? styledPath + (range ? theme.fg("warning", `:${range}`) : "") : theme.fg("dim", "…");
     let suffix = "";

@@ -52,6 +52,19 @@ test("renderHleditCall includes changed range and operation count", () => {
 	);
 });
 
+test("renderHleditCall preserves separate ranges for multiple operations", () => {
+	assert.deepEqual(
+		render(
+			renderHleditCall(
+				"apply_file_changes",
+				{ path: "src/a.ts", changes: [{ anchor: "482#AA" }, { anchor: "484#BB", end_anchor: "489#CC" }] },
+				theme,
+			),
+		),
+		["apply changes src/a.ts:482,484-489（2 项操作）"],
+	);
+});
+
 test("renderReadAnchorsResult shows actual range, total lines, and EOF", () => {
     const lines = Array.from({ length: 14 }, (_, index) => ({
         line: index + 1,
@@ -272,6 +285,25 @@ test("renderFileChangesResult folds failures unless expanded", () => {
 
 	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {})), ["× 目标文件存在 2 个 hardlink。为同时保证原子性和链接身份，本次写入已拒绝。"]);
 	assert.ok(render(renderFileChangesResult(result, options(true), theme, {})).some((line) => line.includes("错误代码：io")));
+});
+
+test("renderFileChangesResult folds single-anchor failures to the corrective action", () => {
+	const result: TextResult = {
+		content: [{ type: "text", text: "原子批次已拒绝，未写入任何内容。\n第 1 项修改被拒绝。\n禁止使用相同参数重试。" }],
+		details: {
+			disposition: "rejected",
+			error: {
+				code: "single_anchor_block_expansion",
+				message: "第 1 项单锚点 replace 缺少 end_anchor；请改为范围 replace 或 insert after，禁止原样重试。",
+				hint: "单锚点 replace 只消费一行。",
+			},
+		},
+	};
+
+	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {})), [
+		"× 第 1 项单锚点 replace 缺少 end_anchor；请改为范围 replace 或 insert after，禁止原样重试。",
+	]);
+	assert.ok(render(renderFileChangesResult(result, options(true), theme, {})).some((line) => line.includes("禁止使用相同参数重试")));
 });
 
 test("renderFileChangesResult summarizes success without a diff", () => {

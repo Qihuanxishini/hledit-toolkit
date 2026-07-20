@@ -156,7 +156,7 @@ hledit batch [--check] <file>
 `--grep` matches substrings. `--context N` adds N lines before/after each match. `--pretty` adds ANSI styling for human reading; `--json` stays machine-readable and unstyled.
 `<content-source>` is either `-` for stdin or a file path.
 
-`hledit capabilities` emits machine-readable JSON for integrations. This tree reports `readRangeMetadata:true`, `batchInsertAfter:true`, and `batchUpdatedAnchors:true`; structured-read and patched-batch clients should require all three fields.
+`hledit capabilities` emits machine-readable JSON for integrations. This tree reports `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, and `batchUpdatedAnchors:true`; structured-read and patched-batch clients should require all four fields.
 
 ## Examples
 

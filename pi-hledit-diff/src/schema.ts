@@ -18,13 +18,13 @@ const REPLACEMENT_LINES_SCHEMA = Type.Array(Type.String({ pattern: "^[^\\r\\n]*$
 const REPLACE_CHANGE_SCHEMA = Type.Object(
 	{
 		operation: StringEnum(["replace"] as const, {
-			description: "替换一个锚点行；提供 end_anchor 时替换含首尾的范围。多行 lines 不会自动消耗后续源文件行",
+			description: "替换一个锚点行；提供 end_anchor 时替换含首尾的范围。多行 lines 不会自动消耗后续源文件行；替换代码块必须显式提供 end_anchor",
 		}),
 		anchor: ANCHOR_SCHEMA,
 		end_anchor: Type.Optional(
 			Type.String({
 				pattern: ANCHOR_PATTERN,
-				description: "包含在替换范围内的结束锚点；需要替换后续现有行时必须提供",
+				description: "包含在替换范围内的结束锚点；替换后续现有行时必须与 anchor 放在同一项 replace 中",
 			}),
 		),
 		lines: REPLACEMENT_LINES_SCHEMA,

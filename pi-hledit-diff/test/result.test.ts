@@ -5,10 +5,12 @@ import { HLEDIT_INSTALL_HINT } from "../src/cli.ts";
 import {
     applyFileChangesResult,
     buildDiffDetails,
+    fileChangeCheckFailure,
     isFailedHleditResult,
     parseRunObject,
     readAnchorsResult,
-    toolFailureResult,
+    rejectedToolResult,
+    unavailableToolResult,
 } from "../src/result.ts";
 
 test("parseRunObject parses stdout JSON before stderr", () => {
@@ -197,6 +199,24 @@ test("applyFileChangesResult requires editsApplied and updatedAnchors", () => {
     assert.match(missingAnchors.content[0]?.text ?? "", /有效 updatedAnchors/);
 });
 
+test("fileChangeCheckFailure accepts only an explicit validate-only success", () => {
+	const valid = fileChangeCheckFailure({
+		stdout: '{"ok":true,"checked":true,"editsApplied":1,"contentChanged":true}',
+		stderr: "",
+		exitCode: 0,
+	});
+	const incompatible = fileChangeCheckFailure({
+		stdout: '{"ok":true,"editsApplied":1,"contentChanged":true}',
+		stderr: "",
+		exitCode: 0,
+	});
+
+	assert.equal(valid, undefined);
+	assert.equal(incompatible?.details.disposition, "unavailable");
+	assert.match(incompatible?.content[0]?.text ?? "", /不兼容的 --check 响应/);
+	assert.match(incompatible?.content[0]?.text ?? "", /hledit_read_anchors/);
+});
+
 test("applyFileChangesResult gives stale changes a mandatory reread instruction", () => {
     const result = applyFileChangesResult(
         { stdout: '{"ok":false,"error":"stale","message":"edit 0: anchor stale","failed":0,"remaps":[{"requested":"2#BH","current":"2#BB"}]}', stderr: "", exitCode: 0 },
@@ -256,11 +276,31 @@ test("readAnchorsResult identifies unavailable CLI runs", () => {
     assert.deepEqual(result.details, { disposition: "unavailable" });
 });
 
-test("toolFailureResult carries a framework-visible rejected disposition", () => {
-    const result = toolFailureResult("修改未执行：请求无效", "rejected");
+test("failure result constructors preserve disposition and structured errors", () => {
+    const rejected = rejectedToolResult("修改未执行：请求无效", {
+        code: "single_anchor_block_expansion",
+        message: "单锚点 replace 可能保留旧代码。",
+        changeNumber: 1,
+        operation: "replace",
+        anchor: "2#BH",
+        missingField: "end_anchor",
+        outputLineCount: 2,
+    });
 
-    assert.deepEqual(result.details, { disposition: "rejected" });
-    assert.equal(isFailedHleditResult(result.details), true);
+    assert.deepEqual(rejected.details, {
+        disposition: "rejected",
+        error: {
+            code: "single_anchor_block_expansion",
+            message: "单锚点 replace 可能保留旧代码。",
+            changeNumber: 1,
+            operation: "replace",
+            anchor: "2#BH",
+            missingField: "end_anchor",
+            outputLineCount: 2,
+        },
+    });
+    assert.equal(isFailedHleditResult(rejected.details), true);
+    assert.deepEqual(unavailableToolResult("CLI 不可用").details, { disposition: "unavailable" });
 });
 
 test("buildDiffDetails prefers CLI firstChangedLine over generated diff", () => {

@@ -3,7 +3,7 @@ import { getCapabilities, hyperlink, truncateToWidth, visibleWidth, wrapTextWith
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { renderStandaloneDiff, type HleditRenderComponent, type HleditRenderTheme } from "./diff-renderer.ts";
-import { fileChangeLineRange } from "./file-changes.ts";
+import { fileChangeLineRanges } from "./file-changes.ts";
 import { MAX_READ_LIMIT, normalizeToolPath } from "./read-args.ts";
 import type { HleditReadMetadata, HleditToolKind, TextResult } from "./result.ts";
 
@@ -235,7 +235,7 @@ export function renderHleditCall(
     const grep = kind === "read_anchors" && typeof input.grep === "string" ? input.grep : undefined;
     const range = kind === "read_anchors"
 		? grep ? undefined : formatLineRange(offset ?? 1, (offset ?? 1) + (limit ?? MAX_READ_LIMIT) - 1)
-		: fileChangeLineRange(input.changes);
+		: fileChangeLineRanges(input.changes);
     const operationCount = kind === "apply_file_changes" && Array.isArray(input.changes) ? input.changes.length : undefined;
     const grepContext = kind === "read_anchors" && typeof input.context === "number" && Number.isInteger(input.context) && input.context > 0 ? input.context : undefined;
     const title = theme.fg("toolTitle", theme.bold(kind === "read_anchors" ? "read anchors" : "apply changes"));

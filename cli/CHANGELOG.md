@@ -6,6 +6,7 @@
 
 - Reject invalid UTF-8 input before reading or editing, and preserve an existing UTF-8 BOM across writes.
 - Reject unknown fields and trailing JSON values in batch requests instead of silently accepting misspelled protocol fields.
+- Advertise `batchCheck:true` so integrations can require validate-only batch support before relying on `batch --check`.
 
 ### Changed
 

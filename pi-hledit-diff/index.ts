@@ -15,19 +15,26 @@ import {
 	preferAnchoredEditingTools,
 } from "./src/active-tools.ts";
 import { HLEDIT_INSTALL_HINT, parseHleditCapabilities, resolveHleditBin, runHledit } from "./src/cli.ts";
-import { buildFileChangeRequest, findSingleAnchorReplacementError } from "./src/file-changes.ts";
+import {
+	buildFileChangeCheckRequest,
+	buildFileChangeRequest,
+	findSingleAnchorReplacementIssue,
+	formatSingleAnchorReplacementIssue,
+} from "./src/file-changes.ts";
 import { formatBatchUpdatedAnchorContext, type BatchUpdatedAnchorContext } from "./src/post-edit-context.ts";
 import { prepareFileChangeArguments, prepareReadAnchorsArguments } from "./src/prepare-arguments.ts";
 import { buildReadArgs, normalizeReadRequest, normalizeToolPath } from "./src/read-args.ts";
 import {
 	applyFileChangesResult,
 	buildDiffDetails,
+	fileChangeCheckFailure,
 	isFailedHleditResult,
 	parseRunObject,
 	readAnchorsResult,
 	readUtf8File,
-	toolFailureResult,
+	rejectedToolResult,
 	type TextResult,
+	unavailableToolResult,
 } from "./src/result.ts";
 import {
 	HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
@@ -65,19 +72,44 @@ async function runFileChangesWithDiff(
 ): Promise<TextResult> {
 	const normalizedPath = normalizeToolPath(params.path);
 	const absolutePath = resolve(ctx.cwd, normalizedPath);
-	const request = buildFileChangeRequest({ ...params, path: normalizedPath });
+	const normalizedParams = { ...params, path: normalizedPath };
+	const request = buildFileChangeRequest(normalizedParams);
 
 	return withFileMutationQueue(absolutePath, async () => {
 		const before = await readUtf8File(absolutePath);
 		if ("error" in before) {
-			return toolFailureResult(`修改前无法读取 ${normalizedPath}，因此未执行任何修改。请检查路径、权限和文件编码。`);
+			return unavailableToolResult(`修改前无法读取 ${normalizedPath}，因此未执行任何修改。请检查路径、权限和文件编码。`);
 		}
 
-		const singleAnchorReplacementError = findSingleAnchorReplacementError(params, before.content);
-		if (singleAnchorReplacementError) {
-			return toolFailureResult(
-				`原子批次已拒绝，未写入任何内容。\n${singleAnchorReplacementError}`,
-				"rejected",
+		const singleAnchorReplacementIssue = findSingleAnchorReplacementIssue(params, before.content);
+		if (singleAnchorReplacementIssue) {
+			const checkRequest = buildFileChangeCheckRequest(normalizedParams);
+			const checkRun = await runHledit(checkRequest.args, checkRequest.stdin, ctx.cwd, signal);
+			const checkFailure = fileChangeCheckFailure(checkRun, { path: normalizedPath });
+			if (checkFailure) {
+				return checkFailure;
+			}
+
+			const verifiedIssue = { ...singleAnchorReplacementIssue, anchorsVerified: true as const };
+			const nearbyDeleteRange = verifiedIssue.nearbyDeleteRange;
+			return rejectedToolResult(
+				`原子批次已拒绝，未写入任何内容。\n${formatSingleAnchorReplacementIssue(verifiedIssue)}`,
+				{
+					code: verifiedIssue.code,
+					message: `第 ${verifiedIssue.changeNumber} 项单锚点 replace 缺少 end_anchor；请改为范围 replace 或 insert after，禁止原样重试。`,
+					hint: "单锚点 replace 只消费一行；块替换必须提供 end_anchor，追加内容时应移除重复锚点行。",
+					changeNumber: verifiedIssue.changeNumber,
+					operation: "replace",
+					anchor: verifiedIssue.anchor,
+					missingField: verifiedIssue.missingField,
+					outputLineCount: verifiedIssue.outputLineCount,
+					...(nearbyDeleteRange
+						? {
+							relatedChangeNumber: nearbyDeleteRange.changeNumber,
+							candidateEndAnchor: nearbyDeleteRange.endAnchor,
+						}
+						: {}),
+				},
 			);
 		}
 
@@ -135,7 +167,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		promptSnippet: "修改文本文件前读取最新锚点",
 		promptGuidelines: [
 			"修改文本文件前立即调用 hledit_read_anchors；必须原样复制 LN#HASH，绝不能编造锚点。",
-			"位置已知时，只用 offset 和 limit 读取受影响范围。输出 51#BJ:text 中，锚点仅为 51#BJ。",
+			"hledit_read_anchors 在位置已知时只使用 offset 和 limit 读取受影响范围。输出 51#BJ:text 中，锚点仅为 51#BJ。",
 		],
 		parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 		prepareArguments: prepareReadAnchorsArguments,
@@ -164,9 +196,10 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		promptSnippet: "原子应用一个文件的锚点修改",
 		promptGuidelines: [
 			"对同一文件的一组完整、互不冲突的修改，只调用一次 hledit_apply_file_changes。lines 只能包含原始文件文本，不能带锚点或 diff 标记。",
-			"replace 未提供 end_anchor 时只消费一个源文件行，即使 lines 含多行也是如此。替换现有代码块时，必须提供包含首尾的 end_anchor。",
+			"hledit_apply_file_changes 的 replace 未提供 end_anchor 时只消费一个源文件行，即使 lines 含多行也是如此；替换现有代码块时，必须提供包含首尾的 end_anchor。",
+			"hledit_apply_file_changes 因单锚点 replace 被拒绝后不得原样重试；替换代码块时在同一项 replace 中补充 end_anchor，保留锚点行时改用 insert after 且不要重复锚点行。",
 			"hledit_apply_file_changes 中不得出现 #??/#XX 等占位锚点、operation:read 或未完成的修改；必须先单独调用 hledit_read_anchors。",
-			"delete 使用 { operation: \"delete\", anchor, end_anchor? }，不带 lines；insert 使用 { operation: \"insert\", anchor, position: \"before\" | \"after\", lines }。",
+			"hledit_apply_file_changes 的 delete 使用 { operation: \"delete\", anchor, end_anchor? }，不带 lines；insert 使用 { operation: \"insert\", anchor, position: \"before\" | \"after\", lines }。",
 			"hledit_apply_file_changes 是原子批次：任一项无效、冲突或锚点失效都会零写入。锚点失效后必须重新读取受影响范围，不得复用旧锚点。",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,

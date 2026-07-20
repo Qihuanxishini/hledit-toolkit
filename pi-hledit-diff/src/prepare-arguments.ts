@@ -60,7 +60,7 @@ function normalizeChange(value: unknown): unknown {
 		change.operation = change.op;
 		delete change.op;
 	}
-	if (change.operation === "replace-range") {
+	if (change.operation === "replace-range" && typeof change.end_anchor === "string") {
 		change.operation = "replace";
 	}
 	change.anchor = normalizeAnchor(change.anchor);

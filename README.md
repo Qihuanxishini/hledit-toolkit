@@ -46,6 +46,7 @@ npm run check
 {
   "readRangeMetadata": true,
   "batchInsertAfter": true,
+  "batchCheck": true,
   "batchUpdatedAnchors": true
 }
 ```

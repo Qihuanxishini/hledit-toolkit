@@ -42,6 +42,19 @@ test("prepareFileChangeArguments normalizes range aliases and rendered anchor li
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
 });
 
+test("prepareFileChangeArguments rejects a range alias without end_anchor", () => {
+	const prepared = prepareFileChangeArguments({
+		path: "src/a.ts",
+		changes: [{ operation: "replace-range", anchor: "10#BJ", lines: ["replacement"] }],
+	});
+
+	assert.deepEqual(prepared, {
+		path: "src/a.ts",
+		changes: [{ operation: "replace-range", anchor: "10#BJ", lines: ["replacement"] }],
+	});
+	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), false);
+});
+
 test("prepareFileChangeArguments preserves ambiguous and unknown fields for schema rejection", () => {
 	const ambiguous = prepareFileChangeArguments({
 		path: "src/a.ts",

@@ -11,8 +11,9 @@
 
 编辑语义：
 - 锚点格式严格跟随 CLI：`LN#[BHJKMNPQRSTVWXYZ]{2}`；格式不合规会在 schema 边界被拒绝，格式合规但内容伪造仍会被 CLI 判为 stale。
-- `replace` 未提供 `end_anchor` 时只消费一个源文件行；替换现有代码块必须提供包含端点的 `end_anchor`。
-- 若单锚点多行 `replace` 的首行与原锚点行完全相同，插件会判定为高风险块扩展并拒绝，避免保留旧函数体形成重复代码；应改用范围替换或 `insert`。
+- `replace` 未提供 `end_anchor` 时只消费一个源文件行；替换现有代码块必须在同一项 change 中提供包含端点的 `end_anchor`。兼容别名 `replace-range` 只在同时提供 `end_anchor` 时归一化，否则保留给 schema 拒绝。
+- 若单锚点多行 `replace` 的首行与原锚点行完全相同，插件会判定为高风险块扩展；返回恢复指导前先以 `batch --check` 验证本批次全部锚点，stale、冲突或非法请求优先返回 CLI 原始错误。
+- 高风险块扩展错误会列出实际参数并禁止原样重试：存在唯一紧邻范围 `delete` 时给出已验证的完整合并模板；没有安全结束锚点时要求重新读取，而不输出非法占位 anchor；`insert after` 模板直接复用原 lines 去除重复首行后的内容。`details.error` 同时返回错误代码、change 序号、anchor、缺失字段和输出行数。
 - batch 是原子的：任一 change 非法、冲突或 stale 时均为零写入。
 - 已验证但内容相同的 batch 返回 no-op，不触碰目标文件；模型正文和 TUI 不再误报为已修改。
 - 写入会保留 symlink、使用唯一临时文件，并明确拒绝有多个 hardlink 的目标。
@@ -27,6 +28,7 @@
 
 - 锚点读取使用独立的 `LN#HASH` gutter、源码语法高亮和紧凑预览；摘要显示实际范围、文件总行数、EOF 或下一 offset，展开后显示全部已读取锚点。
 - 文件修改按每次 `render(width)` 的可用内容宽度实时重排：120 列及以上显示 old/new 双栏，更窄时显示统一 diff。
+- 多项文件修改在调用标题中分别显示锚点范围，例如 `482,484-489`，避免把独立操作误解为一个连续范围。
 - 新增行使用主题衍生的淡绿色背景，删除行使用淡红色背景，并保留增删前景色、行号和语法高亮。
 - diff 提供宽度保护和折叠提示；展开后还会显示 CLI 返回的新锚点。
 - 所有颜色取自当前 Pi theme，不固定绑定深色或浅色主题。
@@ -47,6 +49,7 @@ bin/hledit.exe
   "ok": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,
+  "batchCheck": true,
   "batchUpdatedAnchors": true
 }
 ```

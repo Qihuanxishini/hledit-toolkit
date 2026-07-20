@@ -105,6 +105,7 @@ type CLICapabilities struct {
 	OK                  bool   `json:"ok"`
 	Version             string `json:"version"`
 	BatchInsertAfter    bool   `json:"batchInsertAfter"`
+	BatchCheck          bool   `json:"batchCheck"`
 	BatchUpdatedAnchors bool   `json:"batchUpdatedAnchors"`
 	ReadRangeMetadata   bool   `json:"readRangeMetadata"`
 }

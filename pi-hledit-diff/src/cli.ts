@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const EXTENSION_ROOT = fileURLToPath(new URL("../", import.meta.url));
 
-export const HLEDIT_INSTALL_HINT = `此扩展需要随包提供的 Windows x64 hledit CLI，并要求其支持结构化范围读取、批量向后插入和修改后锚点回传。
+export const HLEDIT_INSTALL_HINT = `此扩展需要随包提供的 Windows x64 hledit CLI，并要求其支持结构化范围读取、批量只校验、批量向后插入和修改后锚点回传。
 请重新同步或安装 pi-hledit-diff，并确认 bin/hledit.exe 存在。`;
 
 export const HLEDIT_RUN_TIMEOUT_MS = 30_000;
@@ -20,6 +20,7 @@ export type HleditCapabilities = {
 	version: string;
 	readRangeMetadata: true;
 	batchInsertAfter: true;
+	batchCheck: true;
 	batchUpdatedAnchors: true;
 };
 
@@ -39,11 +40,12 @@ export function parseHleditCapabilities(run: HleditRun): HleditCapabilities | un
 			record.version.length === 0 ||
 			record.readRangeMetadata !== true ||
 			record.batchInsertAfter !== true ||
+			record.batchCheck !== true ||
 			record.batchUpdatedAnchors !== true
 		) {
 			return undefined;
 		}
-		return { version: record.version, readRangeMetadata: true, batchInsertAfter: true, batchUpdatedAnchors: true };
+		return { version: record.version, readRangeMetadata: true, batchInsertAfter: true, batchCheck: true, batchUpdatedAnchors: true };
 	} catch {
 		return undefined;
 	}

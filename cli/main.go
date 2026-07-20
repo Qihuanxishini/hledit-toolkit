@@ -202,6 +202,7 @@ func run(argv []string) int {
 			OK:                  true,
 			Version:             version,
 			BatchInsertAfter:    true,
+			BatchCheck:          true,
 			BatchUpdatedAnchors: true,
 			ReadRangeMetadata:   true,
 		}))

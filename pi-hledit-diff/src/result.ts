@@ -43,6 +43,13 @@ export type HleditErrorMetadata = {
 	hint?: string;
 	requestedOffset?: number;
 	totalLines?: number;
+	changeNumber?: number;
+	operation?: "replace" | "delete" | "insert";
+	anchor?: string;
+	missingField?: string;
+	outputLineCount?: number;
+	relatedChangeNumber?: number;
+	candidateEndAnchor?: string;
 };
 
 type ApplyResultContext = {
@@ -476,6 +483,21 @@ function isValidApplySuccess(parsed: Record<string, unknown> | null): boolean {
 	);
 }
 
+function isValidFileChangeCheckSuccess(parsed: Record<string, unknown> | null): boolean {
+	return (
+		parsed?.ok === true &&
+		parsed.checked === true &&
+		typeof parsed.editsApplied === "number" &&
+		Number.isInteger(parsed.editsApplied) &&
+		parsed.editsApplied >= 0 &&
+		typeof parsed.contentChanged === "boolean"
+	);
+}
+
+function invalidFileChangeCheckText(): string {
+	return "hledit 返回了不兼容的 --check 响应，工具未继续执行写入。请调用 hledit_read_anchors 检查目标文件后再重试。";
+}
+
 function invalidApplySuccessText(): string {
 	return `随扩展附带的 hledit 返回了不兼容的成功响应。文件可能已经变化；重试前请调用 hledit_read_anchors 检查当前内容。预期得到 ok:true、非负整数 editsApplied 和有效 updatedAnchors。\n\n${HLEDIT_INSTALL_HINT}`;
 }
@@ -537,10 +559,28 @@ export function applyFileChangesResult(run: HleditRun, context: ApplyResultConte
 	};
 }
 
-export function toolFailureResult(text: string, disposition: Exclude<HleditDisposition, "succeeded"> = "unavailable"): TextResult {
+export function fileChangeCheckFailure(run: HleditRun, context: ApplyResultContext = {}): TextResult | undefined {
+	const parsed = parseRunObject(run);
+	if (run.exitCode === 0 && isValidFileChangeCheckSuccess(parsed)) {
+		return undefined;
+	}
+	if (run.exitCode === 0 && parsed?.ok === true) {
+		return unavailableToolResult(invalidFileChangeCheckText());
+	}
+	return applyFileChangesResult(run, context);
+}
+
+export function unavailableToolResult(text: string): TextResult {
 	return {
 		content: [{ type: "text", text }],
-		details: { disposition },
+		details: { disposition: "unavailable" },
+	};
+}
+
+export function rejectedToolResult(text: string, error: HleditErrorMetadata): TextResult {
+	return {
+		content: [{ type: "text", text }],
+		details: { disposition: "rejected", error },
 	};
 }
 

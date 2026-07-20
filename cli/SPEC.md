@@ -18,10 +18,10 @@ hledit capabilities
 Outputs one JSON object describing behavior that integrations may require:
 
 ```json
-{ "ok": true, "version": "1.4.0", "readRangeMetadata": true, "batchInsertAfter": true, "batchUpdatedAnchors": true }
+{ "ok": true, "version": "1.4.0", "readRangeMetadata": true, "batchInsertAfter": true, "batchCheck": true, "batchUpdatedAnchors": true }
 ```
 
-The bundled Pi extension requires `readRangeMetadata:true`, `batchInsertAfter:true`, and `batchUpdatedAnchors:true`; a successful `help` command alone is not a compatibility guarantee.
+The bundled Pi extension requires `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, and `batchUpdatedAnchors:true`; a successful `help` command alone is not a compatibility guarantee.
 
 ## 2. Verbs
 

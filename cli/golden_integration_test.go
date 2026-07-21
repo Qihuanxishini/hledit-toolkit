@@ -434,7 +434,7 @@ func TestGolden_Edge_EmptyFile(t *testing.T) {
 	}
 
 	// Insert into empty file (anchor line 1 which doesn't exist → stale)
-	_, exitCode := goldenRunHleditAllowError(t, bin, "new line\n", "insert", "--before", workFile, "1#TX", "-")
+	_, exitCode := goldenRunHleditAllowError(t, bin, "new line\n", "insert", "--before", workFile, "1#aB3", "-")
 	if exitCode == 0 {
 		// Should fail with stale anchor
 		out2, _ := goldenRunHleditAllowError(t, bin, "", "read", workFile)

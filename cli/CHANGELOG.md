@@ -1,6 +1,14 @@
 # Changelog
 
 
+## [2.0.0] — 2026-07-21
+
+### Changed
+
+- Breaking anchor protocol: replace `LN#HH` with `LN#HHH`, a 3-character URL-safe Base64 encoding of the low 18 bits of FNV-1a-32. Legacy two-character anchors are rejected.
+- Require `anchorProtocolV2:true` so integrations reject a partially upgraded or older CLI before parsing anchors.
+- Accept annotated anchors only with a colon delimiter, preventing trailing text from silently being ignored.
+- Require stale-snapshot callers to confirm that the bounded window still covers the intended target and complete range; otherwise they must re-read.
 ## [1.5.0] — 2026-07-21
 
 ### Added

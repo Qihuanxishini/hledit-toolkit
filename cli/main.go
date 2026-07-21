@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-const version = "1.5.0"
+const version = "2.0.0"
 
 // splitArgs separates a command's args into flags and positionals so that
 // flags may appear before OR after the positional file argument (e.g.
@@ -58,26 +58,26 @@ Usage:
   hledit batch [--check] <file>
 
 Arguments:
-  <anchor>          LN#HH from a prior read, e.g. 5#WS
+  <anchor>          LN#HHH from a prior read, e.g. 5#aB3
   <content-source>  - for stdin, or a file path
 
 Batch input (JSON on stdin):
   {"edits": [
-    {"op": "replace", "pos": "12#NK", "lines": ["new line"]},
-    {"op": "replace", "pos": "12#NK", "end_pos": "18#VR", "lines": ["new block"]},
-    {"op": "delete", "pos": "5#TX", "lines": []},
-    {"op": "insert", "pos": "8#VR", "after": true, "lines": ["inserted"]}
+    {"op": "replace", "pos": "12#aB3", "lines": ["new line"]},
+    {"op": "replace", "pos": "12#aB3", "end_pos": "18#xY7", "lines": ["new block"]},
+    {"op": "delete", "pos": "5#nK2", "lines": []},
+    {"op": "insert", "pos": "8#Qw_", "after": true, "lines": ["inserted"]}
   ]}
 
 Examples:
   hledit read main.go
   hledit read-range main.go --offset 40 --limit 20
-  printf '  return nil\n' | hledit replace main.go 12#NK -
-  hledit replace-range main.go 12#NK 18#VR /tmp/new-block.txt
-  cat header.txt | hledit insert --before main.go 1#WV -
-  printf '// done\n' | hledit insert --after main.go 99#TX -
-  echo '{"edits":[{"op":"replace","pos":"12#NK","lines":["fixed"]}]}' | hledit batch main.go
-  echo '{"edits":[{"op":"replace","pos":"12#NK","lines":["fixed"]}]}' | hledit batch --check main.go
+  printf '  return nil\n' | hledit replace main.go 12#aB3 -
+  hledit replace-range main.go 12#aB3 18#xY7 /tmp/new-block.txt
+  cat header.txt | hledit insert --before main.go 1#Qw_ -
+  printf '// done\n' | hledit insert --after main.go 99#nK2 -
+  echo '{"edits":[{"op":"replace","pos":"12#aB3","lines":["fixed"]}]}' | hledit batch main.go
+  echo '{"edits":[{"op":"replace","pos":"12#aB3","lines":["fixed"]}]}' | hledit batch --check main.go
 
 Notes:
   - replace/replace-range with empty content deletes the target line/range.
@@ -201,6 +201,7 @@ func run(argv []string) int {
 		return mustRun(emitJSON(CLICapabilities{
 			OK:                  true,
 			Version:             version,
+			AnchorProtocolV2:    true,
 			BatchInsertAfter:    true,
 			BatchCheck:          true,
 			BatchUpdatedAnchors: true,

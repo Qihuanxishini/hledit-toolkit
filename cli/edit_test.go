@@ -366,7 +366,7 @@ func TestCmdReplaceBinaryDetectionEmitsJSONError(t *testing.T) {
 		contentSrc := editTestWriteLinesFile(t, dir, "content.txt", "delta")
 
 		out := editTestCaptureStdout(t, func() {
-			_ = cmdReplace(target, "1#WS", contentSrc)
+			_ = cmdReplace(target, "1#aB3", contentSrc)
 		})
 
 		var got EditError

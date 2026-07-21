@@ -12,11 +12,15 @@ func TestParseAnchor(t *testing.T) {
 		want    Anchor
 		wantErr string
 	}{
-		{name: "valid", input: "5#WS", want: Anchor{Line: 5, Hash: "WS"}},
-		{name: "lenient annotated line", input: "5#WS:func main() {", want: Anchor{Line: 5, Hash: "WS"}},
-		{name: "spaces around hash", input: "  12 # TX :suffix", want: Anchor{Line: 12, Hash: "TX"}},
-		{name: "invalid format", input: "not-an-anchor", wantErr: "expected LN#HH"},
-		{name: "line zero", input: "0#WS", wantErr: ">= 1"},
+		{name: "valid", input: "5#aB3", want: Anchor{Line: 5, Hash: "aB3"}},
+		{name: "annotated line", input: "5#aB3:func main() {", want: Anchor{Line: 5, Hash: "aB3"}},
+		{name: "whitespace inside anchor", input: "  12 # xY7 :suffix", wantErr: "expected LN#HHH"},
+		{name: "whitespace before annotation", input: "5#aB3 :suffix", wantErr: "expected LN#HHH"},
+		{name: "trailing whitespace", input: "5#aB3   ", want: Anchor{Line: 5, Hash: "aB3"}},
+		{name: "legacy two-character hash", input: "5#WS", wantErr: "expected LN#HHH"},
+		{name: "trailing garbage", input: "5#aB3garbage", wantErr: "expected LN#HHH"},
+		{name: "invalid format", input: "not-an-anchor", wantErr: "expected LN#HHH"},
+		{name: "line zero", input: "0#aB3", wantErr: ">= 1"},
 	}
 
 	for _, tt := range tests {

@@ -64,11 +64,11 @@ test("apply tool exposes JSON-string argument preparation to Pi", () => {
 	assert.deepEqual(
 		applyTool.prepareArguments({
 			path: "target.txt",
-			changes: JSON.stringify({ operation: "replace", anchor: "1#BH", lines: "first\nsecond" }),
+			changes: JSON.stringify({ operation: "replace", anchor: "1#BHJ", lines: "first\nsecond" }),
 		}),
 		{
 			path: "target.txt",
-			changes: [{ operation: "replace", anchor: "1#BH", lines: ["first", "second"] }],
+			changes: [{ operation: "replace", anchor: "1#BHJ", lines: ["first", "second"] }],
 		},
 	);
 });
@@ -112,8 +112,8 @@ test("read tool accepts a grep result that exactly fills the byte budget at EOF"
 
 	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-exact-budget-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
-	// 1#XX、冒号和换行共 6 bytes，使锚点行恰好填满 CLI 的 50 KiB 预算。
-	const line = "x".repeat(50 * 1024 - 6);
+	// 1#xxx、冒号和换行共 7 bytes，使锚点行恰好填满 CLI 的 50 KiB 预算。
+	const line = "x".repeat(50 * 1024 - 7);
 	await writeFile(join(directory, "target.txt"), `${line}\n`, "utf8");
 
 	const result = await readTool.execute(
@@ -144,7 +144,7 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 
 	const readResult = await readTool.execute("read", { path: "target.txt", offset: 2, limit: 1 } as never, undefined, undefined, context);
 	const renderedAnchor = readResult.content[0]?.text.split(/\r?\n/, 1)[0];
-	assert.match(renderedAnchor ?? "", /^2#[A-Za-z0-9]+:two$/);
+	assert.match(renderedAnchor ?? "", /^2#[A-Za-z0-9_-]{3}:two$/);
 	const anchor = renderedAnchor!.split(":", 1)[0]!;
 	const applyResult = await applyTool.execute(
 		"apply",
@@ -310,7 +310,8 @@ test("apply tool returns a stale snapshot before single-anchor recovery guidance
 	const readResult = await readTool.execute("read", { path: "target.txt", offset: 2, limit: 1 } as never, undefined, undefined, context);
 	const currentAnchor = readResult.details.read?.lines[0]?.anchor;
 	assert.ok(currentAnchor);
-	const staleAnchor = `${currentAnchor.slice(0, -2)}${currentAnchor.endsWith("#BB") ? "BH" : "BB"}`;
+	const staleHash = currentAnchor.slice(-3);
+	const staleAnchor = `${currentAnchor.slice(0, -3)}${staleHash === "AAB" ? "AAC" : "AAB"}`;
 	const applyResult = await applyTool.execute(
 		"apply",
 		{ path: "target.txt", changes: [{ operation: "replace", anchor: staleAnchor, lines: ["two", "inserted"] }] } as never,
@@ -325,7 +326,8 @@ test("apply tool returns a stale snapshot before single-anchor recovery guidance
 	assert.match(applyResult.content[0]?.text ?? "", /提交时文件中的当前锚点快照/);
 	assert.match(applyResult.content[0]?.text ?? "", /:two/);
 	assert.match(applyResult.content[0]?.text ?? "", /不会自动重试或覆盖并发修改/);
-	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /重试前请调用 hledit_read_anchors/);
+	assert.match(applyResult.content[0]?.text ?? "", /确认窗口仍覆盖原定目标及完整范围/);
+	assert.match(applyResult.content[0]?.text ?? "", /否则必须重新读取受影响范围/);
 	assert.ok(applyResult.details.error?.currentAnchors);
 	assert.equal(await readFile(target, "utf8"), original);
 });

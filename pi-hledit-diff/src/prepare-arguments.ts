@@ -54,7 +54,7 @@ function normalizeAnchor(value: unknown): unknown {
 	if (typeof value !== "string") {
 		return value;
 	}
-	const anchor = /^(\d+#[A-Za-z0-9]+):/.exec(value);
+	const anchor = /^(\d+#[A-Za-z0-9_-]{3}):/.exec(value);
 	return anchor?.[1] ?? value;
 }
 

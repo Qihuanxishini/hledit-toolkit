@@ -23,14 +23,14 @@ test("parseRunObject parses stdout JSON before stderr", () => {
 test("readAnchorsResult exposes actual range, total lines, and continuation", () => {
     const result = readAnchorsResult(
         {
-            stdout: '{"ok":true,"totalLines":5,"lines":[{"line":2,"anchor":"2#BH","text":"two"},{"line":3,"anchor":"3#BJ","text":"three"}],"truncated":true,"nextOffset":4}',
+            stdout: '{"ok":true,"totalLines":5,"lines":[{"line":2,"anchor":"2#BHJ","text":"two"},{"line":3,"anchor":"3#BJL","text":"three"}],"truncated":true,"nextOffset":4}',
             stderr: "",
             exitCode: 0,
         },
         { path: "src/a.ts", offset: 2, limit: 2 },
     );
 
-    assert.equal(result.content[0]?.text, "2#BH:two\n3#BJ:three\n-- 已显示第 2-3 行（文件共 5 行）；继续读取请使用 offset 4 --");
+    assert.equal(result.content[0]?.text, "2#BHJ:two\n3#BJL:three\n-- 已显示第 2-3 行（文件共 5 行）；继续读取请使用 offset 4 --");
     assert.equal(result.details.disposition, "succeeded");
     assert.deepEqual(result.details.read?.requested, { offset: 2, limit: 2 });
     assert.deepEqual(result.details.read?.actual, { firstLine: 2, lastLine: 3, lineCount: 2, totalLines: 5 });
@@ -41,7 +41,7 @@ test("readAnchorsResult exposes actual range, total lines, and continuation", ()
 test("readAnchorsResult marks a completed range as EOF", () => {
     const result = readAnchorsResult(
         {
-            stdout: '{"ok":true,"totalLines":5,"lines":[{"line":4,"anchor":"4#BK","text":"four"},{"line":5,"anchor":"5#BM","text":"five"}],"truncated":false}',
+            stdout: '{"ok":true,"totalLines":5,"lines":[{"line":4,"anchor":"4#BKM","text":"four"},{"line":5,"anchor":"5#BMN","text":"five"}],"truncated":false}',
             stderr: "",
             exitCode: 0,
         },
@@ -95,7 +95,7 @@ test("readAnchorsResult localizes invalid UTF-8 errors", () => {
 test("readAnchorsResult distinguishes source-line truncation from pagination", () => {
     const result = readAnchorsResult(
         {
-            stdout: '{"ok":true,"totalLines":2,"lines":[{"line":1,"anchor":"1#BH","text":"prefix… [truncated]","textTruncated":true}],"truncated":true}',
+            stdout: '{"ok":true,"totalLines":2,"lines":[{"line":1,"anchor":"1#BHJ","text":"prefix… [truncated]","textTruncated":true}],"truncated":true}',
             stderr: "",
             exitCode: 0,
         },
@@ -110,7 +110,7 @@ test("readAnchorsResult distinguishes source-line truncation from pagination", (
 test("readAnchorsResult rejects non-sequential unfiltered output", () => {
     const result = readAnchorsResult(
         {
-            stdout: '{"ok":true,"totalLines":5,"lines":[{"line":2,"anchor":"2#BH","text":"two"},{"line":4,"anchor":"4#BK","text":"four"}],"truncated":true,"nextOffset":5}',
+            stdout: '{"ok":true,"totalLines":5,"lines":[{"line":2,"anchor":"2#BHJ","text":"two"},{"line":4,"anchor":"4#BKM","text":"four"}],"truncated":true,"nextOffset":5}',
             stderr: "",
             exitCode: 0,
         },
@@ -134,7 +134,7 @@ test("readAnchorsResult formats a complete empty filtered result", () => {
 
 test("applyFileChangesResult summarizes successful file changes", () => {
     const result = applyFileChangesResult({
-        stdout: '{"ok":true,"editsApplied":2,"contentChanged":true,"firstChangedLine":3,"lastChangedLine":5,"linesAdded":4,"linesDeleted":1,"updatedAnchors":{"lines":[{"line":3,"anchor":"3#BH","text":"changed"}],"offset":3,"limit":1,"desiredLimit":1,"truncated":false}}',
+        stdout: '{"ok":true,"editsApplied":2,"contentChanged":true,"firstChangedLine":3,"lastChangedLine":5,"linesAdded":4,"linesDeleted":1,"updatedAnchors":{"lines":[{"line":3,"anchor":"3#BHJ","text":"changed"}],"offset":3,"limit":1,"desiredLimit":1,"truncated":false}}',
         stderr: "",
         exitCode: 0,
     });
@@ -154,7 +154,7 @@ test("applyFileChangesResult summarizes successful file changes", () => {
 
 test("applyFileChangesResult reports a successful no-op", () => {
     const result = applyFileChangesResult({
-        stdout: '{"ok":true,"editsApplied":1,"contentChanged":false,"firstChangedLine":3,"lastChangedLine":3,"linesAdded":1,"linesDeleted":1,"updatedAnchors":{"lines":[{"line":3,"anchor":"3#BH","text":"unchanged"}],"offset":3,"limit":1,"desiredLimit":1,"truncated":false}}',
+        stdout: '{"ok":true,"editsApplied":1,"contentChanged":false,"firstChangedLine":3,"lastChangedLine":3,"linesAdded":1,"linesDeleted":1,"updatedAnchors":{"lines":[{"line":3,"anchor":"3#BHJ","text":"unchanged"}],"offset":3,"limit":1,"desiredLimit":1,"truncated":false}}',
         stderr: "",
         exitCode: 0,
     });
@@ -166,7 +166,7 @@ test("applyFileChangesResult reports a successful no-op", () => {
 
 test("applyFileChangesResult preserves post-write durability warnings", () => {
     const result = applyFileChangesResult({
-        stdout: '{"ok":true,"editsApplied":1,"contentChanged":true,"warnings":["file was replaced, but directory metadata could not be synchronized: access denied"],"updatedAnchors":{"lines":[{"line":1,"anchor":"1#BH","text":"changed"}],"offset":1,"limit":1,"desiredLimit":1,"truncated":false}}',
+        stdout: '{"ok":true,"editsApplied":1,"contentChanged":true,"warnings":["file was replaced, but directory metadata could not be synchronized: access denied"],"updatedAnchors":{"lines":[{"line":1,"anchor":"1#BHJ","text":"changed"}],"offset":1,"limit":1,"desiredLimit":1,"truncated":false}}',
         stderr: "",
         exitCode: 0,
     });
@@ -219,12 +219,12 @@ test("fileChangeCheckFailure accepts only an explicit validate-only success", ()
 
 test("applyFileChangesResult falls back to rereading when a stale snapshot is unavailable", () => {
     const result = applyFileChangesResult(
-        { stdout: '{"ok":false,"error":"stale","message":"edit 0: anchor stale","failed":0,"remaps":[{"requested":"2#BH","current":"2#BB"}]}', stderr: "", exitCode: 0 },
+        { stdout: '{"ok":false,"error":"stale","message":"edit 0: anchor stale","failed":0,"remaps":[{"requested":"2#BHJ","current":"2#BBK"}]}', stderr: "", exitCode: 0 },
         { path: "src/a.ts" },
     );
 
     assert.match(result.content[0]?.text ?? "", /^原子批次已拒绝，未写入任何内容。\n原因：第 1 项修改使用的锚点已失效。\n错误代码：stale/m);
-    assert.match(result.content[0]?.text ?? "", /2#BH -> 2#BB/);
+    assert.match(result.content[0]?.text ?? "", /2#BHJ -> 2#BBK/);
     assert.match(result.content[0]?.text ?? "", /重试前请调用 hledit_read_anchors\(\{ path: "src\/a\.ts", offset: 1, limit: 12 \}\)/);
     assert.deepEqual(result.details, {
 		disposition: "rejected",
@@ -236,9 +236,9 @@ test("applyFileChangesResult falls back to rereading when a stale snapshot is un
 test("applyFileChangesResult exposes validated stale snapshot context", () => {
 	const currentAnchors = {
 		lines: [
-			{ line: 1, anchor: "1#BH", text: "one" },
-			{ line: 2, anchor: "2#BB", text: "modified" },
-			{ line: 3, anchor: "3#BJ", text: "three" },
+			{ line: 1, anchor: "1#BHJ", text: "one" },
+			{ line: 2, anchor: "2#BBK", text: "modified" },
+			{ line: 3, anchor: "3#BJL", text: "three" },
 		],
 		offset: 1,
 		limit: 3,
@@ -251,7 +251,7 @@ test("applyFileChangesResult exposes validated stale snapshot context", () => {
 			error: "stale",
 			message: "edit 0: anchor stale",
 			failed: 0,
-			remaps: [{ requested: "2#BH", current: "2#BB" }],
+			remaps: [{ requested: "2#BHJ", current: "2#BBK" }],
 			currentAnchors,
 		}),
 		stderr: "",
@@ -259,7 +259,7 @@ test("applyFileChangesResult exposes validated stale snapshot context", () => {
 	});
 	const text = result.content[0]?.text ?? "";
 
-	assert.match(text, /2#BB:modified/);
+	assert.match(text, /2#BBK:modified/);
 	assert.match(text, /不会自动重试或覆盖并发修改/);
 	assert.match(text, /使用其中的新锚点重新提交/);
 	assert.doesNotMatch(text, /重试前请调用 hledit_read_anchors/);
@@ -318,7 +318,7 @@ test("failure result constructors preserve disposition and structured errors", (
         message: "单锚点 replace 可能保留旧代码。",
         changeNumber: 1,
         operation: "replace",
-        anchor: "2#BH",
+        anchor: "2#BHJ",
         missingField: "end_anchor",
         outputLineCount: 2,
     });
@@ -330,7 +330,7 @@ test("failure result constructors preserve disposition and structured errors", (
             message: "单锚点 replace 可能保留旧代码。",
             changeNumber: 1,
             operation: "replace",
-            anchor: "2#BH",
+            anchor: "2#BHJ",
             missingField: "end_anchor",
             outputLineCount: 2,
         },

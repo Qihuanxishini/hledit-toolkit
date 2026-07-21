@@ -41,7 +41,7 @@ func coverageTestWriteFile(t *testing.T, dir, name, content string) string {
 }
 
 func TestSupplementalParseAnchorAtoiError(t *testing.T) {
-	_, err := parseAnchor("999999999999999999999999999999999999999999999999999999999#WS")
+	_, err := parseAnchor("999999999999999999999999999999999999999999999999999999999#aB3")
 	if err == nil {
 		t.Fatal("expected parse error for enormous line number")
 	}
@@ -243,12 +243,12 @@ func TestCoverageEditIOAndInvalidBranches(t *testing.T) {
 	path := coverageTestWriteFile(t, dir, "main.go", "package main\n\nfunc main() {}\n")
 	missingContent := filepath.Join(dir, "missing-content.txt")
 
-	out := coverageTestCaptureStdout(t, func() { _ = cmdReplace(filepath.Join(dir, "missing.go"), "1#WV", missingContent) })
+	out := coverageTestCaptureStdout(t, func() { _ = cmdReplace(filepath.Join(dir, "missing.go"), "1#aB3", missingContent) })
 	if !strings.Contains(out, `"error":"io"`) {
 		t.Fatalf("cmdReplace missing file expected io error: %s", out)
 	}
 
-	out = coverageTestCaptureStdout(t, func() { _ = cmdReplace(path, "999#WV", missingContent) })
+	out = coverageTestCaptureStdout(t, func() { _ = cmdReplace(path, "999#aB3", missingContent) })
 	if !strings.Contains(out, `"error":"stale"`) {
 		t.Fatalf("cmdReplace out-of-range anchor expected stale error: %s", out)
 	}
@@ -274,7 +274,7 @@ func TestCoverageEditIOAndInvalidBranches(t *testing.T) {
 		t.Fatalf("cmdReplaceRange bad end expected invalid error: %s", out)
 	}
 
-	out = coverageTestCaptureStdout(t, func() { _ = cmdReplaceRange(path, fresh, "2#ZZ", missingContent) })
+	out = coverageTestCaptureStdout(t, func() { _ = cmdReplaceRange(path, fresh, "2#aB3", missingContent) })
 	if !strings.Contains(out, `"error":"stale"`) {
 		t.Fatalf("cmdReplaceRange stale expected stale error: %s", out)
 	}
@@ -294,7 +294,7 @@ func TestCoverageEditIOAndInvalidBranches(t *testing.T) {
 		t.Fatalf("cmdInsert bad anchor expected invalid error: %s", out)
 	}
 
-	out = coverageTestCaptureStdout(t, func() { _ = cmdInsert(path, "999#WV", missingContent, false) })
+	out = coverageTestCaptureStdout(t, func() { _ = cmdInsert(path, "999#aB3", missingContent, false) })
 	if !strings.Contains(out, `"error":"stale"`) {
 		t.Fatalf("cmdInsert out-of-range expected stale error: %s", out)
 	}

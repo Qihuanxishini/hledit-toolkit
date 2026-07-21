@@ -13,7 +13,7 @@ import (
 // ────────────────────────────────────────────────────────────────────────────
 
 // Anchor is a validated line reference: a 1-indexed line number paired with
-// the expected 2-character hash computed by computeLineHash.
+// the expected 3-character hash computed by computeLineHash.
 type Anchor struct {
 	Line int
 	Hash string
@@ -56,7 +56,7 @@ type EditError struct {
 // BatchEditOp is a single operation within a batch edit request.
 type BatchEditOp struct {
 	OP     string   `json:"op"`              // "insert", "replace", or "delete"
-	Pos    string   `json:"pos"`             // start anchor (e.g. "5#TX")
+	Pos    string   `json:"pos"`             // start anchor (e.g. "5#aB3")
 	EndPos string   `json:"end_pos"`         // end anchor for replace_range (optional)
 	After  bool     `json:"after,omitempty"` // insert after Pos when true
 	Lines  []string `json:"lines"`           // replacement/inserted lines; empty = delete
@@ -105,6 +105,7 @@ type BatchEditError struct {
 type CLICapabilities struct {
 	OK                  bool   `json:"ok"`
 	Version             string `json:"version"`
+	AnchorProtocolV2    bool   `json:"anchorProtocolV2"`
 	BatchInsertAfter    bool   `json:"batchInsertAfter"`
 	BatchCheck          bool   `json:"batchCheck"`
 	BatchUpdatedAnchors bool   `json:"batchUpdatedAnchors"`

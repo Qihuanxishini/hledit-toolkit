@@ -6,17 +6,17 @@ import (
 	"unicode"
 )
 
-const alphabet = "ZPMQVRWSNKTXJBYH"
+const anchorHashAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
-// computeLineHash computes a 2-character hash for a given line number and line content.
+// computeLineHash computes a 3-character URL-safe Base64 hash for a given line number and line content.
 func computeLineHash(lineNum int, line string) string {
-	// 1. line = trimRight(line, '\r') then trimRight of whitespace (unicode.IsSpace)
+	// Trailing whitespace is presentation-only for anchor identity.
 	line = strings.TrimRight(line, "\r")
 	line = strings.TrimRightFunc(line, unicode.IsSpace)
 
 	h := fnv.New32a()
 
-	// 2. Determine if line is "significant": contains at least one unicode.IsLetter OR unicode.IsDigit rune.
+	// Structural-only lines share little semantic content, so include their position to distinguish them.
 	isSignificant := false
 	for _, r := range line {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
@@ -25,8 +25,6 @@ func computeLineHash(lineNum int, line string) string {
 		}
 	}
 
-	// If NOT significant, mix lineNum into the FNV-1a state BEFORE the content:
-	// write lineNum as a little-endian byte sequence (for n>0: h.Write([]byte{byte(n & 0xff)}); n >>= 8, repeat).
 	if !isSignificant {
 		n := lineNum
 		for n > 0 {
@@ -35,18 +33,11 @@ func computeLineHash(lineNum int, line string) string {
 		}
 	}
 
-	// 3. h := fnv.New32a(); h.Write([]byte(line)); sum := h.Sum32()
 	h.Write([]byte(line))
 	sum := h.Sum32()
 
-	// 4. lo := byte(sum & 0xff)
-	lo := byte(sum & 0xff)
-
-	// 5. return two chars: nibble(lo>>4) + nibble(lo&0x0f) using alphabet "ZPMQVRWSNKTXJBYH"
-	h1 := lo >> 4
-	h2 := lo & 0x0f
-
-	return string(alphabet[h1]) + string(alphabet[h2])
+	// The v2 wire format encodes the low 18 bits as three URL-safe Base64 characters.
+	return string(anchorHashAlphabet[(sum>>12)&0x3f]) + string(anchorHashAlphabet[(sum>>6)&0x3f]) + string(anchorHashAlphabet[sum&0x3f])
 }
 
 // formatTag returns intToStr(lineNum) + "#" + computeLineHash(lineNum, line).

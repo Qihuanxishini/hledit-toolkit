@@ -14,11 +14,11 @@ test("prepareReadAnchorsArguments converts quoted read integers", () => {
 test("prepareFileChangeArguments parses JSON changes and wraps a single change", () => {
 	const prepared = prepareFileChangeArguments({
 		path: "src/a.ts",
-		changes: JSON.stringify({ operation: "replace", anchor: "1#BH", lines: "first\nsecond" }),
+		changes: JSON.stringify({ operation: "replace", anchor: "1#BHJ", lines: "first\nsecond" }),
 	});
 	assert.deepEqual(prepared, {
 		path: "src/a.ts",
-		changes: [{ operation: "replace", anchor: "1#BH", lines: ["first", "second"] }],
+		changes: [{ operation: "replace", anchor: "1#BHJ", lines: ["first", "second"] }],
 	});
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
 });
@@ -26,7 +26,7 @@ test("prepareFileChangeArguments parses JSON changes and wraps a single change",
 test("prepareFileChangeArguments unwraps doubly serialized structural arguments", () => {
 	const expected = {
 		path: "src/a.ts",
-		changes: [{ operation: "replace", anchor: "1#BH", lines: ["first", "second"] }],
+		changes: [{ operation: "replace", anchor: "1#BHJ", lines: ["first", "second"] }],
 	};
 	const prepared = prepareFileChangeArguments(
 		JSON.stringify({
@@ -43,12 +43,11 @@ test("prepareFileChangeArguments leaves strings inside lines untouched", () => {
 	const sourceLine = JSON.stringify(JSON.stringify({ valid: "source text" }));
 	const prepared = prepareFileChangeArguments({
 		path: "src/a.ts",
-		changes: JSON.stringify(JSON.stringify([{ operation: "replace", anchor: "1#BH", lines: [sourceLine] }]))
+		changes: JSON.stringify(JSON.stringify([{ operation: "replace", anchor: "1#BHJ", lines: [sourceLine] }]))
 	});
-
 	assert.deepEqual(prepared, {
 		path: "src/a.ts",
-		changes: [{ operation: "replace", anchor: "1#BH", lines: [sourceLine] }],
+		changes: [{ operation: "replace", anchor: "1#BHJ", lines: [sourceLine] }],
 	});
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
 });
@@ -56,7 +55,7 @@ test("prepareFileChangeArguments leaves strings inside lines untouched", () => {
 test("prepareFileChangeArguments leaves over-nested or invalid JSON for schema rejection", () => {
 	const overNested = prepareFileChangeArguments({
 		path: "src/a.ts",
-		changes: JSON.stringify(JSON.stringify(JSON.stringify(JSON.stringify([{ operation: "delete", anchor: "1#BH" }])))),
+		changes: JSON.stringify(JSON.stringify(JSON.stringify(JSON.stringify([{ operation: "delete", anchor: "1#BHJ" }])))),
 	});
 	const invalid = prepareFileChangeArguments({ path: "src/a.ts", changes: "[{invalid" });
 
@@ -70,15 +69,15 @@ test("prepareFileChangeArguments normalizes range aliases and rendered anchor li
 		changes: [
 			{
 				op: "replace-range",
-				anchor: "10#BJ:old first line",
-				end_anchor: "12#JM:old last line",
+			anchor: "10#BJL:old first line",
+			end_anchor: "12#JMN:old last line",
 				lines: ["replacement"],
 			},
 		],
 	});
 	assert.deepEqual(prepared, {
 		path: "src/a.ts",
-		changes: [{ operation: "replace", anchor: "10#BJ", end_anchor: "12#JM", lines: ["replacement"] }],
+		changes: [{ operation: "replace", anchor: "10#BJL", end_anchor: "12#JMN", lines: ["replacement"] }],
 	});
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
 });
@@ -86,12 +85,11 @@ test("prepareFileChangeArguments normalizes range aliases and rendered anchor li
 test("prepareFileChangeArguments rejects a range alias without end_anchor", () => {
 	const prepared = prepareFileChangeArguments({
 		path: "src/a.ts",
-		changes: [{ operation: "replace-range", anchor: "10#BJ", lines: ["replacement"] }],
+		changes: [{ operation: "replace-range", anchor: "10#BJL", lines: ["replacement"] }],
 	});
-
 	assert.deepEqual(prepared, {
 		path: "src/a.ts",
-		changes: [{ operation: "replace-range", anchor: "10#BJ", lines: ["replacement"] }],
+		changes: [{ operation: "replace-range", anchor: "10#BJL", lines: ["replacement"] }],
 	});
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), false);
 });
@@ -99,11 +97,11 @@ test("prepareFileChangeArguments rejects a range alias without end_anchor", () =
 test("prepareFileChangeArguments preserves ambiguous and unknown fields for schema rejection", () => {
 	const ambiguous = prepareFileChangeArguments({
 		path: "src/a.ts",
-		changes: [{ operation: "delete", anchor: "1#BH", lines: ["do not guess"] }],
+		changes: [{ operation: "delete", anchor: "1#BHJ", lines: ["do not guess"] }],
 	});
 	const unknown = prepareFileChangeArguments({
 		path: "src/a.ts",
-		changes: [{ operation: "replace", anchor: "1#BH", lines: ["next"], content: "legacy" }],
+		changes: [{ operation: "replace", anchor: "1#BHJ", lines: ["next"], content: "legacy" }],
 	});
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, ambiguous), false);
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, unknown), false);
@@ -112,7 +110,7 @@ test("prepareFileChangeArguments preserves ambiguous and unknown fields for sche
 test("prepareFileChangeArguments does not split embedded newlines in an existing lines array", () => {
 	const prepared = prepareFileChangeArguments({
 		path: "src/a.ts",
-		changes: [{ operation: "replace", anchor: "1#BH", lines: ["first\nsecond"] }],
+		changes: [{ operation: "replace", anchor: "1#BHJ", lines: ["first\nsecond"] }],
 	});
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), false);
 });

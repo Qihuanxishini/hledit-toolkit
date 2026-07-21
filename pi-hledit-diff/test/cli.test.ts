@@ -18,7 +18,7 @@ test("resolveHleditBin uses the fixed bundled CLI path", () => {
 test("runHledit executes the fixed bundled CLI", async () => {
 	const run = await runHledit(["capabilities"], undefined, process.cwd(), undefined);
 
-	assert.deepEqual(parseHleditCapabilities(run), { version: "1.5.0", readRangeMetadata: true, batchInsertAfter: true, batchCheck: true, batchUpdatedAnchors: true, batchStaleContext: true });
+	assert.deepEqual(parseHleditCapabilities(run), { version: "2.0.0", anchorProtocolV2: true, readRangeMetadata: true, batchInsertAfter: true, batchCheck: true, batchUpdatedAnchors: true, batchStaleContext: true });
 });
 
 test("runHledit reports an already-aborted invocation", async () => {
@@ -32,8 +32,8 @@ test("runHledit reports an already-aborted invocation", async () => {
 
 test("parseHleditCapabilities requires structured reads and patched batch capabilities", () => {
 	assert.deepEqual(
-		parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }),
-		{ version: "1.2.6", readRangeMetadata: true, batchInsertAfter: true, batchCheck: true, batchUpdatedAnchors: true, batchStaleContext: true },
+		parseHleditCapabilities({ stdout: '{"ok":true,"version":"2.0.0","anchorProtocolV2":true,"readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }),
+		{ version: "2.0.0", anchorProtocolV2: true, readRangeMetadata: true, batchInsertAfter: true, batchCheck: true, batchUpdatedAnchors: true, batchStaleContext: true },
 	);
 	assert.equal(
 		parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }),
@@ -42,7 +42,7 @@ test("parseHleditCapabilities requires structured reads and patched batch capabi
 	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true}', stderr: "", exitCode: 0 }), undefined);
 	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }), undefined);
 	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true}', stderr: "", exitCode: 0 }), undefined);
-	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 1 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"2.0.0","readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }), undefined);
 	assert.equal(parseHleditCapabilities({ stdout: "not json", stderr: "", exitCode: 0 }), undefined);
 });
 
@@ -69,7 +69,7 @@ test("bundled batch emits plugin-compatible updated anchors", async (t) => {
 
 	const read = await runHledit(["read-range", target, "--offset", "2", "--limit", "1"], undefined, directory, undefined);
 	const renderedAnchor = read.stdout.trim().split(/\r?\n/, 1)[0]!;
-	assert.match(renderedAnchor, /^2#[A-Za-z0-9]+:two$/);
+	assert.match(renderedAnchor, /^2#[A-Za-z0-9_-]{3}:two$/);
 	const anchor = renderedAnchor.split(":", 1)[0]!;
 	const request = JSON.stringify({ edits: [{ op: "replace", pos: anchor, lines: ["TWO"] }] });
 

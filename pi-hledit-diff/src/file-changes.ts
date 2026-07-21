@@ -1,6 +1,6 @@
 import type { FileChangeParams } from "./schema.ts";
 
-export const ANCHOR_HASH_PATTERN = "[BHJKMNPQRSTVWXYZ]{2}";
+export const ANCHOR_HASH_PATTERN = "[A-Za-z0-9_-]{3}";
 export const ANCHOR_PATTERN = `^\\d+#${ANCHOR_HASH_PATTERN}$`;
 
 type CliBatchEdit = {

@@ -16,11 +16,11 @@ test("schemas compile with the host-aligned TypeBox version", () => {
 	const applyValidator = Compile(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA);
 
 	assert.equal(readValidator.Check({ path: "src/a.ts", offset: 1, limit: 20 }), true);
-	assert.equal(applyValidator.Check({ path: "src/a.ts", changes: [{ operation: "delete", anchor: "1#BH" }] }), true);
+	assert.equal(applyValidator.Check({ path: "src/a.ts", changes: [{ operation: "delete", anchor: "1#BHJ" }] }), true);
 });
 
 test("apply file changes rejects anchors outside the CLI hash alphabet", () => {
-	for (const anchor of ["1#AA", "1#J0", "1#Ja", "1#BHK"]) {
+	for (const anchor of ["1#AA", "1#J+0", "1#BHK!", "1#BH", " 1#BHJ", "1 #BHJ", "1#BHJ :text"]) {
 		assert.equal(
 			Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
 				path: "src/a.ts",
@@ -36,9 +36,9 @@ test("apply file changes accepts a strict discriminated change set", () => {
 		Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
 			path: "src/a.ts",
 			changes: [
-				{ operation: "replace", anchor: "1#BH", lines: ["next"] },
-				{ operation: "delete", anchor: "3#BB", end_anchor: "4#JK" },
-				{ operation: "insert", anchor: "6#MN", position: "after", lines: ["one"] },
+				{ operation: "replace", anchor: "1#BHJ", lines: ["next"] },
+				{ operation: "delete", anchor: "3#BBK", end_anchor: "4#JKL" },
+				{ operation: "insert", anchor: "6#MNP", position: "after", lines: ["one"] },
 			],
 		}),
 		true,
@@ -46,14 +46,14 @@ test("apply file changes accepts a strict discriminated change set", () => {
 });
 
 test("apply file changes rejects legacy and mixed protocol fields", () => {
-	const base = { path: "src/a.ts", changes: [{ operation: "replace", anchor: "1#BH", lines: ["next"] }] };
+	const base = { path: "src/a.ts", changes: [{ operation: "replace", anchor: "1#BHJ", lines: ["next"] }] };
 
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, { ...base, op: "batch" }), false);
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, { ...base, edits: "[]" }), false);
 	assert.equal(
 		Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
 			path: "src/a.ts",
-			changes: [{ operation: "replace", anchor: "1#BH", lines: ["next"], content: "legacy" }],
+			changes: [{ operation: "replace", anchor: "1#BHJ", lines: ["next"], content: "legacy" }],
 		}),
 		false,
 	);
@@ -63,35 +63,35 @@ test("apply file changes rejects invalid operation-specific fields", () => {
 	assert.equal(
 		Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
 			path: "src/a.ts",
-			changes: [{ operation: "replace", anchor: "1#BH", lines: [] }],
+			changes: [{ operation: "replace", anchor: "1#BHJ", lines: [] }],
 		}),
 		false,
 	);
 	assert.equal(
 		Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
 			path: "src/a.ts",
-			changes: [{ operation: "delete", anchor: "1#BH", lines: ["wrong"] }],
+			changes: [{ operation: "delete", anchor: "1#BHJ", lines: ["wrong"] }],
 		}),
 		false,
 	);
 	assert.equal(
 		Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
 			path: "src/a.ts",
-			changes: [{ operation: "insert", anchor: "1#BH", lines: ["missing position"] }],
+			changes: [{ operation: "insert", anchor: "1#BHJ", lines: ["missing position"] }],
 		}),
 		false,
 	);
 	assert.equal(
 		Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
 			path: "src/a.ts",
-			changes: [{ operation: "insert", anchor: "1#BH", position: "before", end_anchor: "2#BB", lines: ["wrong"] }],
+			changes: [{ operation: "insert", anchor: "1#BHJ", position: "before", end_anchor: "2#BBK", lines: ["wrong"] }],
 		}),
 		false,
 	);
 	assert.equal(
 		Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
 			path: "src/a.ts",
-			changes: [{ operation: "replace", anchor: "1#BH", lines: ["first\nsecond"] }],
+			changes: [{ operation: "replace", anchor: "1#BHJ", lines: ["first\nsecond"] }],
 		}),
 		false,
 	);

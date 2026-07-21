@@ -167,7 +167,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		promptSnippet: "修改文本文件前读取最新锚点",
 		promptGuidelines: [
 			"修改文本文件前立即调用 hledit_read_anchors；必须原样复制 LN#HASH，绝不能编造锚点。",
-			"hledit_read_anchors 在位置已知时只使用 offset 和 limit 读取受影响范围。输出 51#BJ:text 中，锚点仅为 51#BJ。",
+			"hledit_read_anchors 在位置已知时只使用 offset 和 limit 读取受影响范围。输出 51#aB3:text 中，锚点仅为 51#aB3。",
 		],
 		parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 		prepareArguments: prepareReadAnchorsArguments,
@@ -200,7 +200,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			"hledit_apply_file_changes 因单锚点 replace 被拒绝后不得原样重试；替换代码块时在同一项 replace 中补充 end_anchor，保留锚点行时改用 insert after 且不要重复锚点行。",
 			"hledit_apply_file_changes 中不得出现 #??/#XX 等占位锚点、operation:read 或未完成的修改；必须先单独调用 hledit_read_anchors。",
 			"hledit_apply_file_changes 的 delete 使用 { operation: \"delete\", anchor, end_anchor? }，不带 lines；insert 使用 { operation: \"insert\", anchor, position: \"before\" | \"after\", lines }。",
-			"hledit_apply_file_changes 是原子批次：任一项无效、冲突或锚点失效都会零写入。stale 返回的当前锚点快照只能供核对；不得自动重试或覆盖并发修改，快照缺失或截断时才重新读取受影响范围。",
+			"hledit_apply_file_changes 是原子批次：任一项无效、冲突或锚点失效都会零写入。stale 返回的当前锚点快照只能供核对；不得自动重试或覆盖并发修改。只有确认快照窗口仍覆盖原定目标及完整范围时，才可使用其中的新锚点；快照缺失、截断或无法确认范围时必须重新读取。",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 		prepareArguments: prepareFileChangeArguments,

@@ -5,13 +5,13 @@ import (
 	"regexp"
 )
 
-var anchorRE = regexp.MustCompile(`^\s*(\d+)\s*#\s*([ZPMQVRWSNKTXJBYH]{2})`)
+var anchorRE = regexp.MustCompile(`^(\d+)#([A-Za-z0-9_-]{3})(?::.*)?\s*$`)
 
-// parseAnchor parses a single-line anchor string like "5#WS".
+// parseAnchor accepts a strict LN#HHH anchor with an optional direct :text annotation.
 func parseAnchor(s string) (Anchor, error) {
 	matches := anchorRE.FindStringSubmatch(s)
 	if len(matches) != 3 {
-		return Anchor{}, fmt.Errorf("invalid anchor %q: expected LN#HH (e.g. \"5#WS\")", s)
+		return Anchor{}, fmt.Errorf("invalid anchor %q: expected LN#HHH (e.g. \"5#aB3\")", s)
 	}
 
 	var lineNum int

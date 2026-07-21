@@ -20,9 +20,9 @@ test("buildFileChangeRequest translates every supported change", () => {
 	const params: FileChangeParams = {
 		path: "src/a.ts",
 		changes: [
-			{ operation: "replace", anchor: "1#BH", end_anchor: "2#BB", lines: ["next"] },
-			{ operation: "delete", anchor: "4#JK" },
-			{ operation: "insert", anchor: "6#MN", position: "after", lines: ["one", "two"] },
+			{ operation: "replace", anchor: "1#BHJ", end_anchor: "2#BBK", lines: ["next"] },
+			{ operation: "delete", anchor: "4#JKL" },
+			{ operation: "insert", anchor: "6#MNP", position: "after", lines: ["one", "two"] },
 		],
 	};
 
@@ -30,9 +30,9 @@ test("buildFileChangeRequest translates every supported change", () => {
 		args: ["batch", "src/a.ts"],
 		stdin: JSON.stringify({
 			edits: [
-				{ op: "replace", pos: "1#BH", end_pos: "2#BB", lines: ["next"] },
-				{ op: "delete", pos: "4#JK", lines: [] },
-				{ op: "insert", pos: "6#MN", after: true, lines: ["one", "two"] },
+				{ op: "replace", pos: "1#BHJ", end_pos: "2#BBK", lines: ["next"] },
+				{ op: "delete", pos: "4#JKL", lines: [] },
+				{ op: "insert", pos: "6#MNP", after: true, lines: ["one", "two"] },
 			],
 		}),
 	});
@@ -41,27 +41,27 @@ test("buildFileChangeRequest translates every supported change", () => {
 test("buildFileChangeCheckRequest adds validate-only mode", () => {
 	const request = buildFileChangeCheckRequest({
 		path: "src/a.ts",
-		changes: [{ operation: "replace", anchor: "1#BH", lines: ["next"] }],
+		changes: [{ operation: "replace", anchor: "1#BHJ", lines: ["next"] }],
 	});
 
 	assert.deepEqual(request.args, ["batch", "--check", "src/a.ts"]);
-	assert.equal(request.stdin, '{"edits":[{"op":"replace","pos":"1#BH","lines":["next"]}]}');
+	assert.equal(request.stdin, '{"edits":[{"op":"replace","pos":"1#BHJ","lines":["next"]}]}');
 });
 
 test("buildFileChangeRequest omits after for before inserts", () => {
 	const request = buildFileChangeRequest({
 		path: "src/a.ts",
-		changes: [{ operation: "insert", anchor: "6#MN", position: "before", lines: ["one"] }],
+		changes: [{ operation: "insert", anchor: "6#MNP", position: "before", lines: ["one"] }],
 	});
 
-	assert.equal(request.stdin, '{"edits":[{"op":"insert","pos":"6#MN","lines":["one"]}]}');
+	assert.equal(request.stdin, '{"edits":[{"op":"insert","pos":"6#MNP","lines":["one"]}]}');
 });
 
 test("findSingleAnchorReplacementIssue returns actionable structured guidance", () => {
 	const issue = findSingleAnchorReplacementIssue(
 		{
 			path: "src/a.ts",
-			changes: [{ operation: "replace", anchor: "2#BH", lines: ["two", "inserted"] }],
+			changes: [{ operation: "replace", anchor: "2#BHJ", lines: ["two", "inserted"] }],
 		},
 		"one\ntwo\nthree\n",
 	);
@@ -69,7 +69,7 @@ test("findSingleAnchorReplacementIssue returns actionable structured guidance", 
 	assert.deepEqual(issue, {
 		code: "single_anchor_block_expansion",
 		changeNumber: 1,
-		anchor: "2#BH",
+		anchor: "2#BHJ",
 		outputLineCount: 2,
 		missingField: "end_anchor",
 		replacementLines: ["two", "inserted"],
@@ -88,8 +88,8 @@ test("findSingleAnchorReplacementIssue points out a nearby delete range", () => 
 		{
 			path: "src/a.ts",
 			changes: [
-				{ operation: "replace", anchor: "2#BH", lines: ["two", "replacement"] },
-				{ operation: "delete", anchor: "4#JK", end_anchor: "6#MN" },
+				{ operation: "replace", anchor: "2#BHJ", lines: ["two", "replacement"] },
+				{ operation: "delete", anchor: "4#JKL", end_anchor: "6#MNP" },
 			],
 		},
 		"one\ntwo\nthree\nfour\nfive\nsix\n",
@@ -97,12 +97,12 @@ test("findSingleAnchorReplacementIssue points out a nearby delete range", () => 
 
 	assert.deepEqual(issue?.nearbyDeleteRange, {
 		changeNumber: 2,
-		anchor: "4#JK",
-		endAnchor: "6#MN",
+		anchor: "4#JKL",
+		endAnchor: "6#MNP",
 	});
 	const text = formatSingleAnchorReplacementIssue(verifiedIssue(issue));
-	assert.match(text, /第 2 项 delete 覆盖 4#JK 到 6#MN/);
-	assert.match(text, /"end_anchor": "6#MN"/);
+	assert.match(text, /第 2 项 delete 覆盖 4#JKL 到 6#MNP/);
+	assert.match(text, /"end_anchor": "6#MNP"/);
 	assert.match(text, /移除原 delete/);
 });
 
@@ -111,9 +111,9 @@ test("findSingleAnchorReplacementIssue does not guess between multiple nearby de
 		{
 			path: "src/a.ts",
 			changes: [
-				{ operation: "replace", anchor: "2#BH", lines: ["two", "replacement"] },
-				{ operation: "delete", anchor: "3#BB", end_anchor: "3#BB" },
-				{ operation: "delete", anchor: "4#JK", end_anchor: "5#KM" },
+				{ operation: "replace", anchor: "2#BHJ", lines: ["two", "replacement"] },
+				{ operation: "delete", anchor: "3#BBK", end_anchor: "3#BBK" },
+				{ operation: "delete", anchor: "4#JKL", end_anchor: "5#KMN" },
 			],
 		},
 		"one\ntwo\nthree\nfour\nfive\n",
@@ -128,7 +128,7 @@ test("findSingleAnchorReplacementIssue allows explicit ranges and genuine line r
 		findSingleAnchorReplacementIssue(
 			{
 				path: "src/a.ts",
-				changes: [{ operation: "replace", anchor: "2#BH", end_anchor: "3#BB", lines: ["two", "inserted"] }],
+				changes: [{ operation: "replace", anchor: "2#BHJ", end_anchor: "3#BBK", lines: ["two", "inserted"] }],
 			},
 			"one\ntwo\nthree\n",
 		),
@@ -138,7 +138,7 @@ test("findSingleAnchorReplacementIssue allows explicit ranges and genuine line r
 		findSingleAnchorReplacementIssue(
 			{
 				path: "src/a.ts",
-				changes: [{ operation: "replace", anchor: "2#BH", lines: ["TWO", "inserted"] }],
+				changes: [{ operation: "replace", anchor: "2#BHJ", lines: ["TWO", "inserted"] }],
 			},
 			"one\ntwo\nthree\n",
 		),
@@ -147,8 +147,8 @@ test("findSingleAnchorReplacementIssue allows explicit ranges and genuine line r
 });
 
 test("fileChangeLineRanges preserves each operation range", () => {
-	assert.equal(fileChangeLineRanges([{ anchor: "10#BH", end_anchor: "12#BB" }, { anchor: "4#JK" }]), "10-12,4");
-	assert.equal(fileChangeLineRanges([{ anchor: "4#JK" }]), "4");
+	assert.equal(fileChangeLineRanges([{ anchor: "10#BHJ", end_anchor: "12#BBK" }, { anchor: "4#JKL" }]), "10-12,4");
+	assert.equal(fileChangeLineRanges([{ anchor: "4#JKL" }]), "4");
 	assert.equal(fileChangeLineRanges([]), undefined);
 });
 

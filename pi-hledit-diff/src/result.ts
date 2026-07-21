@@ -328,7 +328,7 @@ function appendCurrentAnchorContext(lines: string[], context: BatchAnchorContext
 	}
 	lines.push("提交时文件中的当前锚点快照（请先核对内容；下一次提交仍会再次校验）：");
 	lines.push(context.lines.map((line) => `${line.anchor}:${line.text}`).join("\n") || "（文件为空）");
-	lines.push("该快照不会自动重试或覆盖并发修改；确认内容符合预期后，才可使用其中的新锚点重新提交。");
+	lines.push("该快照不会自动重试或覆盖并发修改；只有确认窗口仍覆盖原定目标及完整范围时，才可使用其中的新锚点；否则必须重新读取受影响范围。");
 	if (context.truncated || context.lines.some((line) => line.textTruncated)) {
 		lines.push(`当前快照已截断；请调用 hledit_read_anchors，并使用 offset:${context.offset}、limit:${context.desiredLimit} 获取完整范围。`);
 	}
@@ -443,7 +443,7 @@ function formatApplyFailureResult(
 	if (error.code === "stale") {
 		appendCurrentAnchorContext(lines, error.currentAnchors);
 		if (error.currentAnchors) {
-			lines.push("请先检查上方失败快照；确认内容符合预期后，使用其中的新锚点重新提交。");
+			lines.push("只有确认上方窗口仍覆盖原定目标及完整范围时，才可使用其中的新锚点重新提交；否则请重新调用 hledit_read_anchors。");
 		} else {
 			lines.push(staleReadInstruction(result, context.path));
 		}

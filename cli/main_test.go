@@ -75,16 +75,16 @@ func TestSplitArgs(t *testing.T) {
 		t.Fatalf("flags = %q, want %q", got, want)
 	}
 
-	pos, flags = splitArgs([]string{"--after", "file.go", "1#AA", "-"})
-	if got, want := strings.Join(pos, ","), "file.go,1#AA,-"; got != want {
+	pos, flags = splitArgs([]string{"--after", "file.go", "1#aB3", "-"})
+	if got, want := strings.Join(pos, ","), "file.go,1#aB3,-"; got != want {
 		t.Fatalf("insert positionals = %q, want %q", got, want)
 	}
 	if got, want := strings.Join(flags, ","), "--after"; got != want {
 		t.Fatalf("insert flags = %q, want %q", got, want)
 	}
 
-	pos, flags = splitArgs([]string{"-prefix", "file.go", "1#AA"})
-	if got, want := strings.Join(pos, ","), "-prefix,file.go,1#AA"; got != want {
+	pos, flags = splitArgs([]string{"-prefix", "file.go", "1#aB3"})
+	if got, want := strings.Join(pos, ","), "-prefix,file.go,1#aB3"; got != want {
 		t.Fatalf("dash-prefixed path positionals = %q, want %q", got, want)
 	}
 	if got := strings.Join(flags, ","); got != "" {
@@ -98,7 +98,7 @@ func TestMainCapabilities(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("capabilities output is not JSON: %q: %v", out, err)
 	}
-	if !got.OK || got.Version != version || !got.BatchInsertAfter || !got.BatchCheck || !got.BatchUpdatedAnchors || !got.BatchStaleContext || !got.ReadRangeMetadata {
+	if !got.OK || got.Version != version || !got.AnchorProtocolV2 || !got.BatchInsertAfter || !got.BatchCheck || !got.BatchUpdatedAnchors || !got.BatchStaleContext || !got.ReadRangeMetadata {
 		t.Fatalf("capabilities = %#v, want current batch and structured recovery capabilities", got)
 	}
 }
@@ -127,7 +127,7 @@ func TestMainReadAndReadRange(t *testing.T) {
 	}
 
 	out := mainTestRunMain(t, "read", path)
-	if !strings.Contains(out, "1#WV:package main") || !strings.Contains(out, "3#") {
+	if !strings.Contains(out, formatTag(1, "package main")+":package main") || !strings.Contains(out, "3#") {
 		t.Fatalf("read output unexpected:\n%s", out)
 	}
 
@@ -193,9 +193,9 @@ func TestRunMisuseAndUnknownVerb(t *testing.T) {
 	tests := [][]string{
 		{"read"},
 		{"read-range", "file.go", "extra.go"},
-		{"replace", "file.go", "1#AA"},
-		{"replace-range", "file.go", "1#AA", "2#BB"},
-		{"insert", "--before", "--after", "file.go", "1#AA", "-"},
+		{"replace", "file.go", "1#aB3"},
+		{"replace-range", "file.go", "1#aB3", "2#xY7"},
+		{"insert", "--before", "--after", "file.go", "1#aB3", "-"},
 		{"bogus"},
 	}
 	for _, args := range tests {

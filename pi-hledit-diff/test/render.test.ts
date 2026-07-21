@@ -47,7 +47,7 @@ test("renderHleditCall hyperlinks paths when the terminal supports them", () => 
 
 test("renderHleditCall includes changed range and operation count", () => {
 	assert.deepEqual(
-		render(renderHleditCall("apply_file_changes", { path: "src/a.ts", changes: [{ anchor: "4#AA", end_anchor: "6#BB" }] }, theme)),
+		render(renderHleditCall("apply_file_changes", { path: "src/a.ts", changes: [{ anchor: "4#AAB", end_anchor: "6#BBK" }] }, theme)),
 		["apply changes src/a.ts:4-6（1 项操作）"],
 	);
 });
@@ -57,7 +57,7 @@ test("renderHleditCall preserves separate ranges for multiple operations", () =>
 		render(
 			renderHleditCall(
 				"apply_file_changes",
-				{ path: "src/a.ts", changes: [{ anchor: "482#AA" }, { anchor: "484#BB", end_anchor: "489#CC" }] },
+				{ path: "src/a.ts", changes: [{ anchor: "482#AAB" }, { anchor: "484#BBK", end_anchor: "489#CCL" }] },
 				theme,
 			),
 		),
@@ -68,7 +68,7 @@ test("renderHleditCall preserves separate ranges for multiple operations", () =>
 test("renderReadAnchorsResult shows actual range, total lines, and EOF", () => {
     const lines = Array.from({ length: 14 }, (_, index) => ({
         line: index + 1,
-        anchor: `${index + 1}#AA`,
+        anchor: `${index + 1}#AAB`,
         text: `line ${index + 1}`,
         textTruncated: false,
     }));
@@ -90,18 +90,18 @@ test("renderReadAnchorsResult shows actual range, total lines, and EOF", () => {
     const output = render(renderReadAnchorsResult(result, options(), theme, { args: { path: "notes.txt" } }), 80);
 
     assert.equal(output[0], "↳ 14 行锚点 • 第 1-14 行 / 共 14 行 • 已到文件末尾");
-    assert.equal(output[2], " 1#AA │ line 1");
+    assert.equal(output[2], " 1#AAB │ line 1");
     assert.ok(output.some((line) => line.includes("还有 2 行锚点")));
     assert.ok(output.every((line) => visibleWidth(line) <= 80));
 });
 
 test("renderReadAnchorsResult expands structured continuation details", () => {
     const lines = [
-        { line: 8, anchor: "8#AA", text: "first", textTruncated: false },
-        { line: 9, anchor: "9#BB", text: "second", textTruncated: false },
+        { line: 8, anchor: "8#AAB", text: "first", textTruncated: false },
+        { line: 9, anchor: "9#BBK", text: "second", textTruncated: false },
     ];
     const result: TextResult = {
-        content: [{ type: "text", text: "8#AA:first\n9#BB:second\n-- showing lines 8-9 of 20; use offset 10 to continue --" }],
+        content: [{ type: "text", text: "8#AAB:first\n9#BBK:second\n-- showing lines 8-9 of 20; use offset 10 to continue --" }],
         details: {
             disposition: "succeeded",
             read: {
@@ -119,7 +119,7 @@ test("renderReadAnchorsResult expands structured continuation details", () => {
     const output = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "notes.txt" } }), 80);
 
     assert.equal(output[0], "↳ 2 行锚点 • 第 8-9 行 / 共 20 行 • 下一页从第 10 行开始");
-    assert.ok(output.includes("8#AA │ first"));
+    assert.ok(output.includes("8#AAB │ first"));
     assert.ok(output.some((line) => line.includes("继续读取请使用 offset 10")));
 });
 
@@ -145,8 +145,8 @@ test("renderReadAnchorsResult folds structured errors to the actionable message"
 
 test("renderReadAnchorsResult caches its final width and invalidates highlighted output", () => {
     const lines = [
-        { line: 1, anchor: "1#AA", text: "const alpha = 1;", textTruncated: false },
-        { line: 2, anchor: "2#BB", text: "const beta = alpha + 1;", textTruncated: false },
+        { line: 1, anchor: "1#AAB", text: "const alpha = 1;", textTruncated: false },
+        { line: 2, anchor: "2#BBK", text: "const beta = alpha + 1;", textTruncated: false },
     ];
     const result: TextResult = {
         content: [{ type: "text", text: lines.map((line) => `${line.anchor}:${line.text}`).join("\n") }],
@@ -257,7 +257,7 @@ test("renderFileChangesResult gives added and removed code rows distinct tinted 
 
 test("renderFileChangesResult caches expanded anchors without mutating the diff result", () => {
 	const result: TextResult = {
-		content: [{ type: "text", text: "修改已应用。\n\n更新后的锚点：\n2#ZZ:BETA" }],
+		content: [{ type: "text", text: "修改已应用。\n\n更新后的锚点：\n2#ZZZ:BETA" }],
 		details: { disposition: "succeeded", diff: "-2 beta\n+2 BETA", editsApplied: 1 },
 	};
 	const component = renderFileChangesResult(result, options(true), theme, { args: { path: "notes.txt" } });
@@ -265,7 +265,7 @@ test("renderFileChangesResult caches expanded anchors without mutating the diff 
 
 	assert.strictEqual(component.render(72), first);
 	assert.equal(first.filter((line) => line.includes("更新后的锚点")).length, 1);
-	assert.ok(first.includes("2#ZZ │ BETA"));
+	assert.ok(first.includes("2#ZZZ │ BETA"));
 	assert.ok(first.every((line) => visibleWidth(line) <= 72));
 
 	component.invalidate();

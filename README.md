@@ -6,14 +6,14 @@
 
 | 目录 | 用途 |
 | --- | --- |
-| [`cli/`](./cli/) | Go 编写的 `hledit` CLI：校验 `LN#HASH` 锚点、原子执行批量修改，并直接返回受限的新锚点窗口。 |
+| [`cli/`](./cli/) | Go 编写的 `hledit` CLI：校验 v2 `LN#HASH`（三位 URL-safe Base64）锚点、原子执行批量修改，并直接返回受限的新锚点窗口。 |
 | [`pi-hledit-diff/`](./pi-hledit-diff/) | Pi 插件：注册严格的 `hledit_read_anchors` 与 `hledit_apply_file_changes` 工具，并提供 diff 渲染。 |
 
 插件当前面向 Windows x64，仓库内附带 `pi-hledit-diff/bin/hledit.exe`。
 
 ## 核心特点
 
-- 使用 `LN#HASH` 锚点检测读取后发生的文件变化，拒绝 stale 修改。
+- 使用 v2 `LN#HASH`（三位 URL-safe Base64 hash）锚点检测读取后发生的文件变化，拒绝 stale 修改。
 - 一次 batch 原子提交同一文件中的多个非冲突修改。
 - 单次重建文件，避免多 edit 场景下反复复制整份内容。
 - batch 成功后直接返回 `updatedAnchors`，无需再次启动 `read-range`。
@@ -44,6 +44,7 @@ npm run check
 
 ```json
 {
+  "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,
   "batchCheck": true,
@@ -52,7 +53,7 @@ npm run check
 }
 ```
 
-读取结果必须携带 `totalLines` 和严格截断元数据；batch 成功响应必须携带合法的 `updatedAnchors`，stale batch 响应必须携带同一校验快照的 `currentAnchors`。插件不保留旧 CLI 的读取或修改后回退路径。
+读取结果必须携带 `totalLines` 和严格截断元数据；batch 成功响应必须携带合法的 `updatedAnchors`，stale batch 响应必须携带同一校验快照的 `currentAnchors`。快照仅供核对：只有确认其窗口仍覆盖原定目标及完整范围时才可显式重试，否则必须重新读取。插件不保留旧 CLI 的读取或修改后回退路径。
 
 ## 开发仓库与运行目录
 

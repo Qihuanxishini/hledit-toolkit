@@ -25,6 +25,7 @@ CLI 必须返回非空版本，并同时声明：
 ```json
 {
   "ok": true,
+  "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,
   "batchCheck": true,
@@ -65,7 +66,7 @@ CLI 必须返回非空版本，并同时声明：
 {
   "ok": true,
   "totalLines": 120,
-  "lines": [{"line":51,"anchor":"51#BJ","text":"source","textTruncated":false}],
+  "lines": [{"line":51,"anchor":"51#aB3","text":"source","textTruncated":false}],
   "truncated": true,
   "nextOffset": 52
 }
@@ -83,18 +84,18 @@ CLI 必须返回非空版本，并同时声明：
   changes: [
     {
       operation: "replace",
-      anchor: "12#NK",
-      end_anchor?: "18#VR",
+      anchor: "12#aB3",
+      end_anchor?: "18#xY7",
       lines: ["new line", "another line"],
     },
     {
       operation: "delete",
-      anchor: "24#TX",
-      end_anchor?: "29#BJ",
+      anchor: "24#nK2",
+      end_anchor?: "29#Qw_",
     },
     {
       operation: "insert",
-      anchor: "30#VR",
+      anchor: "30#xY7",
       position: "before" | "after",
       lines: ["logger.info(\"ready\");"],
     },
@@ -109,7 +110,7 @@ CLI 必须返回非空版本，并同时声明：
 - `delete` 不接受 `lines`；
 - `insert` 必须提供 `position`，且不接受 `end_anchor`；
 - `replace` / `delete` 的 `end_anchor` 是包含端点的范围；
-- anchor 格式必须与 CLI 一致：`LN#[BHJKMNPQRSTVWXYZ]{2}`，不接受数字、小写、任意字母或非两位 hash；
+- anchor 格式必须与 CLI 一致：`LN#[A-Za-z0-9_-]{3}`，只接受三位 URL-safe Base64 hash；旧两位锚点必须拒绝；
 - `replace` 未提供 `end_anchor` 时只消费一个源文件行，`lines` 有多行也不会隐式覆盖后续源行；替换旧代码块时，`anchor` 与 `end_anchor` 必须位于同一项 change；兼容别名 `replace-range` 仅在存在字符串 `end_anchor` 时归一化，否则必须由 schema 拒绝；
 - 单锚点多行 `replace` 若首个输出行与原锚点行完全相同，插件先调用 `batch --check` 验证整个批次。stale、冲突或非法请求优先返回 CLI 错误；仅在 check 成功后返回高风险块扩展指导；
 - 错误正文必须列出实际 operation、anchor、缺失的 `end_anchor` 和 lines 行数，并禁止原样重试。不存在安全结束锚点时要求重新读取且不得输出占位 anchor；`insert after` 模板使用原 lines 去除重复首行后的真实内容；
@@ -159,9 +160,9 @@ TUI 渲染由插件自身完成，不通过全局 adapter API 委托给其他扩
 ```json
 {
   "edits": [
-    {"op":"replace","pos":"12#NK","end_pos":"18#VR","lines":["new block"]},
-    {"op":"delete","pos":"24#TX","lines":[]},
-    {"op":"insert","pos":"30#VR","after":true,"lines":["logger.info(\"ready\");"]}
+    {"op":"replace","pos":"12#aB3","end_pos":"18#xY7","lines":["new block"]},
+    {"op":"delete","pos":"24#nK2","lines":[]},
+    {"op":"insert","pos":"30#xY7","after":true,"lines":["logger.info(\"ready\");"]}
   ]
 }
 ```
@@ -187,7 +188,7 @@ CLI 必须拒绝且不得写入：
   "editsApplied": 1,
   "contentChanged": true,
   "updatedAnchors": {
-    "lines": [{"line":12,"anchor":"12#BJ","text":"updated"}],
+    "lines": [{"line":12,"anchor":"12#aB3","text":"updated"}],
     "offset": 10,
     "limit": 5,
     "desiredLimit": 5,
@@ -234,7 +235,7 @@ CLI 默认使用修改区域前后 2 行、最多 20 行和约 4096 bytes 的窗
 单锚点块扩展的模型可见正文必须明确禁止原样重试。没有安全结束锚点时要求重新读取且不得生成违反 anchor schema 的占位值；保留锚点行时提供使用真实剩余 lines 的 `insert after`；存在唯一紧邻 delete 时才提供完整范围 `replace`。TUI 折叠摘要必须直接包含缺失字段和修复动作。
 不兼容成功响应与 batch 拒绝不同：CLI 可能已经写入。错误正文必须要求重新读取当前文件，不得声称零写入或直接建议重试。
 
-stale 的 remap 只用于定位，不能自动替换后重试。stale batch 必须携带 `currentAnchors`，其内容来自拒绝该 batch 时的同一文件快照，插件会将其同时放入正文与 `details.error.currentAnchors`。调用方须先核对当前文本，再显式使用其中未截断的新锚点提交；上下文缺失或截断时才调用 `hledit_read_anchors`。任何路径都不得自动重试或覆盖并发修改。
+stale 的 remap 只用于定位，不能自动替换后重试。stale batch 必须携带 `currentAnchors`，其内容来自拒绝该 batch 时的同一文件快照，插件会将其同时放入正文与 `details.error.currentAnchors`。调用方只能在未截断窗口仍明确覆盖原定目标及完整范围时，显式使用其中的新锚点提交；上下文缺失、截断或无法确认范围时必须调用 `hledit_read_anchors`。任何路径都不得自动重试或覆盖并发修改。
 
 ## 源码结构
 
@@ -283,7 +284,7 @@ go build -trimpath -ldflags="-s -w" -o ../pi-hledit-diff/bin/hledit.exe .
 ../pi-hledit-diff/bin/hledit.exe capabilities
 ```
 
-capabilities 必须同时返回 `readRangeMetadata:true`、`batchInsertAfter:true`、`batchCheck:true`、`batchUpdatedAnchors:true` 和 `batchStaleContext:true`。
+capabilities 必须同时返回 `anchorProtocolV2:true`、`readRangeMetadata:true`、`batchInsertAfter:true`、`batchCheck:true`、`batchUpdatedAnchors:true` 和 `batchStaleContext:true`。
 
 ## 升级原则
 

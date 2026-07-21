@@ -18,10 +18,10 @@ hledit capabilities
 Outputs one JSON object describing behavior that integrations may require:
 
 ```json
-{ "ok": true, "version": "1.5.0", "readRangeMetadata": true, "batchInsertAfter": true, "batchCheck": true, "batchUpdatedAnchors": true, "batchStaleContext": true }
+{ "ok": true, "version": "2.0.0", "anchorProtocolV2": true, "readRangeMetadata": true, "batchInsertAfter": true, "batchCheck": true, "batchUpdatedAnchors": true, "batchStaleContext": true }
 ```
 
-The bundled Pi extension requires `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, `batchUpdatedAnchors:true`, and `batchStaleContext:true`; a successful `help` command alone is not a compatibility guarantee.
+The bundled Pi extension requires `anchorProtocolV2:true`, `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, `batchUpdatedAnchors:true`, and `batchStaleContext:true`; a successful `help` command alone is not a compatibility guarantee.
 
 ## 2. Verbs
 
@@ -34,11 +34,11 @@ hledit read <file> [--grep <pattern>] [--context N] [--json]
 Reads the entire file. Each line is emitted as:
 
 ```
-<LN>#<HH>:<content>
+<LN>#<HHH>:<content>
 ```
 
 - `LN` — 1-indexed line number.
-- `HH` — 2-character hash (see §3).
+- `HHH` — 3-character URL-safe Base64 hash (see §3).
 - `:` — literal separator.
 - Content includes the original line without trailing `\n` or `\r`.
 - `--grep` — substring match; only matching lines are emitted.
@@ -92,7 +92,7 @@ hledit anchors <file> [--offset <N>] [--limit <M>] [--grep <pattern>] [--context
 ```
 
 - Same flags and filtering as `read-range`.
-- Emits `ANCHOR<TAB>TEXT` instead of `LN#HH:TEXT`.
+- Emits `ANCHOR<TAB>TEXT` instead of `LN#HHH:TEXT`.
 - Same truncation behavior at 50 KB / 2,000 lines from the offset.
 - `--json` — same JSON shape.
 
@@ -108,7 +108,7 @@ If `--offset` exceeds file length, emit:
 hledit replace <file> <anchor> <content-source>
 ```
 
-- `anchor` — `LN#HH` targeting a single line.
+- `anchor` — `LN#HHH` targeting a single line.
 - `content-source` — `-` for stdin, or a file path.
 - Reads replacement content from the source (one or more lines).
 - If content is empty, the line is **deleted**.
@@ -127,8 +127,8 @@ hledit replace <file> <anchor> <content-source>
 hledit replace-range <file> <anchor> <end-anchor> <content-source>
 ```
 
-- `anchor` — start `LN#HH` (inclusive).
-- `end-anchor` — end `LN#HH` (inclusive).
+- `anchor` — start `LN#HHH` (inclusive).
+- `end-anchor` — end `LN#HHH` (inclusive).
 - Replaces all lines from `anchor.Line` through `end-anchor.Line` with the new content.
 - If content is empty, the range is **deleted**.
 
@@ -166,10 +166,10 @@ Reads a JSON `BatchEditRequest` from stdin:
 ```json
 {
   "edits": [
-    { "op": "replace", "pos": "12#NK", "lines": ["new line"] },
-    { "op": "replace", "pos": "12#NK", "end_pos": "18#VR", "lines": ["new block"] },
-    { "op": "delete", "pos": "5#TX", "lines": [] },
-    { "op": "insert", "pos": "8#VR", "after": true, "lines": ["inserted"] }
+    { "op": "replace", "pos": "12#aB3", "lines": ["new line"] },
+    { "op": "replace", "pos": "12#aB3", "end_pos": "18#xY7", "lines": ["new block"] },
+    { "op": "delete", "pos": "5#nK2", "lines": [] },
+    { "op": "insert", "pos": "8#Qw_", "after": true, "lines": ["inserted"] }
   ]
 }
 ```
@@ -195,18 +195,20 @@ Application:
 computeLineHash(lineNum, line):
   1. line = trimRight(line, '\r')
   2. line = trimRight(line, whitespace)
-  3. if line has NO letter AND NO digit:
-       mix lineNum into FNV-1a state before content
-  4. h = FNV-1a-32()
+  3. h = FNV-1a-32()
+  4. if line has NO letter AND NO digit:
+       mix lineNum into h before content
   5. h.write(line)
   6. sum = h.sum32()
-  7. lo = sum & 0xFF
-  8. return nibble(lo >> 4) + nibble(lo & 0x0F)
+  7. low18 = sum & 0x3FFFF
+  8. return base64url((low18 >> 12) & 0x3F) + base64url((low18 >> 6) & 0x3F) + base64url(low18 & 0x3F)
 ```
 
-**Nibble alphabet:** `ZPMQVRWSNKTXJBYH` (index 0–15)
+**URL-safe Base64 alphabet:** `ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_` (index 0–63)
 
-**Line-number mixing** (step 3): Write the line number as a varint-style sequence of bytes (little-endian, stopping at first zero high byte) into the hash state before the line content. This ensures structurally identical non-significant lines (e.g. two blank lines, or `}` at different positions) produce different hashes.
+**Anchor grammar:** `LN#HHH` has no internal whitespace. CLI parsing additionally permits either a direct `:source-text` annotation from rendered output or trailing whitespace; the Pi tool schema accepts only the bare anchor.
+
+**Line-number mixing** (step 4): Write the line number as a varint-style sequence of bytes (little-endian, stopping at first zero high byte) into the hash state before the line content. This ensures structurally identical non-significant lines (e.g. two blank lines, or `}` at different positions) produce different hashes.
 
 **Detection of "significant" lines:** A line is significant if it contains at least one Unicode letter (`IsLetter`) or one Unicode digit (`IsDigit`). Blank lines, `{`, `}`, `),` etc. are non-significant.
 
@@ -241,19 +243,19 @@ When any anchor's hash doesn't match the current file content:
   "ok": false,
   "error": "stale",
   "remaps": [
-    { "requested": "5#TX", "current": "5#NK" },
-    { "requested": "8#QR", "current": "9#VR" }
+    { "requested": "5#nK2", "current": "5#nK3" },
+    { "requested": "8#Qw_", "current": "9#xY7" }
   ],
   "currentAnchors": {
-    "lines": [{ "line": 5, "anchor": "5#NK", "text": "current line" }],
+    "lines": [{ "line": 5, "anchor": "5#nK3", "text": "current line" }],
     "offset": 3, "limit": 5, "desiredLimit": 5, "truncated": false
   },
-  "message": "anchor 5#TX: expected hash TX, got NK"
+  "message": "anchor 5#nK2: expected hash nK2, got nK3"
 }
 ```
 
 - `remaps` helps locate the current content; `currentAnchors` is a bounded window captured from the same file snapshot that rejected the batch.
-- Inspect `currentAnchors` before an explicit retry. It may supply the new anchors directly when complete, but must never trigger automatic retry or overwrite concurrent changes. Re-read only when the context is absent or truncated.
+- Inspect `currentAnchors` before an explicit retry. It may supply the new anchors only when its complete window still covers the intended target and range; otherwise re-read. It must never trigger automatic retry or overwrite concurrent changes.
 - The whole edit is rejected — no partial writes.
 
 ## 6. Success Response
@@ -274,7 +276,7 @@ Batch writes include `contentChanged`, `firstChangedLine`, `lastChangedLine`, `e
   "lastChangedLine": 5,
   "editsApplied": 1,
   "updatedAnchors": {
-    "lines": [{"line":5,"anchor":"5#AB","text":"updated"}],
+    "lines": [{"line":5,"anchor":"5#aB3","text":"updated"}],
     "offset": 3,
     "limit": 5,
     "desiredLimit": 5,
@@ -307,15 +309,15 @@ For `insert`, content must be non-empty. Empty content returns:
 Anchors match the regex:
 
 ```
-^\s*(\d+)\s*#\s*([ZPMQVRWSNKTXJBYH]{2})
+^(\d+)#([A-Za-z0-9_-]{3})(?::.*)?\s*$
 ```
 
-Lenient: tolerates surrounding whitespace. If a model copy-pastes a full annotated line like `5#TX:func main() {`, the parser extracts `5#TX` and ignores the rest.
+The parser accepts an exact `LN#HHH` anchor, with either a direct colon-delimited rendered annotation such as `5#aB3:func main() {` or trailing whitespace. It rejects whitespace inside the anchor, legacy two-character anchors, and trailing text without a colon delimiter.
 
 Invalid anchors return:
 
 ```json
-{ "ok": false, "error": "invalid", "message": "invalid anchor \"foo\": expected LN#HH" }
+{ "ok": false, "error": "invalid", "message": "invalid anchor \"foo\": expected LN#HHH" }
 ```
 
 ## 9. Exit Codes
@@ -334,7 +336,7 @@ Exit code 1 is only for infrastructure failures. All logical errors (stale, inva
 ├── main.go          # Entry point, CLI dispatch
 ├── read.go          # read + read-range + anchors verbs
 ├── edit.go          # replace, replace-range, insert verbs
-├── hash.go          # FNV-1a hash, nibble alphabet, formatTag
+├── hash.go          # FNV-1a hash, Base64url alphabet, formatTag
 ├── types.go         # Anchor, EditResult, EditError, response types
 ├── anchor.go        # Anchor parsing + validation
 ├── write.go         # Atomic write logic (temp + rename)

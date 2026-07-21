@@ -71,18 +71,12 @@ function normalizeChange(value: unknown): unknown {
 		return parsed;
 	}
 
-	// 仅修复语义唯一的常见偏差；其余字段保留给 schema 拒绝，避免猜测写入意图。
+	// 只修复不改变编辑语义的序列化偏差；旧 operation 与旧字段由严格 schema 直接拒绝。
 	const change: JsonRecord = { ...parsed };
-	if (change.operation === undefined && typeof change.op === "string") {
-		change.operation = change.op;
-		delete change.op;
-	}
-	if (change.operation === "replace-range" && typeof change.end_anchor === "string") {
-		change.operation = "replace";
-	}
-	change.anchor = normalizeAnchor(change.anchor);
-	if ("end_anchor" in change) {
-		change.end_anchor = normalizeAnchor(change.end_anchor);
+	for (const field of ["anchor", "start_anchor", "end_anchor"] as const) {
+		if (field in change) {
+			change[field] = normalizeAnchor(change[field]);
+		}
 	}
 	if ("lines" in change) {
 		change.lines = normalizeRawLines(change.lines);

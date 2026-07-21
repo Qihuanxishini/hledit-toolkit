@@ -19,25 +19,31 @@ function buildCliBatchRequest(params: FileChangeParams): CliBatchRequest {
 	return {
 		edits: params.changes.map((change) => {
 			switch (change.operation) {
-				case "replace":
+				case "replace_range":
 					return {
 						op: "replace",
-						pos: change.anchor,
-						...(change.end_anchor ? { end_pos: change.end_anchor } : {}),
+						pos: change.start_anchor,
+						end_pos: change.end_anchor,
 						lines: change.lines,
 					};
-				case "delete":
+				case "delete_range":
 					return {
 						op: "delete",
-						pos: change.anchor,
-						...(change.end_anchor ? { end_pos: change.end_anchor } : {}),
+						pos: change.start_anchor,
+						end_pos: change.end_anchor,
 						lines: [],
 					};
-				case "insert":
+				case "insert_before":
 					return {
 						op: "insert",
 						pos: change.anchor,
-						after: change.position === "after" ? true : undefined,
+						lines: change.lines,
+					};
+				case "insert_after":
+					return {
+						op: "insert",
+						pos: change.anchor,
+						after: true,
 						lines: change.lines,
 					};
 			}
@@ -67,24 +73,32 @@ export function lineFromAnchor(anchor: unknown): number | undefined {
 
 export type NearbyDeleteRangeHint = {
 	changeNumber: number;
-	anchor: string;
+	startAnchor: string;
 	endAnchor: string;
 };
 
-export type SingleAnchorReplacementIssue = {
-	code: "single_anchor_block_expansion";
+export type SingleLineRangeExpansionIssue = {
+	code: "single_line_range_expansion";
 	changeNumber: number;
 	anchor: string;
 	outputLineCount: number;
-	missingField: "end_anchor";
 	replacementLines: string[];
 	insertLines: string[];
 	nearbyDeleteRange?: NearbyDeleteRangeHint;
 };
 
-export type VerifiedSingleAnchorReplacementIssue = SingleAnchorReplacementIssue & {
+export type VerifiedSingleLineRangeExpansionIssue = SingleLineRangeExpansionIssue & {
 	anchorsVerified: true;
 };
+
+function hasAdjacentDeleteRange(params: FileChangeParams, replacementIndex: number, replacementLine: number): boolean {
+	return params.changes.some((change, index) => {
+		if (index === replacementIndex || change.operation !== "delete_range") {
+			return false;
+		}
+		return lineFromAnchor(change.start_anchor) === replacementLine + 1;
+	});
+}
 
 function findNearbyDeleteRangeHint(
 	params: FileChangeParams,
@@ -92,61 +106,63 @@ function findNearbyDeleteRangeHint(
 	replacementLine: number,
 ): NearbyDeleteRangeHint | undefined {
 	const candidates = params.changes.flatMap((change, index) => {
-		if (index === replacementIndex || change.operation !== "delete" || !change.end_anchor) {
+		if (index === replacementIndex || change.operation !== "delete_range") {
 			return [];
 		}
 
-		const startLine = lineFromAnchor(change.anchor);
+		const startLine = lineFromAnchor(change.start_anchor);
 		const endLine = lineFromAnchor(change.end_anchor);
-		if (
-			startLine === undefined ||
-			endLine === undefined ||
-			startLine <= replacementLine ||
-			startLine > replacementLine + 2 ||
-			endLine < startLine
-		) {
+		if (startLine !== replacementLine + 2 || endLine === undefined || endLine < startLine) {
 			return [];
 		}
-		return [{ changeNumber: index + 1, anchor: change.anchor, endAnchor: change.end_anchor }];
+		return [{ changeNumber: index + 1, startAnchor: change.start_anchor, endAnchor: change.end_anchor }];
 	});
 	return candidates.length === 1 ? candidates[0] : undefined;
 }
 
-export function findSingleAnchorReplacementIssue(
+export function findSingleLineRangeExpansionIssue(
 	params: FileChangeParams,
 	content: string,
-): SingleAnchorReplacementIssue | undefined {
+): SingleLineRangeExpansionIssue | undefined {
 	const sourceLines = content.split(/\r\n|\r|\n/);
 	for (const [index, change] of params.changes.entries()) {
-		if (change.operation !== "replace" || change.end_anchor || change.lines.length <= 1) {
+		if (change.operation !== "replace_range" || change.lines.length <= 1) {
 			continue;
 		}
 
-		const line = lineFromAnchor(change.anchor);
-		const anchoredText = line === undefined ? undefined : sourceLines[line - 1];
-		if (line !== undefined && anchoredText !== undefined && change.lines[0] === anchoredText) {
-			const nearbyDeleteRange = findNearbyDeleteRangeHint(params, index, line);
-			return {
-				code: "single_anchor_block_expansion",
-				changeNumber: index + 1,
-				anchor: change.anchor,
-				outputLineCount: change.lines.length,
-				missingField: "end_anchor",
-				replacementLines: [...change.lines],
-				insertLines: change.lines.slice(1),
-				...(nearbyDeleteRange ? { nearbyDeleteRange } : {}),
-			};
+		const startLine = lineFromAnchor(change.start_anchor);
+		const endLine = lineFromAnchor(change.end_anchor);
+		if (startLine === undefined || endLine !== startLine) {
+			continue;
 		}
+
+		const anchoredText = sourceLines[startLine - 1];
+		if (anchoredText === undefined || change.lines[0] !== anchoredText) {
+			continue;
+		}
+		if (hasAdjacentDeleteRange(params, index, startLine)) {
+			continue;
+		}
+
+		const nearbyDeleteRange = findNearbyDeleteRangeHint(params, index, startLine);
+		return {
+			code: "single_line_range_expansion",
+			changeNumber: index + 1,
+			anchor: change.start_anchor,
+			outputLineCount: change.lines.length,
+			replacementLines: [...change.lines],
+			insertLines: change.lines.slice(1),
+			...(nearbyDeleteRange ? { nearbyDeleteRange } : {}),
+		};
 	}
 	return undefined;
 }
 
-export function formatSingleAnchorReplacementIssue(issue: VerifiedSingleAnchorReplacementIssue): string {
+export function formatSingleLineRangeExpansionIssue(issue: VerifiedSingleLineRangeExpansionIssue): string {
 	const insertTemplate = JSON.stringify(
 		{
-			operation: "insert",
+			operation: "insert_after",
 			anchor: issue.anchor,
-			position: "after",
 			lines: issue.insertLines,
 		},
 		null,
@@ -155,11 +171,11 @@ export function formatSingleAnchorReplacementIssue(issue: VerifiedSingleAnchorRe
 	const lines = [
 		`第 ${issue.changeNumber} 项修改被拒绝。`,
 		"实际收到：",
-		"- operation: replace",
-		`- anchor: ${issue.anchor}`,
-		"- end_anchor: 未提供",
+		"- operation: replace_range",
+		`- start_anchor: ${issue.anchor}`,
+		`- end_anchor: ${issue.anchor}（与 start_anchor 相同）`,
 		`- lines: ${issue.outputLineCount} 行`,
-		"单锚点 replace 只消费 anchor 所在的一行；本次 lines 首行又重复了原锚点行，执行会保留后续旧代码。",
+		"该 replace_range 只覆盖一个源文件行；本次 lines 首行又重复了该行，执行可能保留本应被替换的后续旧代码。",
 		"禁止使用相同参数重试。",
 	];
 
@@ -167,8 +183,8 @@ export function formatSingleAnchorReplacementIssue(issue: VerifiedSingleAnchorRe
 		const hint = issue.nearbyDeleteRange;
 		const mergedTemplate = JSON.stringify(
 			{
-				operation: "replace",
-				anchor: issue.anchor,
+				operation: "replace_range",
+				start_anchor: issue.anchor,
 				end_anchor: hint.endAnchor,
 				lines: issue.replacementLines,
 			},
@@ -176,19 +192,19 @@ export function formatSingleAnchorReplacementIssue(issue: VerifiedSingleAnchorRe
 			2,
 		);
 		lines.push(
-			`检测到同批次第 ${hint.changeNumber} 项 delete 覆盖 ${hint.anchor} 到 ${hint.endAnchor}，且本批次锚点已通过 --check 验证。`,
-			"若该 delete 属于同一个待替换旧代码块，优先将两项合并为以下范围 replace，并移除原 delete：",
+			`检测到同批次第 ${hint.changeNumber} 项 delete_range 覆盖 ${hint.startAnchor} 到 ${hint.endAnchor}，且本批次锚点已通过 --check 验证。`,
+			"若该 delete_range 属于同一个待替换旧代码块，优先将两项合并为以下 replace_range，并移除原 delete_range：",
 			mergedTemplate,
 			"若不是同一代码块，请重新调用 hledit_read_anchors 读取正确的块尾锚点。",
 		);
 	} else {
 		lines.push(
-			"若要替换现有代码块，请先调用 hledit_read_anchors 读取块尾，再在同一项 replace 中提供真实 end_anchor；当前没有可安全使用的结束锚点，因此不提供占位锚点。",
+			"若要替换现有代码块，请先调用 hledit_read_anchors 读取块尾，再将真实块尾写入同一项 replace_range 的 end_anchor；当前没有可安全使用的结束锚点，因此不提供占位锚点。",
 		);
 	}
 
 	lines.push(
-		"若本意是保留锚点行并在其后新增内容，可直接改用以下 insert；其中 lines 已移除重复的锚点行：",
+		"若本意是保留锚点行并在其后新增内容，可直接改用以下 insert_after；其中 lines 已移除重复的锚点行：",
 		insertTemplate,
 	);
 	return lines.join("\n");
@@ -204,7 +220,7 @@ export function fileChangeLineRanges(changes: unknown): string | undefined {
 			return [];
 		}
 		const record = change as Record<string, unknown>;
-		const first = lineFromAnchor(record.anchor);
+		const first = lineFromAnchor(record.start_anchor) ?? lineFromAnchor(record.anchor);
 		const last = lineFromAnchor(record.end_anchor);
 		if (first === undefined && last === undefined) {
 			return [];

@@ -10,12 +10,12 @@
 - `hledit_apply_file_changes`：对一个文件原子提交一组非冲突修改，并直接返回修改后的新锚点。
 
 编辑语义：
-- 锚点格式严格跟随 CLI：`LN#[A-Za-z0-9_-]{3}`；旧两位锚点会在 schema 边界被拒绝，格式合规但内容伪造仍会被 CLI 判为 stale。
-- `replace` 未提供 `end_anchor` 时只消费一个源文件行；替换现有代码块必须在同一项 change 中提供包含端点的 `end_anchor`。兼容别名 `replace-range` 只在同时提供 `end_anchor` 时归一化，否则保留给 schema 拒绝。
-- 若单锚点多行 `replace` 的首行与原锚点行完全相同，插件会判定为高风险块扩展；返回恢复指导前先以 `batch --check` 验证本批次全部锚点，stale、冲突或非法请求优先返回 CLI 原始错误。
-- 高风险块扩展错误会列出实际参数并禁止原样重试：存在唯一紧邻范围 `delete` 时给出已验证的完整合并模板；没有安全结束锚点时要求重新读取，而不输出非法占位 anchor；`insert after` 模板直接复用原 lines 去除重复首行后的内容。`details.error` 同时返回错误代码、change 序号、anchor、缺失字段和输出行数。
+- 锚点格式严格跟随 CLI：`LN#[A-Za-z0-9_-]{3}`；也可将读取结果中的 `LN#HASH:text` 整段原样填入锚点字段，`prepareArguments` 会在 schema 校验前移除冒号后的源码文本。旧两位锚点会在 schema 边界被拒绝，格式合规但内容伪造仍会被 CLI 判为 stale。
+- 公开修改协议只有四种完整操作：`replace_range`、`delete_range`、`insert_before` 和 `insert_after`。范围操作必须同时提供 `start_anchor` 与 `end_anchor`；单行范围使用同一个锚点作为首尾。旧 `replace` / `delete` / `insert` 形状不迁移，由严格 schema 直接拒绝。
+- 若单行 `replace_range` 输出多行且首行与原锚点行完全相同，插件会判定为高风险范围扩展；返回恢复指导前先以 `batch --check` 验证本批次全部锚点，stale、冲突或非法请求优先返回 CLI 原始错误。
+- 高风险范围扩展错误会列出实际参数并禁止原样重试：存在唯一、从下一行之后开始的相邻 `delete_range` 时给出已验证的完整合并模板；没有安全结束锚点时要求重新读取，而不输出非法占位 anchor；`insert_after` 模板直接复用原 lines 去除重复首行后的内容。紧接下一行开始的 `delete_range` 已显式覆盖后续旧代码，不触发该护栏。
 - batch 是原子的：任一 change 非法、冲突或 stale 时均为零写入。
-- stale 拒绝会返回校验时同一文件快照中的 `currentAnchors`；调用方须先核对当前文本与完整目标范围，仅在窗口仍明确覆盖两者时显式重试，否则重新读取；禁止自动重试或覆盖并发修改。
+- stale 拒绝会返回校验时同一文件快照中的 `currentAnchors`，并在 `details.error.staleAnchors` 与正文中列出失败项、字段、提交锚点、当前同号行锚点和当前文本。信息只供核对；调用方仅在窗口仍明确覆盖原定目标及完整范围时显式重提，否则重新读取，插件不会自动修正锚点、重试或覆盖并发修改。
 - 已验证但内容相同的 batch 返回 no-op，不触碰目标文件；模型正文和 TUI 不再误报为已修改。
 - 写入会保留 symlink、使用唯一临时文件，并明确拒绝有多个 hardlink 的目标。
 - 仅接受有效 UTF-8 文本，并在修改时保留已有 UTF-8 BOM。
@@ -82,6 +82,6 @@ go build -trimpath -ldflags="-s -w" -o ../pi-hledit-diff/bin/hledit.exe .
 
 ## 安装说明
 
-本目录是开发源码。将其复制或链接到 Pi 的扩展目录后安装依赖，再重新加载 Pi。具体扩展加载方式以当前 Pi 文档为准。
+本目录是开发源码。正式部署到 Pi 扩展目录时只同步运行时白名单：`index.ts`、`src/`、`bin/` 和 `package.json`；不得携带 `test/`、`node_modules/`、开发文档、锁文件或 `tsconfig.json`。运行时依赖由 Pi 宿主提供，部署目录不执行 `npm install`。同步后执行 `/reload` 或开启新会话。
 
 详细协议和维护约束参见 [`MAINTENANCE.md`](./MAINTENANCE.md)。

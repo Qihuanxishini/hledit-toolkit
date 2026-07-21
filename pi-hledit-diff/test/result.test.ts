@@ -245,24 +245,48 @@ test("applyFileChangesResult exposes validated stale snapshot context", () => {
 		desiredLimit: 5,
 		truncated: false,
 	};
-	const result = applyFileChangesResult({
-		stdout: JSON.stringify({
-			ok: false,
-			error: "stale",
-			message: "edit 0: anchor stale",
-			failed: 0,
-			remaps: [{ requested: "2#BHJ", current: "2#BBK" }],
-			currentAnchors,
-		}),
-		stderr: "",
-		exitCode: 0,
-	});
+	const result = applyFileChangesResult(
+		{
+			stdout: JSON.stringify({
+				ok: false,
+				error: "stale",
+				message: "edit 0: anchor stale",
+				failed: 0,
+				remaps: [
+					{ requested: "2#BHJ", current: "2#BBK" },
+					{ requested: "2#BHJ", current: "2#BBK" },
+				],
+				currentAnchors,
+			}),
+			stderr: "",
+			exitCode: 0,
+		},
+		{
+			path: "src/a.ts",
+			changes: [{ operation: "replace_range", start_anchor: "2#BHJ", end_anchor: "2#BHJ", lines: ["next"] }],
+		},
+	);
 	const text = result.content[0]?.text ?? "";
 
 	assert.match(text, /2#BBK:modified/);
 	assert.match(text, /不会自动重试或覆盖并发修改/);
 	assert.match(text, /使用其中的新锚点重新提交/);
 	assert.doesNotMatch(text, /重试前请调用 hledit_read_anchors/);
+	assert.match(text, /字段：start_anchor\/end_anchor/);
+	assert.match(text, /提交的锚点：2#BHJ/);
+	assert.match(text, /当前同号行：2#BBK:modified/);
+	assert.match(text, /显式提交中将 start_anchor\/end_anchor 改为 2#BBK/);
+	assert.match(text, /工具不会自动修正锚点或重试批次/);
+	assert.equal(text.match(/2#BHJ -> 2#BBK/g)?.length, 1);
+	assert.deepEqual(result.details.error?.staleAnchors, [
+		{
+			changeNumber: 1,
+			fields: ["start_anchor", "end_anchor"],
+			requestedAnchor: "2#BHJ",
+			currentAnchor: "2#BBK",
+			currentText: "modified",
+		},
+	]);
 	assert.deepEqual(result.details.error?.currentAnchors, {
 		...currentAnchors,
 		lines: currentAnchors.lines.map((line) => ({ ...line, textTruncated: false })),
@@ -313,30 +337,28 @@ test("readAnchorsResult identifies unavailable CLI runs", () => {
 });
 
 test("failure result constructors preserve disposition and structured errors", () => {
-    const rejected = rejectedToolResult("修改未执行：请求无效", {
-        code: "single_anchor_block_expansion",
-        message: "单锚点 replace 可能保留旧代码。",
-        changeNumber: 1,
-        operation: "replace",
-        anchor: "2#BHJ",
-        missingField: "end_anchor",
-        outputLineCount: 2,
-    });
+	const rejected = rejectedToolResult("修改未执行：请求无效", {
+		code: "single_line_range_expansion",
+		message: "单行 replace_range 可能保留旧代码。",
+		changeNumber: 1,
+		operation: "replace_range",
+		anchor: "2#BHJ",
+		outputLineCount: 2,
+	});
 
-    assert.deepEqual(rejected.details, {
-        disposition: "rejected",
-        error: {
-            code: "single_anchor_block_expansion",
-            message: "单锚点 replace 可能保留旧代码。",
-            changeNumber: 1,
-            operation: "replace",
-            anchor: "2#BHJ",
-            missingField: "end_anchor",
-            outputLineCount: 2,
-        },
-    });
-    assert.equal(isFailedHleditResult(rejected.details), true);
-    assert.deepEqual(unavailableToolResult("CLI 不可用").details, { disposition: "unavailable" });
+	assert.deepEqual(rejected.details, {
+		disposition: "rejected",
+		error: {
+			code: "single_line_range_expansion",
+			message: "单行 replace_range 可能保留旧代码。",
+			changeNumber: 1,
+			operation: "replace_range",
+			anchor: "2#BHJ",
+			outputLineCount: 2,
+		},
+	});
+	assert.equal(isFailedHleditResult(rejected.details), true);
+	assert.deepEqual(unavailableToolResult("CLI 不可用").details, { disposition: "unavailable" });
 });
 
 test("buildDiffDetails prefers CLI firstChangedLine over generated diff", () => {

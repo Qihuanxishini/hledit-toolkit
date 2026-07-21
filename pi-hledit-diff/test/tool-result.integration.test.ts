@@ -54,6 +54,8 @@ test("registered prompt guidelines name their target tool", () => {
 
 	assert.ok(readTool.promptGuidelines.every((guideline) => guideline.includes(HLEDIT_READ_ANCHORS_TOOL)));
 	assert.ok(applyTool.promptGuidelines.every((guideline) => guideline.includes(HLEDIT_APPLY_FILE_CHANGES_TOOL)));
+	assert.ok(readTool.promptGuidelines.some((guideline) => guideline.includes("LN#HASH:text")));
+	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("LN#HASH:text")));
 });
 
 test("apply tool exposes JSON-string argument preparation to Pi", () => {
@@ -64,11 +66,11 @@ test("apply tool exposes JSON-string argument preparation to Pi", () => {
 	assert.deepEqual(
 		applyTool.prepareArguments({
 			path: "target.txt",
-			changes: JSON.stringify({ operation: "replace", anchor: "1#BHJ", lines: "first\nsecond" }),
+			changes: JSON.stringify({ operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: "first\nsecond" }),
 		}),
 		{
 			path: "target.txt",
-			changes: [{ operation: "replace", anchor: "1#BHJ", lines: ["first", "second"] }],
+			changes: [{ operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: ["first", "second"] }],
 		},
 	);
 });
@@ -148,7 +150,7 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 	const anchor = renderedAnchor!.split(":", 1)[0]!;
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", changes: [{ operation: "replace", anchor, lines: ["TWO"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: ["TWO"] }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -180,7 +182,7 @@ test("apply tool reports a no-op without touching the target", async (t) => {
 	assert.ok(anchor);
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", changes: [{ operation: "replace", anchor, lines: ["two"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: ["two"] }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -211,7 +213,7 @@ test("apply tool accepts byte-truncated updated anchor contexts", async (t) => {
 	assert.ok(anchor);
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", changes: [{ operation: "replace", anchor, lines: ["CHANGED"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: ["CHANGED"] }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -239,7 +241,7 @@ test("apply tool deleting the only line leaves an empty file", async (t) => {
 	assert.ok(anchor);
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", changes: [{ operation: "delete", anchor }] } as never,
+		{ path: "target.txt", changes: [{ operation: "delete_range", start_anchor: anchor, end_anchor: anchor }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -250,7 +252,7 @@ test("apply tool deleting the only line leaves an empty file", async (t) => {
 	assert.equal(await readFile(target, "utf8"), "");
 });
 
-test("apply tool rejects accidental single-anchor block expansion with actionable details", async (t) => {
+test("apply tool rejects accidental single-line range expansion with actionable details", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
@@ -267,7 +269,7 @@ test("apply tool rejects accidental single-anchor block expansion with actionabl
 	assert.ok(anchor);
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", changes: [{ operation: "replace", anchor, lines: ["two", "inserted"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: ["two", "inserted"] }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -275,26 +277,25 @@ test("apply tool rejects accidental single-anchor block expansion with actionabl
 
 	assert.equal(applyResult.details.disposition, "rejected");
 	assert.deepEqual(applyResult.details.error, {
-		code: "single_anchor_block_expansion",
-		message: "第 1 项单锚点 replace 缺少 end_anchor；请改为范围 replace 或 insert after，禁止原样重试。",
-		hint: "单锚点 replace 只消费一行；块替换必须提供 end_anchor，追加内容时应移除重复锚点行。",
+		code: "single_line_range_expansion",
+		message: "第 1 项 replace_range 仅覆盖一行且重复原行；请扩大 end_anchor 或改用 insert_after，禁止原样重试。",
+		hint: "replace_range 必须完整覆盖待替换旧代码；仅追加内容时应使用 insert_after 并移除重复的锚点行。",
 		changeNumber: 1,
-		operation: "replace",
+		operation: "replace_range",
 		anchor,
-		missingField: "end_anchor",
 		outputLineCount: 2,
 	});
 	const text = applyResult.content[0]?.text ?? "";
 	assert.match(text, /原子批次已拒绝，未写入任何内容/);
-	assert.match(text, /实际收到：[\s\S]*end_anchor: 未提供/);
+	assert.match(text, /实际收到：[\s\S]*end_anchor: .*与 start_anchor 相同/);
 	assert.match(text, /禁止使用相同参数重试/);
 	assert.match(text, /当前没有可安全使用的结束锚点/);
 	assert.doesNotMatch(text, /<从最新 hledit_read_anchors/);
-	assert.match(text, /"operation": "insert"[\s\S]*"lines": \[[\s\S]*"inserted"/);
+	assert.match(text, /"operation": "insert_after"[\s\S]*"lines": \[[\s\S]*"inserted"/);
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
 });
 
-test("apply tool returns a stale snapshot before single-anchor recovery guidance", async (t) => {
+test("apply tool returns a stale snapshot before single-line range recovery guidance", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
@@ -314,7 +315,7 @@ test("apply tool returns a stale snapshot before single-anchor recovery guidance
 	const staleAnchor = `${currentAnchor.slice(0, -3)}${staleHash === "AAB" ? "AAC" : "AAB"}`;
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", changes: [{ operation: "replace", anchor: staleAnchor, lines: ["two", "inserted"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: staleAnchor, end_anchor: staleAnchor, lines: ["two", "inserted"] }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -322,13 +323,26 @@ test("apply tool returns a stale snapshot before single-anchor recovery guidance
 
 	assert.equal(applyResult.details.disposition, "rejected");
 	assert.equal(applyResult.details.error?.code, "stale");
-	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /single_anchor_block_expansion|单锚点 replace/);
+	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /single_line_range_expansion|单行 replace_range/);
 	assert.match(applyResult.content[0]?.text ?? "", /提交时文件中的当前锚点快照/);
 	assert.match(applyResult.content[0]?.text ?? "", /:two/);
 	assert.match(applyResult.content[0]?.text ?? "", /不会自动重试或覆盖并发修改/);
 	assert.match(applyResult.content[0]?.text ?? "", /确认窗口仍覆盖原定目标及完整范围/);
 	assert.match(applyResult.content[0]?.text ?? "", /否则必须重新读取受影响范围/);
 	assert.ok(applyResult.details.error?.currentAnchors);
+	assert.deepEqual(applyResult.details.error?.staleAnchors, [
+		{
+			changeNumber: 1,
+			fields: ["start_anchor", "end_anchor"],
+			requestedAnchor: staleAnchor,
+			currentAnchor,
+			currentText: "two",
+		},
+	]);
+	assert.match(applyResult.content[0]?.text ?? "", /字段：start_anchor\/end_anchor/);
+	assert.match(applyResult.content[0]?.text ?? "", /提交的锚点：/);
+	assert.match(applyResult.content[0]?.text ?? "", /当前同号行：.*:two/);
+	assert.match(applyResult.content[0]?.text ?? "", /工具不会自动修正锚点或重试批次/);
 	assert.equal(await readFile(target, "utf8"), original);
 });
 
@@ -356,8 +370,8 @@ test("apply tool suggests merging a nearby delete range without writing", async 
 		{
 			path: "target.txt",
 			changes: [
-				{ operation: "replace", anchor: replacementAnchor, lines: ["two", "replacement"] },
-				{ operation: "delete", anchor: deleteAnchor, end_anchor: deleteEndAnchor },
+				{ operation: "replace_range", start_anchor: replacementAnchor, end_anchor: replacementAnchor, lines: ["two", "replacement"] },
+				{ operation: "delete_range", start_anchor: deleteAnchor, end_anchor: deleteEndAnchor },
 			],
 		} as never,
 		undefined,
@@ -368,7 +382,7 @@ test("apply tool suggests merging a nearby delete range without writing", async 
 	assert.equal(applyResult.details.disposition, "rejected");
 	assert.equal(applyResult.details.error?.relatedChangeNumber, 2);
 	assert.equal(applyResult.details.error?.candidateEndAnchor, deleteEndAnchor);
-	assert.match(applyResult.content[0]?.text ?? "", /检测到同批次第 2 项 delete 覆盖/);
-	assert.match(applyResult.content[0]?.text ?? "", /移除原 delete/);
+	assert.match(applyResult.content[0]?.text ?? "", /检测到同批次第 2 项 delete_range 覆盖/);
+	assert.match(applyResult.content[0]?.text ?? "", /移除原 delete_range/);
 	assert.equal(await readFile(target, "utf8"), original);
 });

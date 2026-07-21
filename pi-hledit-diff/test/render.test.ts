@@ -287,21 +287,21 @@ test("renderFileChangesResult folds failures unless expanded", () => {
 	assert.ok(render(renderFileChangesResult(result, options(true), theme, {})).some((line) => line.includes("错误代码：io")));
 });
 
-test("renderFileChangesResult folds single-anchor failures to the corrective action", () => {
+test("renderFileChangesResult folds single-line range failures to the corrective action", () => {
 	const result: TextResult = {
 		content: [{ type: "text", text: "原子批次已拒绝，未写入任何内容。\n第 1 项修改被拒绝。\n禁止使用相同参数重试。" }],
 		details: {
 			disposition: "rejected",
 			error: {
-				code: "single_anchor_block_expansion",
-				message: "第 1 项单锚点 replace 缺少 end_anchor；请改为范围 replace 或 insert after，禁止原样重试。",
-				hint: "单锚点 replace 只消费一行。",
+				code: "single_line_range_expansion",
+				message: "第 1 项 replace_range 仅覆盖一行且重复原行；请扩大 end_anchor 或改用 insert_after，禁止原样重试。",
+				hint: "replace_range 必须完整覆盖待替换旧代码。",
 			},
 		},
 	};
 
 	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {})), [
-		"× 第 1 项单锚点 replace 缺少 end_anchor；请改为范围 replace 或 insert after，禁止原样重试。",
+		"× 第 1 项 replace_range 仅覆盖一行且重复原行；请扩大 end_anchor 或改用 insert_after，禁止原样重试。",
 	]);
 	assert.ok(render(renderFileChangesResult(result, options(true), theme, {})).some((line) => line.includes("禁止使用相同参数重试")));
 });

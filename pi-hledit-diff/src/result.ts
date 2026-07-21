@@ -4,6 +4,7 @@ import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
 import { ANCHOR_HASH_PATTERN } from "./file-changes.ts";
 import { parseAnchorContext, parseBatchUpdatedAnchorContext, type BatchAnchorContext } from "./post-edit-context.ts";
 import type { NormalizedReadRequest } from "./read-args.ts";
+import type { FileChangeParams } from "./schema.ts";
 
 export type HleditToolKind = "read_anchors" | "apply_file_changes";
 export type HleditDisposition = "succeeded" | "rejected" | "unavailable";
@@ -36,6 +37,17 @@ export type HleditReadMetadata = {
 	eof: boolean;
 };
 
+export type FileChangeAnchorField = "anchor" | "start_anchor" | "end_anchor";
+
+export type HleditStaleAnchor = {
+	changeNumber: number;
+	fields: FileChangeAnchorField[];
+	requestedAnchor: string;
+	currentAnchor?: string;
+	currentText?: string;
+	currentTextTruncated?: true;
+};
+
 export type HleditErrorMetadata = {
 	code: string;
 	message: string;
@@ -44,17 +56,18 @@ export type HleditErrorMetadata = {
 	requestedOffset?: number;
 	totalLines?: number;
 	changeNumber?: number;
-	operation?: "replace" | "delete" | "insert";
+	operation?: "replace_range" | "delete_range" | "insert_before" | "insert_after";
 	anchor?: string;
-	missingField?: string;
 	outputLineCount?: number;
 	relatedChangeNumber?: number;
 	candidateEndAnchor?: string;
+	staleAnchors?: HleditStaleAnchor[];
 	currentAnchors?: BatchAnchorContext;
 };
 
 type ApplyResultContext = {
 	path?: string;
+	changes?: FileChangeParams["changes"];
 };
 
 export type HleditDetails = Record<string, unknown> & {
@@ -308,18 +321,103 @@ function appendRemaps(lines: string[], result: Record<string, unknown>): void {
 	}
 
 	lines.push("当前可用的锚点提示：");
+	const rendered = new Set<string>();
 	for (const remap of result.remaps) {
 		if (!isRecord(remap)) {
 			continue;
 		}
 		const requested = typeof remap.requested === "string" ? remap.requested : undefined;
 		const current = typeof remap.current === "string" ? remap.current : undefined;
-		if (requested && current) {
-			lines.push(`- ${requested} -> ${current}`);
-		} else if (requested) {
-			lines.push(`- ${requested}`);
+		const text = requested && current ? `- ${requested} -> ${current}` : requested ? `- ${requested}` : undefined;
+		if (text && !rendered.has(text)) {
+			lines.push(text);
+			rendered.add(text);
 		}
 	}
+}
+
+function changeAnchorFields(change: FileChangeParams["changes"][number]): Array<[FileChangeAnchorField, string]> {
+	switch (change.operation) {
+		case "replace_range":
+		case "delete_range":
+			return [
+				["start_anchor", change.start_anchor],
+				["end_anchor", change.end_anchor],
+			];
+		case "insert_before":
+		case "insert_after":
+			return [["anchor", change.anchor]];
+	}
+}
+
+function parseStaleAnchors(
+	result: Record<string, unknown>,
+	currentAnchors: BatchAnchorContext | undefined,
+	context: ApplyResultContext,
+): HleditStaleAnchor[] | undefined {
+	if (!isIntegerAtLeast(result.failed, 0) || !Array.isArray(result.remaps)) {
+		return undefined;
+	}
+	const change = context.changes?.[result.failed];
+	if (!change) {
+		return undefined;
+	}
+
+	const staleAnchors: HleditStaleAnchor[] = [];
+	for (const [field, requestedAnchor] of changeAnchorFields(change)) {
+		const remap = result.remaps.find(
+			(candidate) => isRecord(candidate) && candidate.requested === requestedAnchor,
+		);
+		if (!isRecord(remap)) {
+			continue;
+		}
+		const currentAnchor =
+			typeof remap.current === "string" && READ_ANCHOR_PATTERN.test(remap.current) ? remap.current : undefined;
+		const existing = staleAnchors.find(
+			(candidate) => candidate.requestedAnchor === requestedAnchor && candidate.currentAnchor === currentAnchor,
+		);
+		if (existing) {
+			existing.fields.push(field);
+			continue;
+		}
+		const currentLine = currentAnchor
+			? currentAnchors?.lines.find((line) => line.anchor === currentAnchor)
+			: undefined;
+		staleAnchors.push({
+			changeNumber: result.failed + 1,
+			fields: [field],
+			requestedAnchor,
+			...(currentAnchor ? { currentAnchor } : {}),
+			...(currentLine ? { currentText: currentLine.text } : {}),
+			...(currentLine?.textTruncated ? { currentTextTruncated: true as const } : {}),
+		});
+	}
+	return staleAnchors.length > 0 ? staleAnchors : undefined;
+}
+
+function appendStaleAnchorDetails(lines: string[], staleAnchors: HleditStaleAnchor[] | undefined): void {
+	if (!staleAnchors) {
+		return;
+	}
+
+	lines.push(`第 ${staleAnchors[0]!.changeNumber} 项锚点核对：`);
+	for (const staleAnchor of staleAnchors) {
+		const fields = staleAnchor.fields.join("/");
+		lines.push(`- 字段：${fields}`, `  提交的锚点：${staleAnchor.requestedAnchor}`);
+		if (staleAnchor.currentAnchor) {
+			const annotatedAnchor =
+				staleAnchor.currentText === undefined
+					? staleAnchor.currentAnchor
+					: `${staleAnchor.currentAnchor}:${staleAnchor.currentText}${staleAnchor.currentTextTruncated ? "（文本已截断）" : ""}`;
+			lines.push(
+				`  当前同号行：${annotatedAnchor}`,
+				`  核对目标后，可在下一次显式提交中将 ${fields} 改为 ${staleAnchor.currentAnchor}。`,
+			);
+		} else {
+			lines.push("  当前同号行不存在；必须重新读取受影响范围。");
+		}
+	}
+	lines.push("上述内容仅供核对；工具不会自动修正锚点或重试批次。");
 }
 
 function appendCurrentAnchorContext(lines: string[], context: BatchAnchorContext | undefined): void {
@@ -396,10 +494,11 @@ function localizeIOApplyMessage(rawMessage: string): string {
 	return "文件操作失败；请检查路径、权限、文件类型和链接状态。";
 }
 
-function parseApplyErrorMetadata(result: Record<string, unknown>): HleditErrorMetadata | undefined {
+function parseApplyErrorMetadata(result: Record<string, unknown>, context: ApplyResultContext): HleditErrorMetadata | undefined {
 	if (result.ok !== false || typeof result.error !== "string" || typeof result.message !== "string") return undefined;
 	const failedChange = isIntegerAtLeast(result.failed, 0) ? result.failed + 1 : undefined;
 	const currentAnchors = result.error === "stale" ? parseAnchorContext(result.currentAnchors) : undefined;
+	const staleAnchors = result.error === "stale" ? parseStaleAnchors(result, currentAnchors, context) : undefined;
 	let message: string;
 	switch (result.error) {
 		case "stale":
@@ -420,7 +519,13 @@ function parseApplyErrorMetadata(result: Record<string, unknown>): HleditErrorMe
 		default:
 			message = `hledit 拒绝了本次修改（错误代码：${result.error}）。`;
 	}
-	return { code: result.error, message, rawMessage: result.message, ...(currentAnchors ? { currentAnchors } : {}) };
+	return {
+		code: result.error,
+		message,
+		rawMessage: result.message,
+		...(staleAnchors ? { staleAnchors } : {}),
+		...(currentAnchors ? { currentAnchors } : {}),
+	};
 }
 
 function localizeApplyWarning(warning: string): string {
@@ -439,6 +544,7 @@ function formatApplyFailureResult(
 	if (isIntegerAtLeast(result.failed, 0)) {
 		lines.push(`失败位置：第 ${result.failed + 1} 项修改`);
 	}
+	appendStaleAnchorDetails(lines, error.staleAnchors);
 	appendRemaps(lines, result);
 	if (error.code === "stale") {
 		appendCurrentAnchorContext(lines, error.currentAnchors);
@@ -563,7 +669,7 @@ export function extractCliSummary(parsed: Record<string, unknown> | null): Recor
 export function applyFileChangesResult(run: HleditRun, context: ApplyResultContext = {}): TextResult {
 	const parsed = parseRunObject(run);
 	const applySuccessValid = isValidApplySuccess(parsed);
-	const applyError = parsed ? parseApplyErrorMetadata(parsed) : undefined;
+	const applyError = parsed ? parseApplyErrorMetadata(parsed, context) : undefined;
 	const disposition: HleditDisposition =
 		run.exitCode !== 0
 			? "unavailable"

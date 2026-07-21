@@ -8,44 +8,57 @@ const STRICT_OBJECT = { additionalProperties: false };
 const PATH_SCHEMA = Type.String({ minLength: 1, description: "文本文件路径" });
 const ANCHOR_SCHEMA = Type.String({
 	pattern: ANCHOR_PATTERN,
-	description: "从最近一次 hledit_read_anchors 输出中原样复制的 LN#HASH；不得编造 #??、#XX 等占位锚点",
+	description: "从最近一次 hledit_read_anchors 输出中原样复制；可填写 LN#HASH 或完整 LN#HASH:text，prepareArguments 会移除源码文本；不得编造占位锚点",
+});
+const RANGE_START_ANCHOR_SCHEMA = Type.String({
+	pattern: ANCHOR_PATTERN,
+	description: "包含在修改范围内的起始锚点；可原样复制 LN#HASH:text；单行范围与 end_anchor 使用同一个锚点",
+});
+const RANGE_END_ANCHOR_SCHEMA = Type.String({
+	pattern: ANCHOR_PATTERN,
+	description: "包含在修改范围内的结束锚点；可原样复制 LN#HASH:text；单行范围与 start_anchor 使用同一个锚点",
 });
 const REPLACEMENT_LINES_SCHEMA = Type.Array(Type.String({ pattern: "^[^\\r\\n]*$" }), {
 	minItems: 1,
 	description: "仅填写原始文件行；数组中的每一项必须恰好是一行，不能包含锚点前缀或 diff 标记。",
 });
 
-const REPLACE_CHANGE_SCHEMA = Type.Object(
+const REPLACE_RANGE_CHANGE_SCHEMA = Type.Object(
 	{
-		operation: StringEnum(["replace"] as const, {
-			description: "替换一个锚点行；提供 end_anchor 时替换含首尾的范围。多行 lines 不会自动消耗后续源文件行；替换代码块必须显式提供 end_anchor",
+		operation: StringEnum(["replace_range"] as const, {
+			description: "替换包含首尾的完整锚点范围；替换单行时 start_anchor 与 end_anchor 必须相同",
 		}),
-		anchor: ANCHOR_SCHEMA,
-		end_anchor: Type.Optional(
-			Type.String({
-				pattern: ANCHOR_PATTERN,
-				description: "包含在替换范围内的结束锚点；替换后续现有行时必须与 anchor 放在同一项 replace 中",
-			}),
-		),
+		start_anchor: RANGE_START_ANCHOR_SCHEMA,
+		end_anchor: RANGE_END_ANCHOR_SCHEMA,
 		lines: REPLACEMENT_LINES_SCHEMA,
 	},
 	STRICT_OBJECT,
 );
 
-const DELETE_CHANGE_SCHEMA = Type.Object(
+const DELETE_RANGE_CHANGE_SCHEMA = Type.Object(
 	{
-		operation: StringEnum(["delete"] as const, { description: "删除一个锚点行，或删除包含首尾的锚点范围" }),
-		anchor: ANCHOR_SCHEMA,
-		end_anchor: Type.Optional(Type.String({ pattern: ANCHOR_PATTERN, description: "包含在删除范围内的结束锚点" })),
+		operation: StringEnum(["delete_range"] as const, {
+			description: "删除包含首尾的完整锚点范围；删除单行时 start_anchor 与 end_anchor 必须相同",
+		}),
+		start_anchor: RANGE_START_ANCHOR_SCHEMA,
+		end_anchor: RANGE_END_ANCHOR_SCHEMA,
 	},
 	STRICT_OBJECT,
 );
 
-const INSERT_CHANGE_SCHEMA = Type.Object(
+const INSERT_BEFORE_CHANGE_SCHEMA = Type.Object(
 	{
-		operation: StringEnum(["insert"] as const, { description: "在一个锚点处插入原始文件行" }),
+		operation: StringEnum(["insert_before"] as const, { description: "在锚点行之前插入原始文件行" }),
 		anchor: ANCHOR_SCHEMA,
-		position: StringEnum(["before", "after"] as const, { description: "插入到锚点之前或之后" }),
+		lines: REPLACEMENT_LINES_SCHEMA,
+	},
+	STRICT_OBJECT,
+);
+
+const INSERT_AFTER_CHANGE_SCHEMA = Type.Object(
+	{
+		operation: StringEnum(["insert_after"] as const, { description: "在锚点行之后插入原始文件行" }),
+		anchor: ANCHOR_SCHEMA,
 		lines: REPLACEMENT_LINES_SCHEMA,
 	},
 	STRICT_OBJECT,
@@ -65,10 +78,14 @@ export const HLEDIT_READ_ANCHORS_PARAMS_SCHEMA = Type.Object(
 export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 	{
 		path: PATH_SCHEMA,
-		changes: Type.Array(Type.Union([REPLACE_CHANGE_SCHEMA, DELETE_CHANGE_SCHEMA, INSERT_CHANGE_SCHEMA]), {
-			minItems: 1,
-			description: "同一文件的一组完整、互不冲突的原子修改。不得混入读取操作、占位锚点或未完成的修改；任一项无效或锚点失效都会使整批次零写入。",
-		}),
+		changes: Type.Array(
+			Type.Union([REPLACE_RANGE_CHANGE_SCHEMA, DELETE_RANGE_CHANGE_SCHEMA, INSERT_BEFORE_CHANGE_SCHEMA, INSERT_AFTER_CHANGE_SCHEMA]),
+			{
+				minItems: 1,
+				description:
+					"同一文件的一组完整、互不冲突的原子修改。范围操作必须同时提供 start_anchor 与 end_anchor；任一项无效或锚点失效都会使整批次零写入。",
+			},
+		),
 	},
 	STRICT_OBJECT,
 );

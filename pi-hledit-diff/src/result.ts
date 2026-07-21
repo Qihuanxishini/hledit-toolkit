@@ -2,7 +2,7 @@ import { generateDiffString, generateUnifiedPatch } from "@earendil-works/pi-cod
 import { readFile } from "node:fs/promises";
 import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
 import { ANCHOR_HASH_PATTERN } from "./file-changes.ts";
-import { parseBatchUpdatedAnchorContext } from "./post-edit-context.ts";
+import { parseAnchorContext, parseBatchUpdatedAnchorContext, type BatchAnchorContext } from "./post-edit-context.ts";
 import type { NormalizedReadRequest } from "./read-args.ts";
 
 export type HleditToolKind = "read_anchors" | "apply_file_changes";
@@ -50,6 +50,7 @@ export type HleditErrorMetadata = {
 	outputLineCount?: number;
 	relatedChangeNumber?: number;
 	candidateEndAnchor?: string;
+	currentAnchors?: BatchAnchorContext;
 };
 
 type ApplyResultContext = {
@@ -321,6 +322,18 @@ function appendRemaps(lines: string[], result: Record<string, unknown>): void {
 	}
 }
 
+function appendCurrentAnchorContext(lines: string[], context: BatchAnchorContext | undefined): void {
+	if (!context) {
+		return;
+	}
+	lines.push("提交时文件中的当前锚点快照（请先核对内容；下一次提交仍会再次校验）：");
+	lines.push(context.lines.map((line) => `${line.anchor}:${line.text}`).join("\n") || "（文件为空）");
+	lines.push("该快照不会自动重试或覆盖并发修改；确认内容符合预期后，才可使用其中的新锚点重新提交。");
+	if (context.truncated || context.lines.some((line) => line.textTruncated)) {
+		lines.push(`当前快照已截断；请调用 hledit_read_anchors，并使用 offset:${context.offset}、limit:${context.desiredLimit} 获取完整范围。`);
+	}
+}
+
 function staleReadInstruction(result: Record<string, unknown>, path: string | undefined): string {
 	const genericInstruction = "重试前请重新调用 hledit_read_anchors 读取受影响范围；不要复用修改前的旧锚点。";
 	if (!path || !Array.isArray(result.remaps)) {
@@ -386,6 +399,7 @@ function localizeIOApplyMessage(rawMessage: string): string {
 function parseApplyErrorMetadata(result: Record<string, unknown>): HleditErrorMetadata | undefined {
 	if (result.ok !== false || typeof result.error !== "string" || typeof result.message !== "string") return undefined;
 	const failedChange = isIntegerAtLeast(result.failed, 0) ? result.failed + 1 : undefined;
+	const currentAnchors = result.error === "stale" ? parseAnchorContext(result.currentAnchors) : undefined;
 	let message: string;
 	switch (result.error) {
 		case "stale":
@@ -406,7 +420,7 @@ function parseApplyErrorMetadata(result: Record<string, unknown>): HleditErrorMe
 		default:
 			message = `hledit 拒绝了本次修改（错误代码：${result.error}）。`;
 	}
-	return { code: result.error, message, rawMessage: result.message };
+	return { code: result.error, message, rawMessage: result.message, ...(currentAnchors ? { currentAnchors } : {}) };
 }
 
 function localizeApplyWarning(warning: string): string {
@@ -427,7 +441,12 @@ function formatApplyFailureResult(
 	}
 	appendRemaps(lines, result);
 	if (error.code === "stale") {
-		lines.push(staleReadInstruction(result, context.path));
+		appendCurrentAnchorContext(lines, error.currentAnchors);
+		if (error.currentAnchors) {
+			lines.push("请先检查上方失败快照；确认内容符合预期后，使用其中的新锚点重新提交。");
+		} else {
+			lines.push(staleReadInstruction(result, context.path));
+		}
 	}
 	return lines.join("\n");
 }

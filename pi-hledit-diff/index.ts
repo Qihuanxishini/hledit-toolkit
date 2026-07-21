@@ -21,7 +21,7 @@ import {
 	findSingleAnchorReplacementIssue,
 	formatSingleAnchorReplacementIssue,
 } from "./src/file-changes.ts";
-import { formatBatchUpdatedAnchorContext, type BatchUpdatedAnchorContext } from "./src/post-edit-context.ts";
+import { formatBatchUpdatedAnchorContext, type BatchAnchorContext } from "./src/post-edit-context.ts";
 import { prepareFileChangeArguments, prepareReadAnchorsArguments } from "./src/prepare-arguments.ts";
 import { buildReadArgs, normalizeReadRequest, normalizeToolPath } from "./src/read-args.ts";
 import {
@@ -121,7 +121,7 @@ async function runFileChangesWithDiff(
 
 		const parsed = parseRunObject(run)!;
 		// applyFileChangesResult 已在外部 CLI 边界验证 updatedAnchors；内部链路直接信任该不变量。
-		const updatedAnchorContext = parsed.updatedAnchors as BatchUpdatedAnchorContext;
+		const updatedAnchorContext = parsed.updatedAnchors as BatchAnchorContext;
 		const postEditContext = formatBatchUpdatedAnchorContext(updatedAnchorContext);
 		const postEditDetails = {
 			postEditContext: {
@@ -200,7 +200,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			"hledit_apply_file_changes 因单锚点 replace 被拒绝后不得原样重试；替换代码块时在同一项 replace 中补充 end_anchor，保留锚点行时改用 insert after 且不要重复锚点行。",
 			"hledit_apply_file_changes 中不得出现 #??/#XX 等占位锚点、operation:read 或未完成的修改；必须先单独调用 hledit_read_anchors。",
 			"hledit_apply_file_changes 的 delete 使用 { operation: \"delete\", anchor, end_anchor? }，不带 lines；insert 使用 { operation: \"insert\", anchor, position: \"before\" | \"after\", lines }。",
-			"hledit_apply_file_changes 是原子批次：任一项无效、冲突或锚点失效都会零写入。锚点失效后必须重新读取受影响范围，不得复用旧锚点。",
+			"hledit_apply_file_changes 是原子批次：任一项无效、冲突或锚点失效都会零写入。stale 返回的当前锚点快照只能供核对；不得自动重试或覆盖并发修改，快照缺失或截断时才重新读取受影响范围。",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 		prepareArguments: prepareFileChangeArguments,

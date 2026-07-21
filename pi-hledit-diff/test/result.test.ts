@@ -217,7 +217,7 @@ test("fileChangeCheckFailure accepts only an explicit validate-only success", ()
 	assert.match(incompatible?.content[0]?.text ?? "", /hledit_read_anchors/);
 });
 
-test("applyFileChangesResult gives stale changes a mandatory reread instruction", () => {
+test("applyFileChangesResult falls back to rereading when a stale snapshot is unavailable", () => {
     const result = applyFileChangesResult(
         { stdout: '{"ok":false,"error":"stale","message":"edit 0: anchor stale","failed":0,"remaps":[{"requested":"2#BH","current":"2#BB"}]}', stderr: "", exitCode: 0 },
         { path: "src/a.ts" },
@@ -231,6 +231,42 @@ test("applyFileChangesResult gives stale changes a mandatory reread instruction"
 		error: { code: "stale", message: "第 1 项修改使用的锚点已失效。", rawMessage: "edit 0: anchor stale" },
 	});
     assert.equal(isFailedHleditResult(result.details), true);
+});
+
+test("applyFileChangesResult exposes validated stale snapshot context", () => {
+	const currentAnchors = {
+		lines: [
+			{ line: 1, anchor: "1#BH", text: "one" },
+			{ line: 2, anchor: "2#BB", text: "modified" },
+			{ line: 3, anchor: "3#BJ", text: "three" },
+		],
+		offset: 1,
+		limit: 3,
+		desiredLimit: 5,
+		truncated: false,
+	};
+	const result = applyFileChangesResult({
+		stdout: JSON.stringify({
+			ok: false,
+			error: "stale",
+			message: "edit 0: anchor stale",
+			failed: 0,
+			remaps: [{ requested: "2#BH", current: "2#BB" }],
+			currentAnchors,
+		}),
+		stderr: "",
+		exitCode: 0,
+	});
+	const text = result.content[0]?.text ?? "";
+
+	assert.match(text, /2#BB:modified/);
+	assert.match(text, /不会自动重试或覆盖并发修改/);
+	assert.match(text, /使用其中的新锚点重新提交/);
+	assert.doesNotMatch(text, /重试前请调用 hledit_read_anchors/);
+	assert.deepEqual(result.details.error?.currentAnchors, {
+		...currentAnchors,
+		lines: currentAnchors.lines.map((line) => ({ ...line, textTruncated: false })),
+	});
 });
 
 test("applyFileChangesResult surfaces the hardlink rejection reason", () => {

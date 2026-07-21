@@ -18,7 +18,7 @@ test("resolveHleditBin uses the fixed bundled CLI path", () => {
 test("runHledit executes the fixed bundled CLI", async () => {
 	const run = await runHledit(["capabilities"], undefined, process.cwd(), undefined);
 
-	assert.deepEqual(parseHleditCapabilities(run), { version: "1.4.0", readRangeMetadata: true, batchInsertAfter: true, batchCheck: true, batchUpdatedAnchors: true });
+	assert.deepEqual(parseHleditCapabilities(run), { version: "1.5.0", readRangeMetadata: true, batchInsertAfter: true, batchCheck: true, batchUpdatedAnchors: true, batchStaleContext: true });
 });
 
 test("runHledit reports an already-aborted invocation", async () => {
@@ -32,16 +32,17 @@ test("runHledit reports an already-aborted invocation", async () => {
 
 test("parseHleditCapabilities requires structured reads and patched batch capabilities", () => {
 	assert.deepEqual(
-		parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true}', stderr: "", exitCode: 0 }),
-		{ version: "1.2.6", readRangeMetadata: true, batchInsertAfter: true, batchCheck: true, batchUpdatedAnchors: true },
+		parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }),
+		{ version: "1.2.6", readRangeMetadata: true, batchInsertAfter: true, batchCheck: true, batchUpdatedAnchors: true, batchStaleContext: true },
 	);
 	assert.equal(
-		parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true}', stderr: "", exitCode: 0 }),
+		parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }),
 		undefined,
 	);
 	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true}', stderr: "", exitCode: 0 }), undefined);
-	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchUpdatedAnchors":true}', stderr: "", exitCode: 0 }), undefined);
-	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true}', stderr: "", exitCode: 1 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true}', stderr: "", exitCode: 0 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 1 }), undefined);
 	assert.equal(parseHleditCapabilities({ stdout: "not json", stderr: "", exitCode: 0 }), undefined);
 });
 

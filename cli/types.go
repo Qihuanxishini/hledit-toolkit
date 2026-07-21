@@ -67,8 +67,8 @@ type BatchEditRequest struct {
 	Edits []BatchEditOp `json:"edits"`
 }
 
-// UpdatedAnchorContext 是一次成功写入后返回给调用方的受限新锚点窗口。
-type UpdatedAnchorContext struct {
+// AnchorContext is a bounded, annotated source window used in batch responses.
+type AnchorContext struct {
 	Lines        []ReadLine `json:"lines"`
 	Offset       int        `json:"offset"`
 	Limit        int        `json:"limit"`
@@ -79,25 +79,26 @@ type UpdatedAnchorContext struct {
 // BatchEditResult is written to stdout after a successful batch edit.
 // Checked is true when the batch was run with --check (validate-only, no write).
 type BatchEditResult struct {
-	OK               bool                  `json:"ok"`
-	FirstChangedLine int                   `json:"firstChangedLine,omitempty"`
-	LastChangedLine  int                   `json:"lastChangedLine,omitempty"`
-	LinesAdded       int                   `json:"linesAdded"`
-	LinesDeleted     int                   `json:"linesDeleted"`
-	EditsApplied     int                   `json:"editsApplied"`
-	ContentChanged   bool                  `json:"contentChanged"`
-	Warnings         []string              `json:"warnings,omitempty"`
-	Checked          bool                  `json:"checked,omitempty"`
-	UpdatedAnchors   *UpdatedAnchorContext `json:"updatedAnchors,omitempty"`
+	OK               bool           `json:"ok"`
+	FirstChangedLine int            `json:"firstChangedLine,omitempty"`
+	LastChangedLine  int            `json:"lastChangedLine,omitempty"`
+	LinesAdded       int            `json:"linesAdded"`
+	LinesDeleted     int            `json:"linesDeleted"`
+	EditsApplied     int            `json:"editsApplied"`
+	ContentChanged   bool           `json:"contentChanged"`
+	Warnings         []string       `json:"warnings,omitempty"`
+	Checked          bool           `json:"checked,omitempty"`
+	UpdatedAnchors   *AnchorContext `json:"updatedAnchors,omitempty"`
 }
 
 // BatchEditError is written to stdout when any anchor in the batch is stale.
 type BatchEditError struct {
-	OK      bool    `json:"ok"`
-	Error   string  `json:"error"`
-	Message string  `json:"message"`
-	Remaps  []Remap `json:"remaps,omitempty"`
-	Failed  int     `json:"failed"` // index of first failing edit
+	OK             bool           `json:"ok"`
+	Error          string         `json:"error"`
+	Message        string         `json:"message"`
+	Remaps         []Remap        `json:"remaps,omitempty"`
+	Failed         int            `json:"failed"` // index of first failing edit
+	CurrentAnchors *AnchorContext `json:"currentAnchors,omitempty"`
 }
 
 // CLICapabilities 描述插件启动前必须验证的 CLI 行为。
@@ -107,6 +108,7 @@ type CLICapabilities struct {
 	BatchInsertAfter    bool   `json:"batchInsertAfter"`
 	BatchCheck          bool   `json:"batchCheck"`
 	BatchUpdatedAnchors bool   `json:"batchUpdatedAnchors"`
+	BatchStaleContext   bool   `json:"batchStaleContext"`
 	ReadRangeMetadata   bool   `json:"readRangeMetadata"`
 }
 

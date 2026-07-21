@@ -1,5 +1,13 @@
 # Changelog
 
+
+## [1.5.0] — 2026-07-21
+
+### Added
+
+- Return bounded `currentAnchors` captured from the same file snapshot that rejects a stale batch, and advertise `batchStaleContext:true` for strict integrations.
+- Keep stale recovery explicit: the CLI returns recovery context but never retries or writes after a stale rejection.
+
 ## [1.4.0] — 2026-07-19
 
 ### Added

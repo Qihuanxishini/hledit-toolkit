@@ -28,11 +28,12 @@ CLI 必须返回非空版本，并同时声明：
   "readRangeMetadata": true,
   "batchInsertAfter": true,
   "batchCheck": true,
-  "batchUpdatedAnchors": true
+  "batchUpdatedAnchors": true,
+  "batchStaleContext": true
 }
 ```
 
-缺少任一字段、输出非 JSON 或命令失败都视为不兼容。插件不支持旧 CLI，也不保留纯文本读取解析或修改后的额外 `read-range` 回退链路。
+缺少任一字段、输出非 JSON 或命令失败都视为不兼容。插件不支持旧 CLI，也不保留纯文本读取解析、修改后额外 `read-range` 或 stale 后自动重试的回退链路。
 
 ## 工具协议
 
@@ -209,6 +210,8 @@ CLI 必须拒绝且不得写入：
 
 CLI 默认使用修改区域前后 2 行、最多 20 行和约 4096 bytes 的窗口。发生截断时，插件要求模型用 `hledit_read_anchors` 定向重读。
 
+未截断的 `updatedAnchors` 直接来自成功写入后的新文件状态，可用于后续提交；不得复用该次写入前的旧锚点。
+
 当 `contentChanged:false` 时，CLI 已验证全部操作但没有触碰目标文件；插件将其显示为 no-op，仍消费返回的新锚点并完成队列内的 post-read。
 
 ## 失败语义
@@ -231,7 +234,7 @@ CLI 默认使用修改区域前后 2 行、最多 20 行和约 4096 bytes 的窗
 单锚点块扩展的模型可见正文必须明确禁止原样重试。没有安全结束锚点时要求重新读取且不得生成违反 anchor schema 的占位值；保留锚点行时提供使用真实剩余 lines 的 `insert after`；存在唯一紧邻 delete 时才提供完整范围 `replace`。TUI 折叠摘要必须直接包含缺失字段和修复动作。
 不兼容成功响应与 batch 拒绝不同：CLI 可能已经写入。错误正文必须要求重新读取当前文件，不得声称零写入或直接建议重试。
 
-stale 的 remap 只用于定位，不允许自动替换 anchor 后重试。必须重新调用 `hledit_read_anchors`、检查当前内容，再提交新请求。
+stale 的 remap 只用于定位，不能自动替换后重试。stale batch 必须携带 `currentAnchors`，其内容来自拒绝该 batch 时的同一文件快照，插件会将其同时放入正文与 `details.error.currentAnchors`。调用方须先核对当前文本，再显式使用其中未截断的新锚点提交；上下文缺失或截断时才调用 `hledit_read_anchors`。任何路径都不得自动重试或覆盖并发修改。
 
 ## 源码结构
 
@@ -267,7 +270,7 @@ go vet ./...
 go test ./...
 ```
 
-测试必须覆盖 capability、严格 schema、参数归一化、缺少 `end_anchor` 的 `replace-range` 拒绝、结构化读取的实际范围/总行数/EOF/续读/单行截断/越界错误、batch 与 check 协议、未知 JSON 字段拒绝、UTF-8/BOM 边界、单锚点重复护栏、stale 优先级、无占位 anchor 的恢复正文、真实 `insert after` lines、紧邻 `delete` 合并模板、stale 时 CLI 零写入、新锚点结构、中文折叠错误摘要、多操作范围标题、prompt guideline 工具名、tool error 升级，以及 bundled CLI 与插件的端到端调用。
+测试必须覆盖 capability、严格 schema、最多两层的结构化参数解包、缺少 `end_anchor` 的 `replace-range` 拒绝、结构化读取的实际范围/总行数/EOF/续读/单行截断/越界错误、batch 与 check 协议、未知 JSON 字段拒绝、UTF-8/BOM 边界、单锚点重复护栏、stale 优先级、stale 同快照上下文及零写入、无占位 anchor 的恢复正文、真实 `insert after` lines、紧邻 `delete` 合并模板、新锚点结构、中文折叠错误摘要、多操作范围标题、prompt guideline 工具名、tool error 升级，以及 bundled CLI 与插件的端到端调用。
 
 ## 构建 bundled CLI
 
@@ -280,7 +283,7 @@ go build -trimpath -ldflags="-s -w" -o ../pi-hledit-diff/bin/hledit.exe .
 ../pi-hledit-diff/bin/hledit.exe capabilities
 ```
 
-capabilities 必须同时返回 `readRangeMetadata:true`、`batchInsertAfter:true`、`batchCheck:true` 和 `batchUpdatedAnchors:true`。
+capabilities 必须同时返回 `readRangeMetadata:true`、`batchInsertAfter:true`、`batchCheck:true`、`batchUpdatedAnchors:true` 和 `batchStaleContext:true`。
 
 ## 升级原则
 

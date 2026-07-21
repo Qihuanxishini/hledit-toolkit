@@ -294,7 +294,7 @@ test("apply tool rejects accidental single-anchor block expansion with actionabl
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
 });
 
-test("apply tool reports stale anchors before single-anchor recovery guidance", async (t) => {
+test("apply tool returns a stale snapshot before single-anchor recovery guidance", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
@@ -322,7 +322,11 @@ test("apply tool reports stale anchors before single-anchor recovery guidance", 
 	assert.equal(applyResult.details.disposition, "rejected");
 	assert.equal(applyResult.details.error?.code, "stale");
 	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /single_anchor_block_expansion|单锚点 replace/);
-	assert.match(applyResult.content[0]?.text ?? "", /重试前请调用 hledit_read_anchors/);
+	assert.match(applyResult.content[0]?.text ?? "", /提交时文件中的当前锚点快照/);
+	assert.match(applyResult.content[0]?.text ?? "", /:two/);
+	assert.match(applyResult.content[0]?.text ?? "", /不会自动重试或覆盖并发修改/);
+	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /重试前请调用 hledit_read_anchors/);
+	assert.ok(applyResult.details.error?.currentAnchors);
 	assert.equal(await readFile(target, "utf8"), original);
 });
 

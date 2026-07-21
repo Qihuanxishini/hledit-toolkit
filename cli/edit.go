@@ -336,12 +336,18 @@ func cmdBatch(path string, checkOnly bool) error {
 		}
 	}
 
-	// If any anchor is stale, reject the entire batch
+	// If any anchor is stale, reject the entire batch and return context from this validated snapshot.
 	if firstBad >= 0 {
+		failedEdit := parsed[firstBad]
+		requestedEnd := failedEdit.pos.Line
+		if failedEdit.endPos != nil {
+			requestedEnd = failedEdit.endPos.Line
+		}
 		emitBatchError(
 			fmt.Sprintf("edit %d: anchor stale", firstBad),
 			allRemaps,
 			firstBad,
+			buildCurrentAnchorContext(lines, failedEdit.pos.Line, requestedEnd),
 		)
 		return nil
 	}
@@ -510,20 +516,21 @@ func cmdBatch(path string, checkOnly bool) error {
 	return emitJSON(result)
 }
 
-func emitBatchError(msg string, remaps []Remap, failed int) error {
-	return emitBatchErrorType("stale", msg, remaps, failed)
+func emitBatchError(msg string, remaps []Remap, failed int, currentAnchors *AnchorContext) error {
+	return emitBatchErrorType("stale", msg, remaps, failed, currentAnchors)
 }
 
 func emitBatchInvalidError(msg string, failed int) error {
-	return emitBatchErrorType("invalid", msg, nil, failed)
+	return emitBatchErrorType("invalid", msg, nil, failed, nil)
 }
 
-func emitBatchErrorType(errType, msg string, remaps []Remap, failed int) error {
+func emitBatchErrorType(errType, msg string, remaps []Remap, failed int, currentAnchors *AnchorContext) error {
 	return emitJSON(BatchEditError{
-		OK:      false,
-		Error:   errType,
-		Message: msg,
-		Remaps:  remaps,
-		Failed:  failed,
+		OK:             false,
+		Error:          errType,
+		Message:        msg,
+		Remaps:         remaps,
+		Failed:         failed,
+		CurrentAnchors: currentAnchors,
 	})
 }

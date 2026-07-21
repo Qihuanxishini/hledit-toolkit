@@ -1,14 +1,14 @@
 import { ANCHOR_HASH_PATTERN } from "./file-changes.ts";
 
-export type BatchUpdatedAnchorLine = {
+export type BatchAnchorLine = {
 	line: number;
 	anchor: string;
 	text: string;
 	textTruncated: boolean;
 };
 
-export type BatchUpdatedAnchorContext = {
-	lines: BatchUpdatedAnchorLine[];
+export type BatchAnchorContext = {
+	lines: BatchAnchorLine[];
 	offset: number;
 	limit: number;
 	desiredLimit: number;
@@ -34,8 +34,7 @@ function nonNegativeInteger(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
-export function parseBatchUpdatedAnchorContext(parsed: Record<string, unknown> | null): BatchUpdatedAnchorContext | undefined {
-	const value = parsed?.updatedAnchors;
+export function parseAnchorContext(value: unknown): BatchAnchorContext | undefined {
 	if (!isRecord(value) || !Array.isArray(value.lines) || typeof value.truncated !== "boolean") {
 		return undefined;
 	}
@@ -47,7 +46,7 @@ export function parseBatchUpdatedAnchorContext(parsed: Record<string, unknown> |
 		return undefined;
 	}
 
-	const lines: BatchUpdatedAnchorLine[] = [];
+	const lines: BatchAnchorLine[] = [];
 	for (const [index, item] of value.lines.entries()) {
 		if (!isRecord(item)) {
 			return undefined;
@@ -69,7 +68,11 @@ export function parseBatchUpdatedAnchorContext(parsed: Record<string, unknown> |
 	return { lines, offset, limit, desiredLimit, truncated: value.truncated };
 }
 
-export function formatBatchUpdatedAnchorContext(context: BatchUpdatedAnchorContext): PostEditContextResult {
+export function parseBatchUpdatedAnchorContext(parsed: Record<string, unknown> | null): BatchAnchorContext | undefined {
+	return parseAnchorContext(parsed?.updatedAnchors);
+}
+
+export function formatBatchUpdatedAnchorContext(context: BatchAnchorContext): PostEditContextResult {
 	const truncated = context.truncated || context.lines.some((line) => line.textTruncated);
 	const output = [
 		"更新后的锚点：",

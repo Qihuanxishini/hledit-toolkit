@@ -6,6 +6,8 @@ function isRecord(value: unknown): value is JsonRecord {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const MAX_JSON_UNWRAP_DEPTH = 2;
+
 function parseJsonValue(value: unknown): unknown {
 	if (typeof value !== "string") {
 		return value;
@@ -15,6 +17,21 @@ function parseJsonValue(value: unknown): unknown {
 	} catch {
 		return value;
 	}
+}
+
+function parseJsonStructure(value: unknown, isExpectedStructure: (value: unknown) => boolean): unknown {
+	let current = value;
+	for (let depth = 0; depth < MAX_JSON_UNWRAP_DEPTH; depth++) {
+		if (isExpectedStructure(current) || typeof current !== "string") {
+			return current;
+		}
+		const parsed = parseJsonValue(current);
+		if (parsed === current) {
+			return current;
+		}
+		current = parsed;
+	}
+	return current;
 }
 
 function normalizePositiveInteger(value: unknown): unknown {
@@ -49,7 +66,7 @@ function normalizeRawLines(value: unknown): unknown {
 }
 
 function normalizeChange(value: unknown): unknown {
-	const parsed = parseJsonValue(value);
+	const parsed = parseJsonStructure(value, isRecord);
 	if (!isRecord(parsed)) {
 		return parsed;
 	}
@@ -74,7 +91,7 @@ function normalizeChange(value: unknown): unknown {
 }
 
 function normalizeChanges(value: unknown): unknown {
-	const parsed = parseJsonValue(value);
+	const parsed = parseJsonStructure(value, (candidate) => Array.isArray(candidate) || isRecord(candidate));
 	if (Array.isArray(parsed)) {
 		return parsed.map(normalizeChange);
 	}
@@ -85,7 +102,7 @@ function normalizeChanges(value: unknown): unknown {
 }
 
 export function prepareReadAnchorsArguments(args: unknown): ReadAnchorsParams {
-	const parsed = parseJsonValue(args);
+	const parsed = parseJsonStructure(args, isRecord);
 	if (!isRecord(parsed)) {
 		return parsed as ReadAnchorsParams;
 	}
@@ -98,7 +115,7 @@ export function prepareReadAnchorsArguments(args: unknown): ReadAnchorsParams {
 }
 
 export function prepareFileChangeArguments(args: unknown): FileChangeParams {
-	const parsed = parseJsonValue(args);
+	const parsed = parseJsonStructure(args, isRecord);
 	if (!isRecord(parsed)) {
 		return parsed as FileChangeParams;
 	}

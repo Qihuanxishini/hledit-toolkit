@@ -18,10 +18,10 @@ hledit capabilities
 Outputs one JSON object describing behavior that integrations may require:
 
 ```json
-{ "ok": true, "version": "1.4.0", "readRangeMetadata": true, "batchInsertAfter": true, "batchCheck": true, "batchUpdatedAnchors": true }
+{ "ok": true, "version": "1.5.0", "readRangeMetadata": true, "batchInsertAfter": true, "batchCheck": true, "batchUpdatedAnchors": true, "batchStaleContext": true }
 ```
 
-The bundled Pi extension requires `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, and `batchUpdatedAnchors:true`; a successful `help` command alone is not a compatibility guarantee.
+The bundled Pi extension requires `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, `batchUpdatedAnchors:true`, and `batchStaleContext:true`; a successful `help` command alone is not a compatibility guarantee.
 
 ## 2. Verbs
 
@@ -244,12 +244,16 @@ When any anchor's hash doesn't match the current file content:
     { "requested": "5#TX", "current": "5#NK" },
     { "requested": "8#QR", "current": "9#VR" }
   ],
+  "currentAnchors": {
+    "lines": [{ "line": 5, "anchor": "5#NK", "text": "current line" }],
+    "offset": 3, "limit": 5, "desiredLimit": 5, "truncated": false
+  },
   "message": "anchor 5#TX: expected hash TX, got NK"
 }
 ```
 
-- `remaps` helps locate the current content for a required re-read.
-- Call the read operation again and inspect the current file before retrying; do not automatically reuse remapped anchors.
+- `remaps` helps locate the current content; `currentAnchors` is a bounded window captured from the same file snapshot that rejected the batch.
+- Inspect `currentAnchors` before an explicit retry. It may supply the new anchors directly when complete, but must never trigger automatic retry or overwrite concurrent changes. Re-read only when the context is absent or truncated.
 - The whole edit is rejected — no partial writes.
 
 ## 6. Success Response

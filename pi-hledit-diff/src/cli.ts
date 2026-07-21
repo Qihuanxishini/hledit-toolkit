@@ -22,6 +22,7 @@ export type HleditCapabilities = {
 	batchInsertAfter: true;
 	batchCheck: true;
 	batchUpdatedAnchors: true;
+	batchStaleContext: true;
 };
 
 export function parseHleditCapabilities(run: HleditRun): HleditCapabilities | undefined {
@@ -41,11 +42,12 @@ export function parseHleditCapabilities(run: HleditRun): HleditCapabilities | un
 			record.readRangeMetadata !== true ||
 			record.batchInsertAfter !== true ||
 			record.batchCheck !== true ||
-			record.batchUpdatedAnchors !== true
+			record.batchUpdatedAnchors !== true ||
+			record.batchStaleContext !== true
 		) {
 			return undefined;
 		}
-		return { version: record.version, readRangeMetadata: true, batchInsertAfter: true, batchCheck: true, batchUpdatedAnchors: true };
+		return { version: record.version, readRangeMetadata: true, batchInsertAfter: true, batchCheck: true, batchUpdatedAnchors: true, batchStaleContext: true };
 	} catch {
 		return undefined;
 	}

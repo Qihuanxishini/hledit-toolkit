@@ -254,7 +254,11 @@ Stale anchors are rejected atomically:
   "ok": false,
   "error": "stale",
   "message": "anchor 6#MX: stale",
-  "remaps": [{"requested":"6#MX","current":"6#MQ"}]
+  "remaps": [{"requested":"6#MX","current":"6#MQ"}],
+  "currentAnchors": {
+    "lines": [{"line":6,"anchor":"6#MQ","text":"current line"}],
+    "offset": 4, "limit": 5, "desiredLimit": 5, "truncated": false
+  }
 }
 ```
 
@@ -281,7 +285,7 @@ Anchors are `LN#HH`:
 
 ## Failure modes
 
-- stale anchor -> re-read and retry
+- stale anchor -> inspect `currentAnchors`, then explicitly retry with its complete new anchors; re-read only when that context is absent or truncated
 - binary file -> stop and use a text file
 - invalid UTF-8 -> convert the file explicitly before editing; hledit will not rewrite undecodable bytes
 - invalid anchor or CLI misuse -> fix args

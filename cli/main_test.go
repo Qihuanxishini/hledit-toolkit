@@ -98,8 +98,8 @@ func TestMainCapabilities(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("capabilities output is not JSON: %q: %v", out, err)
 	}
-	if !got.OK || got.Version != version || !got.BatchInsertAfter || !got.BatchCheck || !got.BatchUpdatedAnchors || !got.ReadRangeMetadata {
-		t.Fatalf("capabilities = %#v, want current version with batch check, insert-after, updated anchors, and read-range metadata", got)
+	if !got.OK || got.Version != version || !got.BatchInsertAfter || !got.BatchCheck || !got.BatchUpdatedAnchors || !got.BatchStaleContext || !got.ReadRangeMetadata {
+		t.Fatalf("capabilities = %#v, want current batch and structured recovery capabilities", got)
 	}
 }
 

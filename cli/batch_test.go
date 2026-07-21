@@ -328,6 +328,13 @@ func TestCmdBatch(t *testing.T) {
 		if len(got.Remaps) == 0 {
 			t.Fatalf("expected remaps, got %#v", got)
 		}
+		if got.CurrentAnchors == nil || len(got.CurrentAnchors.Lines) != 3 {
+			t.Fatalf("current anchors = %#v; want bounded stale snapshot", got.CurrentAnchors)
+		}
+		current := got.CurrentAnchors.Lines[1]
+		if current.Anchor != formatTag(2, "modified") || current.Text != "modified" || current.TextTruncated {
+			t.Fatalf("current stale line = %#v; want complete modified line", current)
+		}
 	})
 }
 

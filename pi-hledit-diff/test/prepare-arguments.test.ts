@@ -23,6 +23,47 @@ test("prepareFileChangeArguments parses JSON changes and wraps a single change",
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
 });
 
+test("prepareFileChangeArguments unwraps doubly serialized structural arguments", () => {
+	const expected = {
+		path: "src/a.ts",
+		changes: [{ operation: "replace", anchor: "1#BH", lines: ["first", "second"] }],
+	};
+	const prepared = prepareFileChangeArguments(
+		JSON.stringify({
+			path: "src/a.ts",
+			changes: JSON.stringify(JSON.stringify(expected.changes[0])),
+		}),
+	);
+
+	assert.deepEqual(prepared, expected);
+	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
+});
+
+test("prepareFileChangeArguments leaves strings inside lines untouched", () => {
+	const sourceLine = JSON.stringify(JSON.stringify({ valid: "source text" }));
+	const prepared = prepareFileChangeArguments({
+		path: "src/a.ts",
+		changes: JSON.stringify(JSON.stringify([{ operation: "replace", anchor: "1#BH", lines: [sourceLine] }]))
+	});
+
+	assert.deepEqual(prepared, {
+		path: "src/a.ts",
+		changes: [{ operation: "replace", anchor: "1#BH", lines: [sourceLine] }],
+	});
+	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
+});
+
+test("prepareFileChangeArguments leaves over-nested or invalid JSON for schema rejection", () => {
+	const overNested = prepareFileChangeArguments({
+		path: "src/a.ts",
+		changes: JSON.stringify(JSON.stringify(JSON.stringify(JSON.stringify([{ operation: "delete", anchor: "1#BH" }])))),
+	});
+	const invalid = prepareFileChangeArguments({ path: "src/a.ts", changes: "[{invalid" });
+
+	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, overNested), false);
+	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, invalid), false);
+});
+
 test("prepareFileChangeArguments normalizes range aliases and rendered anchor lines", () => {
 	const prepared = prepareFileChangeArguments({
 		path: "src/a.ts",

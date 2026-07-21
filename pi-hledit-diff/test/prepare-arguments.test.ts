@@ -23,6 +23,19 @@ test("prepareFileChangeArguments parses JSON changes and wraps a single change",
   assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
 });
 
+test("prepareFileChangeArguments accepts a serialized changes array from tool callers", () => {
+  const prepared = prepareFileChangeArguments({
+    path: "src/a.ts",
+    changes: JSON.stringify([{ operation: "insert_after", anchor: "1#BHJ", lines: ["inserted"] }]),
+  });
+
+  assert.deepEqual(prepared, {
+    path: "src/a.ts",
+    changes: [{ operation: "insert_after", anchor: "1#BHJ", lines: ["inserted"] }],
+  });
+  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
+});
+
 test("prepareFileChangeArguments unwraps doubly serialized structural arguments", () => {
   const expected = {
     path: "src/a.ts",

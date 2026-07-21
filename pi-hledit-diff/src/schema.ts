@@ -83,7 +83,7 @@ export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 			{
 				minItems: 1,
 				description:
-					"同一文件的一组完整、互不冲突的原子修改。范围操作必须同时提供 start_anchor 与 end_anchor；任一项无效或锚点失效都会使整批次零写入。",
+					"同一文件的一组完整、互不冲突的原子修改。调用时必须传对象数组，不能将整个 changes 数组 JSON.stringify 成字符串；插件仅兼容处理上游偶发的序列化偏差。范围操作必须同时提供 start_anchor 与 end_anchor；任一项无效或锚点失效都会使整批次零写入。",
 			},
 		),
 	},

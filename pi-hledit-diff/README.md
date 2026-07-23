@@ -12,16 +12,20 @@
 编辑语义：
 - 锚点格式严格跟随 CLI：`LN#[A-Za-z0-9_-]{3}`；也可将读取结果中的 `LN#HASH:text` 整段原样填入锚点字段，`prepareArguments` 会在 schema 校验前移除冒号后的源码文本。旧两位锚点会在 schema 边界被拒绝，格式合规但内容伪造仍会被 CLI 判为 stale。
 - 公开修改协议只有四种完整操作：`replace_range`、`delete_range`、`insert_before` 和 `insert_after`。范围操作必须同时提供 `start_anchor` 与 `end_anchor`；单行范围使用同一个锚点作为首尾。旧 `replace` / `delete` / `insert` 形状不迁移，由严格 schema 直接拒绝。
+- 成功的未过滤读取会在插件内部记录原始字节 SHA-256 revision 与返回 anchors；范围修改必须覆盖每个原始行，insert 必须覆盖依附行。revision 与 proof 不进入公开工具 schema。
+- `grep` 结果和行内截断结果不建立写入证明；缺少完整证据时 apply 在启动 CLI batch 前直接拒绝，并返回定向读取建议。
 - 若单行 `replace_range` 输出多行且首行与原锚点行完全相同，插件会判定为高风险范围扩展；返回恢复指导前先以 `batch --check` 验证本批次全部锚点，stale、冲突或非法请求优先返回 CLI 原始错误。
 - 高风险范围扩展错误会列出实际参数并禁止原样重试：存在唯一、从下一行之后开始的相邻 `delete_range` 时给出已验证的完整合并模板；没有安全结束锚点时要求重新读取，而不输出非法占位 anchor；`insert_after` 模板直接复用原 lines 去除重复首行后的内容。紧接下一行开始的 `delete_range` 已显式覆盖后续旧代码，不触发该护栏。
 - batch 是原子的：任一 change 非法、冲突或 stale 时均为零写入。
-- stale 拒绝会返回校验时同一文件快照中的 `currentAnchors`，并在 `details.error.staleAnchors` 与正文中列出失败项、字段、提交锚点、当前同号行锚点和当前文本。信息只供核对；调用方仅在窗口仍明确覆盖原定目标及完整范围时显式重提，否则重新读取，插件不会自动修正锚点、重试或覆盖并发修改。
+- CLI 能构建完整同快照窗口的 stale 拒绝会返回 `currentRevision` / `currentAnchors`，并在 `details.error.staleAnchors` 与正文中列出失败项和当前同号行。窗口缺失、截断或未覆盖完整目标范围时必须重新读取；插件不会自动修正锚点、重试或覆盖并发修改。
 - 已验证但内容相同的 batch 返回 no-op，不触碰目标文件；模型正文和 TUI 不再误报为已修改。
 - 写入会保留 symlink、使用唯一临时文件，并明确拒绝有多个 hardlink 的目标。
+- CLI 在临时文件完成同步后、原子替换前复检源文件 revision；变化时返回 `source_changed_before_commit` 并保留外部内容。该复检显著缩小竞争窗口，但不宣称 recheck 与 rename 之间不存在极短竞态。
+- 成功 apply 只用新 revision 与 `updatedAnchors` 重建证据；stale、结果未知或不兼容响应会使旧证据失效。
 - 仅接受有效 UTF-8 文本，并在修改时保留已有 UTF-8 BOM。
 - 工具名称和协议字段保持稳定；Pi 中的调用摘要、结果、错误、警告和重试指引统一使用简体中文。
 
-插件会替换 Pi 的普通 `edit` 工具；如果 bundled CLI 缺失或 capability 不符合要求，则恢复内置 `edit`。
+CLI capability 健康时，插件先用 `hledit_read_anchors` 替换 Pi 的普通 `edit`，仅在当前 session branch 存在有效证据后激活 `hledit_apply_file_changes`；分支切换会从当前 branch 的工具结果重建状态。若 bundled CLI 缺失或不兼容，则恢复内置 `edit`。
 
 ## 独立 TUI 渲染
 
@@ -53,11 +57,13 @@ bin/hledit.exe
   "batchInsertAfter": true,
   "batchCheck": true,
   "batchUpdatedAnchors": true,
-  "batchStaleContext": true
+  "batchStaleContext": true,
+  "batchWireV3": true,
+  "batchReadProof": true
 }
 ```
 
-成功的 JSON 读取必须包含合法的 `totalLines`、锚点行和截断状态；成功的 batch 响应必须包含合法的 `updatedAnchors`。stale batch 响应必须包含来自同一校验快照的 `currentAnchors`，仅供核对：只有确认窗口仍覆盖原定目标及完整范围时才可显式重试，否则必须重新读取。插件不会为旧 CLI 保留文本读取解析或修改后 `read-range` 回退。
+成功的 JSON 读取必须包含合法的 `revision`、`totalLines`、锚点行和截断状态。插件内部 batch 请求携带 `{revision, anchors}` proof；CLI 重新验证 proof 覆盖、锚点和当前原始字节 revision。成功 batch 必须包含新 `revision` 与合法 `updatedAnchors`，失败可携带 `currentRevision` 与同快照 `currentAnchors`。batch wire v3 中 `delete` 必须省略 `lines`，旧 `delete.lines:[]` 直接拒绝；插件不保留旧 CLI、旧 wire 或无 proof 写入回退。
 
 ## 开发
 

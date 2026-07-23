@@ -78,6 +78,7 @@ test("renderReadAnchorsResult shows actual range, total lines, and EOF", () => {
             disposition: "succeeded",
             read: {
                 path: "notes.txt",
+				revision: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
                 requested: { offset: 1, limit: 20 },
                 actual: { firstLine: 1, lastLine: 14, lineCount: 14, totalLines: 14 },
                 lines,
@@ -106,6 +107,7 @@ test("renderReadAnchorsResult expands structured continuation details", () => {
             disposition: "succeeded",
             read: {
                 path: "notes.txt",
+				revision: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
                 requested: { offset: 8, limit: 2 },
                 actual: { firstLine: 8, lastLine: 9, lineCount: 2, totalLines: 20 },
                 lines,
@@ -154,6 +156,7 @@ test("renderReadAnchorsResult caches its final width and invalidates highlighted
             disposition: "succeeded",
             read: {
                 path: "sample.ts",
+				revision: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
                 requested: { offset: 1, limit: 2 },
                 actual: { firstLine: 1, lastLine: 2, lineCount: 2, totalLines: 2 },
                 lines,

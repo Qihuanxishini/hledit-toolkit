@@ -31,7 +31,7 @@ test("buildFileChangeRequest translates every supported change", () => {
     stdin: JSON.stringify({
       edits: [
         { op: "replace", pos: "1#BHJ", end_pos: "2#BBK", lines: ["next"] },
-        { op: "delete", pos: "4#JKL", end_pos: "4#JKL", lines: [] },
+        { op: "delete", pos: "4#JKL", end_pos: "4#JKL" },
         { op: "insert", pos: "6#MNP", after: true, lines: ["one", "two"] },
       ],
     }),
@@ -174,4 +174,7 @@ test("lineFromAnchor reads only valid line prefixes", () => {
   assert.equal(lineFromAnchor("12#Ab9"), 12);
   assert.equal(lineFromAnchor("12"), undefined);
   assert.equal(lineFromAnchor(undefined), undefined);
+  assert.equal(lineFromAnchor("0#Ab9"), undefined);
+  assert.equal(lineFromAnchor("9007199254740992#Ab9"), undefined);
+  assert.equal(lineFromAnchor(`${"9".repeat(400)}#Ab9`), undefined);
 });

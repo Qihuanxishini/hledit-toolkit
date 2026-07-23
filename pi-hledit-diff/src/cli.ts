@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const EXTENSION_ROOT = fileURLToPath(new URL("../", import.meta.url));
 
-export const HLEDIT_INSTALL_HINT = `此扩展需要随包提供的 Windows x64 hledit CLI，并要求其支持三位 v2 锚点、结构化范围读取、批量只校验、批量向后插入和修改后锚点回传。
+export const HLEDIT_INSTALL_HINT = `此扩展需要随包提供的 Windows x64 hledit CLI，并要求其支持三位 v2 锚点、结构化范围读取、严格 batch wire v3、读取证明、批量只校验、批量向后插入和修改后锚点回传。
 请重新同步或安装 pi-hledit-diff，并确认 bin/hledit.exe 存在。`;
 
 export const HLEDIT_RUN_TIMEOUT_MS = 30_000;
@@ -14,6 +14,7 @@ export type HleditRun = {
 	stdout: string;
 	stderr: string;
 	exitCode: number | null;
+	started?: boolean;
 };
 
 export type HleditCapabilities = {
@@ -24,6 +25,8 @@ export type HleditCapabilities = {
 	batchCheck: true;
 	batchUpdatedAnchors: true;
 	batchStaleContext: true;
+	batchWireV3: true;
+	batchReadProof: true;
 };
 
 export function parseHleditCapabilities(run: HleditRun): HleditCapabilities | undefined {
@@ -45,11 +48,23 @@ export function parseHleditCapabilities(run: HleditRun): HleditCapabilities | un
 			record.batchCheck !== true ||
 			record.batchUpdatedAnchors !== true ||
 			record.batchStaleContext !== true ||
+			record.batchReadProof !== true ||
+			record.batchWireV3 !== true ||
 			record.anchorProtocolV2 !== true
 		) {
 			return undefined;
 		}
-		return { version: record.version, anchorProtocolV2: true, readRangeMetadata: true, batchInsertAfter: true, batchCheck: true, batchUpdatedAnchors: true, batchStaleContext: true };
+		return {
+			version: record.version,
+			anchorProtocolV2: true,
+			readRangeMetadata: true,
+			batchInsertAfter: true,
+			batchCheck: true,
+			batchUpdatedAnchors: true,
+			batchStaleContext: true,
+			batchWireV3: true,
+			batchReadProof: true,
+		};
 	} catch {
 		return undefined;
 	}
@@ -72,10 +87,11 @@ export async function runHledit(
 			child = spawn(bin, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			resolveRun({ stdout: `无法启动 hledit：${bin}\n\n${HLEDIT_INSTALL_HINT}`, stderr: message, exitCode: 1 });
+			resolveRun({ stdout: `无法启动 hledit：${bin}\n\n${HLEDIT_INSTALL_HINT}`, stderr: message, exitCode: 1, started: false });
 			return;
 		}
 
+		let commandStarted = false;
 		let stdout = "";
 		let stderr = "";
 		let outputBytes = 0;
@@ -92,7 +108,7 @@ export async function runHledit(
 			if (settled) return;
 			settled = true;
 			cleanup();
-			resolveRun(run);
+			resolveRun({ ...run, started: run.started ?? commandStarted });
 		};
 		const requestTermination = (run: HleditRun) => {
 			if (settled || terminationRequested) return;
@@ -129,6 +145,9 @@ export async function runHledit(
 			else stderr += chunk;
 		};
 
+		child.once("spawn", () => {
+			commandStarted = true;
+		});
 		child.stdout.setEncoding("utf8");
 		child.stderr.setEncoding("utf8");
 		child.stdout.on("data", (chunk: string) => appendOutput("stdout", chunk));

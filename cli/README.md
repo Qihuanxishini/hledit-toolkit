@@ -122,7 +122,7 @@ This monorepo includes the [`pi-hledit-diff`](../pi-hledit-diff/) extension. It 
 - `hledit_read_anchors`
 - `hledit_apply_file_changes`
 
-The extension requires `anchorProtocolV2:true`, `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, `batchUpdatedAnchors:true`, and `batchStaleContext:true`. It consumes structured JSON reads and does not use the legacy single-tool `op` protocol or a post-edit `read-range` fallback.
+The extension requires `anchorProtocolV2:true`, `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, `batchUpdatedAnchors:true`, `batchStaleContext:true`, `batchWireV3:true`, and `batchReadProof:true`. It consumes revision-bearing structured reads and does not use the legacy single-tool `op` protocol or an edits-only write path.
 
 After installing the extension in Pi, reload it:
 
@@ -156,7 +156,7 @@ hledit batch [--check] <file>
 `--grep` matches substrings. `--context N` adds N lines before/after each match. `--pretty` adds ANSI styling for human reading; `--json` stays machine-readable and unstyled.
 `<content-source>` is either `-` for stdin or a file path.
 
-`hledit capabilities` emits machine-readable JSON for integrations. This tree reports `anchorProtocolV2:true`, `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, `batchUpdatedAnchors:true`, and `batchStaleContext:true`; structured-read and patched-batch clients should require every field.
+`hledit capabilities` emits machine-readable JSON for integrations. This tree additionally reports `batchWireV3:true` and `batchReadProof:true`; structured-read and patched-batch clients should require the complete capability set listed above.
 
 ## Examples
 
@@ -204,6 +204,7 @@ echo '{"edits":[{"op":"replace","pos":"12#aB3","lines":["fixed"]}]}' | hledit ba
 ```
 
 Batch `insert` places lines before its anchor by default. Set `"after": true` to place them after it.
+Batch wire v3 has one canonical shape: `replace` requires `lines` (an empty array deletes), `delete` omits `lines`, and `insert` requires non-empty `lines`; only insert may carry `after:true`. An optional `proof` object supplies a lowercase raw-byte SHA-256 `revision` and strictly increasing `anchors` covering every consumed or insertion-anchor line.
 Delete a line or range by piping empty stdin and using `-` as the content source:
 
 ```bash
@@ -214,7 +215,7 @@ printf '' | hledit replace-range main.go 12#aB3 18#xY7 -
 ## Output
 
 Read emits `LN#HHH:TEXT`; anchors emits `ANCHOR<TAB>TEXT`.
-`--json` emits `{ok, totalLines, lines:[{line,anchor,text,textTruncated?}], truncated, nextOffset?}`; an offset past EOF returns `requestedOffset` and `totalLines`.
+`--json` emits `{ok, revision, totalLines, lines:[{line,anchor,text,textTruncated?}], truncated, nextOffset?}`. `revision` hashes the exact raw bytes, including BOM and newline style; an offset past EOF returns `requestedOffset` and `totalLines`.
 
 ```text
 1#aB3:package main
@@ -228,11 +229,12 @@ Write commands emit JSON:
 {"ok":true,"contentChanged":true,"firstChangedLine":6,"lastChangedLine":6}
 ```
 
-Batch adds `editsApplied`. A successful write also returns a bounded `updatedAnchors` window; `--check` instead adds `checked:true` and does not write. If validated replacement content is already present, `contentChanged:false` is returned and the target is not touched.
+Batch adds `revision` and `editsApplied`. A successful write also returns a bounded `updatedAnchors` window; `--check` returns the loaded revision with `checked:true` and does not write. A no-op returns the unchanged raw-byte revision with `contentChanged:false` and does not touch the target.
 
 ```json
 {
   "ok": true,
+  "revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
   "contentChanged": true,
   "firstChangedLine": 2,
   "lastChangedLine": 4,
@@ -255,6 +257,7 @@ Stale anchors are rejected atomically:
   "error": "stale",
   "message": "anchor 6#xY7: stale",
   "remaps": [{"requested":"6#xY7","current":"6#xY8"}],
+  "currentRevision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
   "currentAnchors": {
     "lines": [{"line":6,"anchor":"6#xY8","text":"current line"}],
     "offset": 4, "limit": 5, "desiredLimit": 5, "truncated": false

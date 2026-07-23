@@ -8,7 +8,7 @@ import piHleditDiffExtension from "../index.ts";
 import { HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_READ_ANCHORS_TOOL } from "../src/active-tools.ts";
 import type { TextResult } from "../src/result.ts";
 
-type ToolResultListener = (event: { toolName: string; details: unknown }) => unknown;
+type ToolResultListener = (event: { toolName: string; details: unknown }, context: { cwd: string }) => unknown;
 type RegisteredTool = {
 	name: string;
 	promptGuidelines?: string[];
@@ -40,10 +40,11 @@ test("extension registers both tools and escalates logical hledit failures", () 
 	const { registeredTools, toolResultListener } = registerExtensionForTest();
 
 	assert.deepEqual([...registeredTools.keys()], [HLEDIT_READ_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL]);
-	assert.deepEqual(toolResultListener({ toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL, details: { disposition: "rejected" } }), { isError: true });
-	assert.deepEqual(toolResultListener({ toolName: HLEDIT_READ_ANCHORS_TOOL, details: { disposition: "unavailable" } }), { isError: true });
-	assert.equal(toolResultListener({ toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL, details: { disposition: "succeeded" } }), undefined);
-	assert.equal(toolResultListener({ toolName: "bash", details: { disposition: "rejected" } }), undefined);
+	const context = { cwd: process.cwd() };
+	assert.deepEqual(toolResultListener({ toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL, details: { disposition: "rejected" } }, context), { isError: true });
+	assert.deepEqual(toolResultListener({ toolName: HLEDIT_READ_ANCHORS_TOOL, details: { disposition: "unavailable" } }, context), { isError: true });
+	assert.equal(toolResultListener({ toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL, details: { disposition: "succeeded" } }, context), undefined);
+	assert.equal(toolResultListener({ toolName: "bash", details: { disposition: "rejected" } }, context), undefined);
 });
 
 test("registered prompt guidelines name their target tool", () => {
@@ -295,7 +296,7 @@ test("apply tool rejects accidental single-line range expansion with actionable 
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
 });
 
-test("apply tool returns a stale snapshot before single-line range recovery guidance", async (t) => {
+test("apply tool rejects an anchor that does not match its read proof before starting batch", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
@@ -322,27 +323,10 @@ test("apply tool returns a stale snapshot before single-line range recovery guid
 	);
 
 	assert.equal(applyResult.details.disposition, "rejected");
-	assert.equal(applyResult.details.error?.code, "stale");
-	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /single_line_range_expansion|单行 replace_range/);
-	assert.match(applyResult.content[0]?.text ?? "", /提交时文件中的当前锚点快照/);
-	assert.match(applyResult.content[0]?.text ?? "", /:two/);
-	assert.match(applyResult.content[0]?.text ?? "", /不会自动重试或覆盖并发修改/);
-	assert.match(applyResult.content[0]?.text ?? "", /确认窗口仍覆盖原定目标及完整范围/);
-	assert.match(applyResult.content[0]?.text ?? "", /否则必须重新读取受影响范围/);
-	assert.ok(applyResult.details.error?.currentAnchors);
-	assert.deepEqual(applyResult.details.error?.staleAnchors, [
-		{
-			changeNumber: 1,
-			fields: ["start_anchor", "end_anchor"],
-			requestedAnchor: staleAnchor,
-			currentAnchor,
-			currentText: "two",
-		},
-	]);
-	assert.match(applyResult.content[0]?.text ?? "", /字段：start_anchor\/end_anchor/);
-	assert.match(applyResult.content[0]?.text ?? "", /提交的锚点：/);
-	assert.match(applyResult.content[0]?.text ?? "", /当前同号行：.*:two/);
-	assert.match(applyResult.content[0]?.text ?? "", /工具不会自动修正锚点或重试批次/);
+	assert.equal(applyResult.details.error?.code, "insufficient_read_proof");
+	assert.match(applyResult.content[0]?.text ?? "", /提交的锚点与当前分支最近读取到的锚点不一致/);
+	assert.match(applyResult.content[0]?.text ?? "", /请先调用 hledit_read_anchors/);
+	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /single_line_range_expansion|单行 replace_range|当前锚点快照/);
 	assert.equal(await readFile(target, "utf8"), original);
 });
 

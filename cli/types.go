@@ -1,13 +1,5 @@
 package main
 
-import (
-	"bytes"
-	"encoding/json"
-	"errors"
-	"io"
-	"os"
-)
-
 // ────────────────────────────────────────────────────────────────────────────
 // Anchor
 // ────────────────────────────────────────────────────────────────────────────
@@ -49,24 +41,6 @@ type EditError struct {
 	Remaps  []Remap `json:"remaps,omitempty"`
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Batch edit types
-// ────────────────────────────────────────────────────────────────────────────
-
-// BatchEditOp is a single operation within a batch edit request.
-type BatchEditOp struct {
-	OP     string   `json:"op"`              // "insert", "replace", or "delete"
-	Pos    string   `json:"pos"`             // start anchor (e.g. "5#aB3")
-	EndPos string   `json:"end_pos"`         // end anchor for replace_range (optional)
-	After  bool     `json:"after,omitempty"` // insert after Pos when true
-	Lines  []string `json:"lines"`           // replacement/inserted lines; empty = delete
-}
-
-// BatchEditRequest is the top-level JSON document accepted by hledit batch.
-type BatchEditRequest struct {
-	Edits []BatchEditOp `json:"edits"`
-}
-
 // AnchorContext is a bounded, annotated source window used in batch responses.
 type AnchorContext struct {
 	Lines        []ReadLine `json:"lines"`
@@ -86,6 +60,7 @@ type BatchEditResult struct {
 	LinesDeleted     int            `json:"linesDeleted"`
 	EditsApplied     int            `json:"editsApplied"`
 	ContentChanged   bool           `json:"contentChanged"`
+	Revision         string         `json:"revision"`
 	Warnings         []string       `json:"warnings,omitempty"`
 	Checked          bool           `json:"checked,omitempty"`
 	UpdatedAnchors   *AnchorContext `json:"updatedAnchors,omitempty"`
@@ -93,12 +68,13 @@ type BatchEditResult struct {
 
 // BatchEditError is written to stdout when any anchor in the batch is stale.
 type BatchEditError struct {
-	OK             bool           `json:"ok"`
-	Error          string         `json:"error"`
-	Message        string         `json:"message"`
-	Remaps         []Remap        `json:"remaps,omitempty"`
-	Failed         int            `json:"failed"` // index of first failing edit
-	CurrentAnchors *AnchorContext `json:"currentAnchors,omitempty"`
+	OK              bool           `json:"ok"`
+	Error           string         `json:"error"`
+	Message         string         `json:"message"`
+	Remaps          []Remap        `json:"remaps,omitempty"`
+	Failed          int            `json:"failed"` // index of first failing edit
+	CurrentAnchors  *AnchorContext `json:"currentAnchors,omitempty"`
+	CurrentRevision string         `json:"currentRevision,omitempty"`
 }
 
 // CLICapabilities 描述插件启动前必须验证的 CLI 行为。
@@ -111,6 +87,8 @@ type CLICapabilities struct {
 	BatchUpdatedAnchors bool   `json:"batchUpdatedAnchors"`
 	BatchStaleContext   bool   `json:"batchStaleContext"`
 	ReadRangeMetadata   bool   `json:"readRangeMetadata"`
+	BatchWireV3         bool   `json:"batchWireV3"`
+	BatchReadProof      bool   `json:"batchReadProof"`
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -137,39 +115,9 @@ type ReadRangeError struct {
 // ReadResult is written to stdout by read/read-range when --json is set.
 type ReadResult struct {
 	OK         bool       `json:"ok"`
+	Revision   string     `json:"revision"`
 	TotalLines int        `json:"totalLines"`
 	Lines      []ReadLine `json:"lines"`
 	Truncated  bool       `json:"truncated"`
 	NextOffset int        `json:"nextOffset,omitempty"`
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Batch edit types
-// ────────────────────────────────────────────────────────────────────────────
-
-// parseBatchRequest 只接受一个字段闭合的 JSON 对象，避免拼写错误被静默忽略后改变编辑语义。
-func parseBatchRequest() (BatchEditRequest, error) {
-	var req BatchEditRequest
-	data, err := readStdin()
-	if err != nil {
-		return req, err
-	}
-
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		return req, err
-	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return req, errors.New("batch request must contain exactly one JSON object")
-		}
-		return req, err
-	}
-	return req, nil
-}
-
-func readStdin() ([]byte, error) {
-	return io.ReadAll(os.Stdin)
 }

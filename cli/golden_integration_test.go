@@ -274,12 +274,12 @@ func TestGolden_BatchEdit_MultipleOps(t *testing.T) {
 
 	anchors := goldenReadAllAnchors(t, bin, workFile)
 
-	// Batch: replace line2, delete line4, insert before line5
+	// Batch: replace line2, delete line4, insert after line5
 	batchReq := fmt.Sprintf(
 		`{"edits":[
 			{"op":"replace","pos":"%s","lines":["TWO"]},
-			{"op":"delete","pos":"%s","lines":[]},
-			{"op":"insert","pos":"%s","lines":["new"]}
+			{"op":"delete","pos":"%s"},
+			{"op":"insert","pos":"%s","after":true,"lines":["new"]}
 		]}`,
 		anchors[1], anchors[3], anchors[4],
 	)
@@ -295,7 +295,7 @@ func TestGolden_BatchEdit_MultipleOps(t *testing.T) {
 	}
 
 	data, _ := os.ReadFile(workFile)
-	expected := "line1\nTWO\nline3\nnew\nline5\n"
+	expected := "line1\nTWO\nline3\nline5\nnew\n"
 	if string(data) != expected {
 		t.Fatalf("content = %q, want %q", string(data), expected)
 	}

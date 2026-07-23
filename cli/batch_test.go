@@ -52,8 +52,14 @@ func batchTestRunPayload(t *testing.T, target string, payload []byte, checkOnly 
 		_ = inW.Close()
 	}()
 
-	if err := cmdBatch(target, checkOnly); err != nil {
-		t.Fatalf("cmdBatch returned error: %v", err)
+	var commandErr error
+	if checkOnly {
+		commandErr = runBatchCheck(target)
+	} else {
+		commandErr = runBatchApply(target)
+	}
+	if commandErr != nil {
+		t.Fatalf("batch command returned error: %v", commandErr)
 	}
 
 	_ = outW.Close()
@@ -140,6 +146,42 @@ func TestCmdBatchRejectsTrailingJSON(t *testing.T) {
 	}
 	if got := batchTestReadLines(t, target); len(got) != 1 || got[0] != "alpha" {
 		t.Fatalf("file changed to %#v; want unchanged", got)
+	}
+}
+
+func TestCmdBatchRejectsInvalidWireFields(t *testing.T) {
+	dir := t.TempDir()
+	target := editTestWriteLinesFile(t, dir, "target.txt", "alpha")
+	anchor := formatTag(1, "alpha")
+	tests := []struct {
+		name string
+		edit map[string]any
+		want string
+	}{
+		{name: "delete lines", edit: map[string]any{"op": "delete", "pos": anchor, "lines": []string{}}, want: "delete does not accept lines"},
+		{name: "delete non-empty lines", edit: map[string]any{"op": "delete", "pos": anchor, "lines": []string{"beta"}}, want: "delete does not accept lines"},
+		{name: "delete after", edit: map[string]any{"op": "delete", "pos": anchor, "after": false}, want: "delete does not accept after"},
+		{name: "replace missing lines", edit: map[string]any{"op": "replace", "pos": anchor}, want: "replace requires lines"},
+		{name: "replace after", edit: map[string]any{"op": "replace", "pos": anchor, "after": false, "lines": []string{"beta"}}, want: "replace does not accept after"},
+		{name: "insert false after", edit: map[string]any{"op": "insert", "pos": anchor, "after": false, "lines": []string{"beta"}}, want: "insert after must be true"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, err := json.Marshal(map[string]any{"edits": []map[string]any{tc.edit}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := batchTestRunPayload(t, target, payload, false)
+			var result BatchEditError
+			batchTestMustUnmarshal(t, out, &result)
+			if result.OK || result.Error != "invalid" || !strings.Contains(result.Message, tc.want) {
+				t.Fatalf("result = %+v; want invalid error containing %q", result, tc.want)
+			}
+			if got := batchTestReadLines(t, target); len(got) != 1 || got[0] != "alpha" {
+				t.Fatalf("file changed to %#v; want unchanged", got)
+			}
+		})
 	}
 }
 
@@ -564,6 +606,70 @@ func TestCmdBatchCheck(t *testing.T) {
 	})
 }
 
+func TestBatchCheckAndApplyRejectSamePlan(t *testing.T) {
+	tests := []struct {
+		name    string
+		lines   []string
+		request BatchEditRequest
+		code    string
+	}{
+		{
+			name:  "stale",
+			lines: []string{"alpha", "modified"},
+			request: BatchEditRequest{Edits: []BatchEditOp{{
+				OP: "replace", Pos: formatTag(2, "bravo"), Lines: []string{"new"},
+			}}},
+			code: "stale",
+		},
+		{
+			name:  "physical conflict",
+			lines: []string{"alpha", "bravo", "charlie"},
+			request: BatchEditRequest{Edits: []BatchEditOp{
+				{OP: "insert", Pos: formatTag(1, "alpha"), After: true, Lines: []string{"between"}},
+				{OP: "delete", Pos: formatTag(2, "bravo")},
+			}},
+			code: "invalid",
+		},
+		{
+			name:  "invalid operation",
+			lines: []string{"alpha"},
+			request: BatchEditRequest{Edits: []BatchEditOp{{
+				OP: "bogus", Pos: formatTag(1, "alpha"), Lines: []string{"new"},
+			}}},
+			code: "invalid",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			dir := t.TempDir()
+			checkTarget := editTestWriteLinesFile(t, dir, "check.txt", testCase.lines...)
+			applyTarget := editTestWriteLinesFile(t, dir, "apply.txt", testCase.lines...)
+			payload, err := json.Marshal(testCase.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			checkOutput := batchTestRunPayload(t, checkTarget, payload, true)
+			applyOutput := batchTestRunPayload(t, applyTarget, payload, false)
+			if checkOutput != applyOutput {
+				t.Fatalf("check/apply rejection differs:\ncheck: %s\napply: %s", checkOutput, applyOutput)
+			}
+			var rejection BatchEditError
+			batchTestMustUnmarshal(t, checkOutput, &rejection)
+			if rejection.OK || rejection.Error != testCase.code {
+				t.Fatalf("rejection = %#v; want %s", rejection, testCase.code)
+			}
+			if got := batchTestReadLines(t, checkTarget); !equalLines(got, testCase.lines) {
+				t.Fatalf("check changed file to %#v", got)
+			}
+			if got := batchTestReadLines(t, applyTarget); !equalLines(got, testCase.lines) {
+				t.Fatalf("rejected apply changed file to %#v", got)
+			}
+		})
+	}
+}
+
 func TestCmdBatchRejectsOverlappingRanges(t *testing.T) {
 	dir := t.TempDir()
 	target := editTestWriteLinesFile(t, dir, "target.txt", "one", "two", "three", "four")
@@ -616,12 +722,12 @@ func TestCmdBatchInsertAfter(t *testing.T) {
 		}
 	})
 
-	t.Run("reports final changed range after a lower insert shifts a replacement", func(t *testing.T) {
+	t.Run("reports final changed range after an earlier insert shifts a replacement", func(t *testing.T) {
 		dir := t.TempDir()
 		target := editTestWriteLinesFile(t, dir, "target.txt", "alpha", "bravo", "charlie")
 
 		out := batchTestWriteReq(t, target,
-			BatchEditOp{OP: "insert", Pos: formatTag(2, "bravo"), After: true, Lines: []string{"one", "two"}},
+			BatchEditOp{OP: "insert", Pos: formatTag(2, "bravo"), Lines: []string{"one", "two"}},
 			BatchEditOp{OP: "replace", Pos: formatTag(3, "charlie"), Lines: []string{"CHARLIE"}},
 		)
 
@@ -630,10 +736,10 @@ func TestCmdBatchInsertAfter(t *testing.T) {
 		if !got.OK {
 			t.Fatalf("batch failed: %#v", got)
 		}
-		if got.FirstChangedLine != 3 || got.LastChangedLine != 5 {
-			t.Fatalf("changed lines = %d-%d, want 3-5", got.FirstChangedLine, got.LastChangedLine)
+		if got.FirstChangedLine != 2 || got.LastChangedLine != 5 {
+			t.Fatalf("changed lines = %d-%d, want 2-5", got.FirstChangedLine, got.LastChangedLine)
 		}
-		if want := []string{"alpha", "bravo", "one", "two", "CHARLIE"}; !equalLines(batchTestReadLines(t, target), want) {
+		if want := []string{"alpha", "one", "two", "bravo", "CHARLIE"}; !equalLines(batchTestReadLines(t, target), want) {
 			t.Fatalf("target lines = %#v, want %#v", batchTestReadLines(t, target), want)
 		}
 	})
@@ -696,18 +802,49 @@ func TestCmdBatchInsertAfter(t *testing.T) {
 }
 
 func TestCmdBatchSinglePassBoundaries(t *testing.T) {
-	t.Run("orders inserts that share the same boundary", func(t *testing.T) {
+	t.Run("rejects inserts sharing a physical boundary", func(t *testing.T) {
 		dir := t.TempDir()
 		target := editTestWriteLinesFile(t, dir, "target.txt", "alpha", "bravo", "charlie")
+		originalContent, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
 
-		batchTestWriteReq(t, target,
+		out := batchTestWriteReq(t, target,
 			BatchEditOp{OP: "insert", Pos: formatTag(1, "alpha"), After: true, Lines: []string{"after-alpha"}},
 			BatchEditOp{OP: "insert", Pos: formatTag(2, "bravo"), Lines: []string{"before-bravo"}},
 		)
 
-		want := []string{"alpha", "after-alpha", "before-bravo", "bravo", "charlie"}
-		if got := batchTestReadLines(t, target); !equalLines(got, want) {
-			t.Fatalf("target lines = %#v, want %#v", got, want)
+		var got BatchEditError
+		batchTestMustUnmarshal(t, out, &got)
+		if got.OK || got.Error != "invalid" || !strings.Contains(got.Message, "physical boundary") {
+			t.Fatalf("batch output = %#v; want physical-boundary rejection", got)
+		}
+		if afterContent, err := os.ReadFile(target); err != nil || string(afterContent) != string(originalContent) {
+			t.Fatalf("physical-boundary conflict modified target: %q", afterContent)
+		}
+	})
+
+	t.Run("rejects an insert at a range boundary", func(t *testing.T) {
+		dir := t.TempDir()
+		target := editTestWriteLinesFile(t, dir, "target.txt", "alpha", "bravo", "charlie")
+		originalContent, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		out := batchTestWriteReq(t, target,
+			BatchEditOp{OP: "insert", Pos: formatTag(1, "alpha"), After: true, Lines: []string{"before-range"}},
+			BatchEditOp{OP: "delete", Pos: formatTag(2, "bravo")},
+		)
+
+		var got BatchEditError
+		batchTestMustUnmarshal(t, out, &got)
+		if got.OK || got.Error != "invalid" || !strings.Contains(got.Message, "physical boundary") {
+			t.Fatalf("batch output = %#v; want range-boundary rejection", got)
+		}
+		if afterContent, err := os.ReadFile(target); err != nil || string(afterContent) != string(originalContent) {
+			t.Fatalf("range-boundary conflict modified target: %q", afterContent)
 		}
 	})
 

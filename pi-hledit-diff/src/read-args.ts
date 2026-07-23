@@ -1,3 +1,4 @@
+export const DEFAULT_READ_LIMIT = 160;
 export const MAX_READ_LIMIT = 2000;
 
 export type ReadArgsParams = {
@@ -44,7 +45,7 @@ export function normalizeReadRequest(params: ReadArgsParams): NormalizedReadRequ
 	return {
 		path: normalizeToolPath(params.path),
 		offset: toPositiveInteger(params.offset) ?? 1,
-		limit: toReadLimit(params.limit) ?? MAX_READ_LIMIT,
+		limit: toReadLimit(params.limit) ?? DEFAULT_READ_LIMIT,
 		...(grep ? { grep } : {}),
 		...(context !== undefined ? { context } : {}),
 	};

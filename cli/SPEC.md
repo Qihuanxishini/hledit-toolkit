@@ -18,10 +18,10 @@ hledit capabilities
 Outputs one JSON object describing behavior that integrations may require:
 
 ```json
-{ "ok": true, "version": "2.0.0", "anchorProtocolV2": true, "readRangeMetadata": true, "batchInsertAfter": true, "batchCheck": true, "batchUpdatedAnchors": true, "batchStaleContext": true }
+{ "ok": true, "version": "2.0.0", "anchorProtocolV2": true, "readRangeMetadata": true, "batchInsertAfter": true, "batchCheck": true, "batchUpdatedAnchors": true, "batchStaleContext": true, "batchWireV3": true, "batchReadProof": true }
 ```
 
-The bundled Pi extension requires `anchorProtocolV2:true`, `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, `batchUpdatedAnchors:true`, and `batchStaleContext:true`; a successful `help` command alone is not a compatibility guarantee.
+The bundled Pi extension requires every capability shown above; a successful `help` command alone is not a compatibility guarantee.
 
 ## 2. Verbs
 
@@ -43,7 +43,7 @@ Reads the entire file. Each line is emitted as:
 - Content includes the original line without trailing `\n` or `\r`.
 - `--grep` — substring match; only matching lines are emitted.
 - `--context` — include N lines before/after each match; overlapping windows merge.
-- `--json` — emit JSON `{ok, totalLines, lines:[{line,anchor,text,textTruncated?}], truncated, nextOffset?}`.
+- `--json` — emit JSON `{ok, revision, totalLines, lines:[{line,anchor,text,textTruncated?}], truncated, nextOffset?}`. `revision` is `sha256:<64 lowercase hex digits>` over the exact original bytes, including UTF-8 BOM, line endings, and trailing newline.
 
 **Truncation:** Stop at 50 KB of output or 2,000 lines, whichever is first. Append a trailing line:
 
@@ -166,11 +166,15 @@ Reads a JSON `BatchEditRequest` from stdin:
 ```json
 {
   "edits": [
-    { "op": "replace", "pos": "12#aB3", "lines": ["new line"] },
+    { "op": "replace", "pos": "2#rT4", "lines": ["new line"] },
     { "op": "replace", "pos": "12#aB3", "end_pos": "18#xY7", "lines": ["new block"] },
-    { "op": "delete", "pos": "5#nK2", "lines": [] },
+    { "op": "delete", "pos": "5#nK2" },
     { "op": "insert", "pos": "8#Qw_", "after": true, "lines": ["inserted"] }
-  ]
+  ],
+  "proof": {
+    "revision": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "anchors": ["2#rT4", "5#nK2", "8#Qw_", "12#aB3", "13#Ab1", "14#Ab2", "15#Ab3", "16#Ab4", "17#Ab5", "18#xY7"]
+  }
 }
 ```
 
@@ -178,16 +182,21 @@ Validation:
 
 - All anchors are validated against the original file state before any write.
 - The JSON decoder rejects unknown fields and any additional top-level JSON value; protocol typos never degrade into a different edit.
+- `proof` is optional for standalone CLI use. When present, it must contain a valid raw-byte SHA-256 `revision` and unique, strictly increasing anchors.
+- Proof must cover every original line consumed by each replace/delete range and the anchor line used by each insert. Missing coverage returns `error:"insufficient_read_proof"`; revision or proof-anchor changes return `error:"stale"`.
+- Batch wire v3 has one canonical shape: `replace` requires `lines` (an empty array deletes the range), while `delete` must omit `lines`.
 - `replace` and `delete` use optional `end_pos` as an inclusive range end; if omitted, they target only `pos`.
 - `replace` and `delete` require `pos.Line <= end_pos.Line` when `end_pos` is provided.
-- `insert` requires non-empty `lines`, rejects `end_pos`, and inserts before `pos` unless `after:true` is set.
-- Duplicate inserts and any insert/replace/delete overlap return `error: "invalid"`.
+- `replace` and `delete` reject `after`; `delete` also rejects any present `lines` field.
+- `insert` requires non-empty `lines`, rejects `end_pos`, and inserts before `pos` unless `after:true` is set; a present `after` must be `true`.
+- Inserts that map to the same physical boundary (including `insert_after(N)` and `insert_before(N+1)`) and any insert/replace/delete boundary overlap return `error: "invalid"`.
 - Unknown operations or invalid anchors return `error: "invalid"`; stale anchors return `error: "stale"` with remaps.
 
 Application:
 
-- Validated edits are sorted by their original file boundary and applied through a single cursor-based rebuild.
-- The file is written once, atomically, only after the full batch validates.
+- Check and apply share the same pure planner: strict request decoding, proof validation, edit-anchor validation, physical conflict detection, statistics, and one cursor-based rebuild.
+- `--check` returns the loaded revision without writing. Apply prepares and syncs one temporary replacement, rechecks the target's raw-byte revision, and then performs one atomic replacement.
+- A detectable change between planning and commit returns `error:"source_changed_before_commit"` with `currentRevision`; the temporary file is removed and external content is preserved.
 
 ## 3. Hash Algorithm
 
@@ -212,6 +221,10 @@ computeLineHash(lineNum, line):
 
 **Detection of "significant" lines:** A line is significant if it contains at least one Unicode letter (`IsLetter`) or one Unicode digit (`IsDigit`). Blank lines, `{`, `}`, `),` etc. are non-significant.
 
+### 3.1 Raw-byte file revision
+
+JSON reads and batch results identify a file snapshot as `sha256:<64 lowercase hex digits>`. The digest is computed before BOM removal or newline parsing, so BOM, CRLF/LF, trailing newline, and all other byte changes produce a different revision. Revision is a conservative concurrency precondition; it does not replace line anchors.
+
 ## 4. Edit Application
 
 ### 4.1 Batch semantics
@@ -231,8 +244,11 @@ After rebuilding a validated edit, compare its logical lines with the loaded lin
 1. Resolve an existing symlink to its real target so replacement preserves the symlink entry.
 2. Reject non-regular targets and files with more than one hard link. Preserving hard-link identity would require a non-atomic in-place write.
 3. Create a unique temporary sibling, preserve existing permission bits, write all content, sync, and close it.
-4. Replace the real target with the temporary sibling. POSIX implementations rename then sync the parent directory; Windows uses `MoveFileExW` with replace-existing and write-through flags.
-5. Remove any temporary sibling left by a pre-commit failure. A post-rename parent-sync failure is returned as a successful write with a durability warning, never as a zero-change rejection.
+4. For batch apply, re-read the resolved target and compare its exact raw-byte revision with the planned revision. Mismatch or read failure rejects before replacement and removes the temporary file.
+5. Replace the real target with the temporary sibling. POSIX implementations rename then sync the parent directory; Windows uses `MoveFileExW` with replace-existing and write-through flags.
+6. A post-rename parent-sync failure is returned as a successful write with a durability warning, never as a zero-change rejection.
+
+The revision recheck substantially narrows the external-writer window, but a very short race remains between recheck and rename. The CLI does not claim linearizable compare-and-swap against arbitrary non-cooperating processes.
 
 ## 5. Stale Detection & Error Response
 
@@ -246,6 +262,7 @@ When any anchor's hash doesn't match the current file content:
     { "requested": "5#nK2", "current": "5#nK3" },
     { "requested": "8#Qw_", "current": "9#xY7" }
   ],
+  "currentRevision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
   "currentAnchors": {
     "lines": [{ "line": 5, "anchor": "5#nK3", "text": "current line" }],
     "offset": 3, "limit": 5, "desiredLimit": 5, "truncated": false
@@ -257,6 +274,7 @@ When any anchor's hash doesn't match the current file content:
 - `remaps` helps locate the current content; `currentAnchors` is a bounded window captured from the same file snapshot that rejected the batch.
 - Inspect `currentAnchors` before an explicit retry. It may supply the new anchors only when its complete window still covers the intended target and range; otherwise re-read. It must never trigger automatic retry or overwrite concurrent changes.
 - The whole edit is rejected — no partial writes.
+- `source_changed_before_commit` is also a confirmed zero-write rejection by this batch; it reports `currentRevision` but does not overwrite the externally changed target.
 
 ## 6. Success Response
 
@@ -266,11 +284,12 @@ Single writes include `contentChanged`; successful writes may also include `last
 { "ok": true, "contentChanged": true, "firstChangedLine": 5, "lastChangedLine": 5 }
 ```
 
-Batch writes include `contentChanged`, `firstChangedLine`, `lastChangedLine`, `editsApplied`, and a bounded `updatedAnchors` object. `--check` adds `checked:true`, does not write, and omits `updatedAnchors`. A no-op batch still returns fresh `updatedAnchors`, but sets `contentChanged:false` and does not touch the target file.
+Batch writes include the resulting raw-byte `revision`, `contentChanged`, changed-line statistics, `editsApplied`, and a bounded `updatedAnchors` object. `--check` returns the current revision with `checked:true`, does not write, and omits `updatedAnchors`. A no-op batch returns the unchanged revision and fresh `updatedAnchors`, but does not touch the target file.
 
 ```json
 {
   "ok": true,
+  "revision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
   "contentChanged": true,
   "firstChangedLine": 5,
   "lastChangedLine": 5,
@@ -333,13 +352,17 @@ Exit code 1 is only for infrastructure failures. All logical errors (stale, inva
 
 ```
 .
-├── main.go          # Entry point, CLI dispatch
-├── read.go          # read + read-range + anchors verbs
-├── edit.go          # replace, replace-range, insert verbs
-├── hash.go          # FNV-1a hash, Base64url alphabet, formatTag
-├── types.go         # Anchor, EditResult, EditError, response types
-├── anchor.go        # Anchor parsing + validation
-├── write.go         # Atomic write logic (temp + rename)
+├── main.go               # Entry point and explicit check/apply dispatch
+├── batch_request.go      # Strict batch wire v3 and optional proof decoding
+├── batch_plan.go         # Pure proof/edit validation, conflict detection, and rebuild plan
+├── batch_command.go      # Shared plan loading with separate check/apply commit paths
+├── read.go               # read + read-range + anchors verbs and revision output
+├── edit.go               # replace, replace-range, insert verbs
+├── textfile.go           # UTF-8/BOM/newline parsing and raw-byte revision
+├── hash.go               # FNV-1a line hash and Base64url anchor format
+├── types.go              # Shared response types
+├── anchor.go             # Anchor parsing + validation
+├── write.go              # Atomic replacement and pre-commit revision recheck
 ├── go.mod
 ├── PRD.md
 └── SPEC.md

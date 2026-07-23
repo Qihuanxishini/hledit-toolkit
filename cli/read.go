@@ -31,23 +31,28 @@ const readOutputMaxBytes = 50 * 1024
 const lineTruncationSuffix = "… [line truncated]"
 const jsonTextTruncationSuffix = "… [truncated]"
 
-// readFileLines reads a file, checks for binary content, and returns logical text lines.
-// CRLF files are exposed without trailing carriage returns in line text.
-func readFileLines(path string) ([]string, bool) {
+// readCommandFile loads one validated text snapshot for read output and revision metadata.
+func readCommandFile(path string) (LoadedTextFile, bool) {
 	file, err := loadTextFile(path)
 	if err == nil {
-		return file.Lines, false
+		return file, false
 	}
 	if errors.Is(err, errBinaryFile) {
 		emitError("binary", "file appears to be binary")
-		return nil, true
+		return LoadedTextFile{}, true
 	}
 	if errors.Is(err, errInvalidUTF8) {
 		emitError("encoding", "file is not valid UTF-8")
-		return nil, true
+		return LoadedTextFile{}, true
 	}
 	emitError("io", err.Error())
-	return nil, true
+	return LoadedTextFile{}, true
+}
+
+// readFileLines preserves the line-only boundary used by focused read error tests.
+func readFileLines(path string) ([]string, bool) {
+	file, errored := readCommandFile(path)
+	return file.Lines, errored
 }
 
 // filterLines returns 1-indexed line numbers of lines matching the pattern.
@@ -324,7 +329,8 @@ func emitMatchLines(buf *bytes.Buffer, lines []string, matchIdxs []int, offset, 
 }
 
 func cmdReadPretty(path, grep string, contextN int, jsonOut bool, pretty bool) error {
-	lines, errored := readFileLines(path)
+	file, errored := readCommandFile(path)
+	lines := file.Lines
 	if errored {
 		return nil
 	}
@@ -341,7 +347,7 @@ func cmdReadPretty(path, grep string, contextN int, jsonOut bool, pretty bool) e
 		} else {
 			readLines, truncated, nextOffset = collectAnnotatedLines(lines, 0, 2000, readOutputMaxBytes)
 		}
-		return emitJSON(ReadResult{OK: true, TotalLines: len(lines), Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
+		return emitJSON(ReadResult{OK: true, Revision: file.Revision, TotalLines: len(lines), Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
 	}
 
 	var buf bytes.Buffer
@@ -440,7 +446,8 @@ func emitAnchorMatchLines(buf *bytes.Buffer, lines []string, matchIdxs []int, of
 }
 
 func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int, jsonOut bool, pretty bool) error {
-	lines, errored := readFileLines(path)
+	file, errored := readCommandFile(path)
+	lines := file.Lines
 	if errored {
 		return nil
 	}
@@ -469,7 +476,7 @@ func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int,
 		} else {
 			readLines, truncated, nextOffset = collectAnnotatedLines(lines, offset-1, maxLines, readOutputMaxBytes)
 		}
-		return emitJSON(ReadResult{OK: true, TotalLines: len(lines), Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
+		return emitJSON(ReadResult{OK: true, Revision: file.Revision, TotalLines: len(lines), Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
 	}
 
 	var buf bytes.Buffer
@@ -485,7 +492,8 @@ func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int,
 }
 
 func cmdReadRangePretty(path string, offset, limit int, grep string, contextN int, jsonOut bool, pretty bool) error {
-	lines, errored := readFileLines(path)
+	file, errored := readCommandFile(path)
+	lines := file.Lines
 	if errored {
 		return nil
 	}
@@ -514,7 +522,7 @@ func cmdReadRangePretty(path string, offset, limit int, grep string, contextN in
 		} else {
 			readLines, truncated, nextOffset = collectAnnotatedLines(lines, offset-1, maxLines, readOutputMaxBytes)
 		}
-		return emitJSON(ReadResult{OK: true, TotalLines: len(lines), Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
+		return emitJSON(ReadResult{OK: true, Revision: file.Revision, TotalLines: len(lines), Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
 	}
 
 	var buf bytes.Buffer

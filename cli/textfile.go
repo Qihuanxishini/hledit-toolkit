@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"strings"
@@ -15,11 +17,17 @@ var (
 
 const utf8BOM = "\xEF\xBB\xBF"
 
+func rawFileRevision(content []byte) string {
+	digest := sha256.Sum256(content)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
+
 type LoadedTextFile struct {
 	Lines              []string
 	LineEnding         string
 	HasTrailingNewline bool
 	HasUTF8BOM         bool
+	Revision           string
 }
 
 func loadTextFile(path string) (LoadedTextFile, error) {
@@ -41,6 +49,7 @@ func parseTextFile(content []byte) (LoadedTextFile, error) {
 	if !utf8.Valid(content) {
 		return LoadedTextFile{}, errInvalidUTF8
 	}
+	revision := rawFileRevision(content)
 
 	hasUTF8BOM := bytes.HasPrefix(content, []byte(utf8BOM))
 	if hasUTF8BOM {
@@ -60,6 +69,7 @@ func parseTextFile(content []byte) (LoadedTextFile, error) {
 		LineEnding:         lineEnding,
 		HasTrailingNewline: hasTrailingNewline,
 		HasUTF8BOM:         hasUTF8BOM,
+		Revision:           revision,
 	}, nil
 }
 

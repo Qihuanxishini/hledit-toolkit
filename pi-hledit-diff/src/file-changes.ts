@@ -8,14 +8,20 @@ type CliBatchEdit = {
 	pos: string;
 	end_pos?: string;
 	after?: true;
-	lines: string[];
+	lines?: string[];
 };
 
 type CliBatchRequest = {
 	edits: CliBatchEdit[];
+	proof?: HleditBatchReadProof;
 };
 
-function buildCliBatchRequest(params: FileChangeParams): CliBatchRequest {
+export type HleditBatchReadProof = {
+	revision: string;
+	anchors: string[];
+};
+
+function buildCliBatchRequest(params: FileChangeParams, proof?: HleditBatchReadProof): CliBatchRequest {
 	return {
 		edits: params.changes.map((change) => {
 			switch (change.operation) {
@@ -31,7 +37,6 @@ function buildCliBatchRequest(params: FileChangeParams): CliBatchRequest {
 						op: "delete",
 						pos: change.start_anchor,
 						end_pos: change.end_anchor,
-						lines: [],
 					};
 				case "insert_before":
 					return {
@@ -48,19 +53,20 @@ function buildCliBatchRequest(params: FileChangeParams): CliBatchRequest {
 					};
 			}
 		}),
+		...(proof ? { proof } : {}),
 	};
 }
 
-function serializeCliBatchRequest(params: FileChangeParams): string {
-	return JSON.stringify(buildCliBatchRequest(params));
+function serializeCliBatchRequest(params: FileChangeParams, proof?: HleditBatchReadProof): string {
+	return JSON.stringify(buildCliBatchRequest(params, proof));
 }
 
-export function buildFileChangeRequest(params: FileChangeParams): { args: string[]; stdin: string } {
-	return { args: ["batch", params.path], stdin: serializeCliBatchRequest(params) };
+export function buildFileChangeRequest(params: FileChangeParams, proof?: HleditBatchReadProof): { args: string[]; stdin: string } {
+	return { args: ["batch", params.path], stdin: serializeCliBatchRequest(params, proof) };
 }
 
-export function buildFileChangeCheckRequest(params: FileChangeParams): { args: string[]; stdin: string } {
-	return { args: ["batch", "--check", params.path], stdin: serializeCliBatchRequest(params) };
+export function buildFileChangeCheckRequest(params: FileChangeParams, proof?: HleditBatchReadProof): { args: string[]; stdin: string } {
+	return { args: ["batch", "--check", params.path], stdin: serializeCliBatchRequest(params, proof) };
 }
 
 export function lineFromAnchor(anchor: unknown): number | undefined {
@@ -68,7 +74,9 @@ export function lineFromAnchor(anchor: unknown): number | undefined {
 		return undefined;
 	}
 	const match = anchor.match(/^(\d+)#/);
-	return match ? Number(match[1]) : undefined;
+	if (!match) return undefined;
+	const line = Number(match[1]);
+	return Number.isSafeInteger(line) && line > 0 ? line : undefined;
 }
 
 export type NearbyDeleteRangeHint = {

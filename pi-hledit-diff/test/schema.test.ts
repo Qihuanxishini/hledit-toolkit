@@ -83,4 +83,14 @@ test("apply file changes rejects mixed and invalid operation-specific fields", (
     }),
     false,
   );
+  for (const hiddenField of ["revision", "proof", "readSet"]) {
+    assert.equal(
+      Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
+        path: "src/a.ts",
+        changes: [{ operation: "delete_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ" }],
+        [hiddenField]: "must remain internal",
+      }),
+      false,
+    );
+  }
 });

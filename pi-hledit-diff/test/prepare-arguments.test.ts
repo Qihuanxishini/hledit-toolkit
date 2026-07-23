@@ -23,6 +23,22 @@ test("prepareFileChangeArguments parses JSON changes and wraps a single change",
   assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
 });
 
+test("prepareFileChangeArguments treats one trailing newline as a string terminator", () => {
+  const prepared = prepareFileChangeArguments({
+    path: "src/a.ts",
+    changes: [
+      { operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: "first\r\nsecond\r\n" },
+      { operation: "insert_after", anchor: "2#BJL", lines: "first\n\n" },
+    ],
+  });
+
+  assert.deepEqual(prepared.changes, [
+    { operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: ["first", "second"] },
+    { operation: "insert_after", anchor: "2#BJL", lines: ["first", ""] },
+  ]);
+  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
+});
+
 test("prepareFileChangeArguments accepts a serialized changes array from tool callers", () => {
   const prepared = prepareFileChangeArguments({
     path: "src/a.ts",

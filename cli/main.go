@@ -65,7 +65,7 @@ Batch input (JSON on stdin):
   {"edits": [
     {"op": "replace", "pos": "12#aB3", "lines": ["new line"]},
     {"op": "replace", "pos": "12#aB3", "end_pos": "18#xY7", "lines": ["new block"]},
-    {"op": "delete", "pos": "5#nK2", "lines": []},
+    {"op": "delete", "pos": "5#nK2"},
     {"op": "insert", "pos": "8#Qw_", "after": true, "lines": ["inserted"]}
   ]}
 
@@ -191,7 +191,10 @@ func run(argv []string) int {
 			fmt.Fprint(os.Stderr, usage)
 			return 2
 		}
-		return mustRun(cmdBatch(positionals[0], *check))
+		if *check {
+			return mustRun(runBatchCheck(positionals[0]))
+		}
+		return mustRun(runBatchApply(positionals[0]))
 
 	case "version":
 		fmt.Printf("hledit %s\n", version)
@@ -207,6 +210,8 @@ func run(argv []string) int {
 			BatchUpdatedAnchors: true,
 			BatchStaleContext:   true,
 			ReadRangeMetadata:   true,
+			BatchWireV3:         true,
+			BatchReadProof:      true,
 		}))
 
 	case "-h", "--help", "help":

@@ -17,6 +17,9 @@
 - 一次 batch 原子提交同一文件中的多个非冲突修改。
 - 单次重建文件，避免多 edit 场景下反复复制整份内容。
 - batch 成功后直接返回 `updatedAnchors`，无需再次启动 `read-range`。
+- JSON 读取返回基于原始字节的 SHA-256 revision；插件自动维护完整 read set，并将隐藏 proof 注入 batch。
+- batch 在原子替换前复检 revision，检测规划期间的大部分外部修改；复检与 rename 之间仍保留极短竞争窗口。
+- Pi 会话只在当前分支存在有效读取证据时激活写工具，减少无效调用和工具 schema token。
 - 插件工具参数采用严格 schema，并将 logical failure 转换为真正的 Pi 工具错误。
 - 插件内置主题自适应的锚点预览与统一/双栏 diff 渲染，不依赖其他显示插件。
 
@@ -49,11 +52,13 @@ npm run check
   "batchInsertAfter": true,
   "batchCheck": true,
   "batchUpdatedAnchors": true,
-  "batchStaleContext": true
+  "batchStaleContext": true,
+  "batchWireV3": true,
+  "batchReadProof": true
 }
 ```
 
-读取结果必须携带 `totalLines` 和严格截断元数据；batch 成功响应必须携带合法的 `updatedAnchors`，stale batch 响应必须携带同一校验快照的 `currentAnchors`。快照仅供核对：只有确认其窗口仍覆盖原定目标及完整范围时才可显式重试，否则必须重新读取。插件不保留旧 CLI 的读取或修改后回退路径。
+读取结果必须携带 `revision`、`totalLines` 和严格截断元数据。插件只把连续、未过滤且未发生行内截断的读取作为写入证据；revision 与完整范围 anchors 保持在内部，不加入模型工具 schema。batch wire v3 中 `delete` 必须省略 `lines`，旧 `delete.lines:[]` 形状直接拒绝。batch 成功响应必须携带新 `revision` 与合法的 `updatedAnchors`；失败响应按需返回 `currentRevision` 和同一快照的 `currentAnchors`。插件不保留旧 CLI、旧 wire、无 proof 写入或自动 stale 重试路径。
 
 ## 开发仓库与运行目录
 

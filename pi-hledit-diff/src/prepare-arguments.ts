@@ -62,7 +62,12 @@ function normalizeRawLines(value: unknown): unknown {
 	if (typeof value !== "string") {
 		return value;
 	}
-	return value.split(/\r\n|\r|\n/);
+	const lines = value.split(/\r\n|\r|\n/);
+	// 字符串末尾的单个换行只终止最后一行；显式数组中的空字符串仍表示调用方要求的空行。
+	if (lines.length > 1 && lines.at(-1) === "") {
+		lines.pop();
+	}
+	return lines;
 }
 
 function normalizeChange(value: unknown): unknown {

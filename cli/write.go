@@ -22,6 +22,24 @@ func (e *postCommitDurabilityError) Unwrap() error {
 	return e.err
 }
 
+// sourceChangedBeforeCommitError 表示临时文件已准备完成，但目标在替换前不再是规划时的 revision。
+type sourceChangedBeforeCommitError struct {
+	ExpectedRevision string
+	CurrentRevision  string
+	err              error
+}
+
+func (e *sourceChangedBeforeCommitError) Error() string {
+	if e.err != nil {
+		return fmt.Sprintf("source changed before commit: re-read current target: %v", e.err)
+	}
+	return fmt.Sprintf("source changed before commit: expected %s, current %s", e.ExpectedRevision, e.CurrentRevision)
+}
+
+func (e *sourceChangedBeforeCommitError) Unwrap() error {
+	return e.err
+}
+
 func resolveAtomicWriteTarget(path string) (string, error) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err == nil {
@@ -45,67 +63,111 @@ func resolveAtomicWriteTarget(path string) (string, error) {
 	return filepath.Join(resolvedParent, filepath.Base(path)), nil
 }
 
-// atomicWrite 在真实目标旁创建唯一临时文件；成功时保留 symlink，并拒绝破坏 hardlink 关系。
-// warning 非空表示内容已替换，但目录持久化失败；err 仅表示替换前或替换本身失败。
-func atomicWrite(path string, content []byte) (warning string, err error) {
+type preparedAtomicReplacement struct {
+	targetPath string
+	tempPath   string
+}
+
+func (replacement *preparedAtomicReplacement) discard() {
+	_ = os.Remove(replacement.tempPath)
+}
+
+func (replacement *preparedAtomicReplacement) commit() (warning string, err error) {
+	if err := replaceFile(replacement.tempPath, replacement.targetPath); err != nil {
+		var durabilityErr *postCommitDurabilityError
+		if errors.As(err, &durabilityErr) {
+			return durabilityErr.Error(), nil
+		}
+		return "", fmt.Errorf("replace target %q: %w", replacement.targetPath, err)
+	}
+	return "", nil
+}
+
+// prepareAtomicReplacement 在真实目标旁完成临时文件写入与同步，但不替换目标。
+func prepareAtomicReplacement(path string, content []byte) (*preparedAtomicReplacement, error) {
 	targetPath, err := resolveAtomicWriteTarget(path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	targetInfo, statErr := os.Stat(targetPath)
 	targetExists := statErr == nil
 	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
-		return "", fmt.Errorf("inspect target %q: %w", targetPath, statErr)
+		return nil, fmt.Errorf("inspect target %q: %w", targetPath, statErr)
 	}
 	if targetExists {
 		if !targetInfo.Mode().IsRegular() {
-			return "", fmt.Errorf("refusing atomic write to non-regular file %q", targetPath)
+			return nil, fmt.Errorf("refusing atomic write to non-regular file %q", targetPath)
 		}
 		linkCount, linkErr := fileLinkCount(targetPath, targetInfo)
 		if linkErr != nil {
-			return "", fmt.Errorf("inspect hard links for %q: %w", targetPath, linkErr)
+			return nil, fmt.Errorf("inspect hard links for %q: %w", targetPath, linkErr)
 		}
 		if linkCount > 1 {
-			return "", fmt.Errorf("refusing atomic write to %q: file has %d hard links; preserving link identity would require a non-atomic in-place write", targetPath, linkCount)
+			return nil, fmt.Errorf("refusing atomic write to %q: file has %d hard links; preserving link identity would require a non-atomic in-place write", targetPath, linkCount)
 		}
 	}
 
 	tempFile, err := os.CreateTemp(filepath.Dir(targetPath), ".hledit-*")
 	if err != nil {
-		return "", fmt.Errorf("create temporary sibling for %q: %w", targetPath, err)
+		return nil, fmt.Errorf("create temporary sibling for %q: %w", targetPath, err)
 	}
 	tempPath := tempFile.Name()
-	tempOpen := true
+	removeTemp := true
 	defer func() {
-		if tempOpen {
+		if removeTemp {
 			_ = tempFile.Close()
+			_ = os.Remove(tempPath)
 		}
-		_ = os.Remove(tempPath)
 	}()
 
 	if _, err := tempFile.Write(content); err != nil {
-		return "", fmt.Errorf("write temporary file for %q: %w", targetPath, err)
+		return nil, fmt.Errorf("write temporary file for %q: %w", targetPath, err)
 	}
 	if targetExists {
 		if err := tempFile.Chmod(targetInfo.Mode().Perm()); err != nil {
-			return "", fmt.Errorf("preserve permissions for %q: %w", targetPath, err)
+			return nil, fmt.Errorf("preserve permissions for %q: %w", targetPath, err)
 		}
 	}
 	if err := tempFile.Sync(); err != nil {
-		return "", fmt.Errorf("synchronize temporary file for %q: %w", targetPath, err)
+		return nil, fmt.Errorf("synchronize temporary file for %q: %w", targetPath, err)
 	}
 	if err := tempFile.Close(); err != nil {
-		return "", fmt.Errorf("close temporary file for %q: %w", targetPath, err)
+		return nil, fmt.Errorf("close temporary file for %q: %w", targetPath, err)
 	}
-	tempOpen = false
+	removeTemp = false
+	return &preparedAtomicReplacement{targetPath: targetPath, tempPath: tempPath}, nil
+}
 
-	if err := replaceFile(tempPath, targetPath); err != nil {
-		var durabilityErr *postCommitDurabilityError
-		if errors.As(err, &durabilityErr) {
-			return durabilityErr.Error(), nil
-		}
-		return "", fmt.Errorf("replace target %q: %w", targetPath, err)
+// atomicWrite 在完整临时文件准备后原子替换目标。
+func atomicWrite(path string, content []byte) (warning string, err error) {
+	replacement, err := prepareAtomicReplacement(path, content)
+	if err != nil {
+		return "", err
 	}
-	return "", nil
+	defer replacement.discard()
+	return replacement.commit()
+}
+
+// beforeAtomicRevisionCheck 是 plan/commit 竞争测试 seam；生产环境保持 no-op。
+var beforeAtomicRevisionCheck = func(string) {}
+
+// atomicWriteIfRevision 只在临时文件准备完成后目标仍匹配 expectedRevision 时执行替换。
+func atomicWriteIfRevision(path string, content []byte, expectedRevision string) (warning string, err error) {
+	replacement, err := prepareAtomicReplacement(path, content)
+	if err != nil {
+		return "", err
+	}
+	defer replacement.discard()
+
+	beforeAtomicRevisionCheck(replacement.targetPath)
+	currentContent, readErr := os.ReadFile(replacement.targetPath)
+	if readErr != nil {
+		return "", &sourceChangedBeforeCommitError{ExpectedRevision: expectedRevision, err: readErr}
+	}
+	currentRevision := rawFileRevision(currentContent)
+	if currentRevision != expectedRevision {
+		return "", &sourceChangedBeforeCommitError{ExpectedRevision: expectedRevision, CurrentRevision: currentRevision}
+	}
+	return replacement.commit()
 }

@@ -7,7 +7,7 @@ import type { NormalizedReadRequest } from "./read-args.ts";
 import type { FileChangeParams } from "./schema.ts";
 
 export type HleditToolKind = "read_anchors" | "apply_file_changes";
-export type HleditDisposition = "succeeded" | "rejected" | "unavailable";
+export type HleditDisposition = "succeeded" | "rejected" | "unavailable" | "outcome_unknown";
 
 export type HleditReadLine = {
 	line: number;
@@ -18,6 +18,7 @@ export type HleditReadLine = {
 
 export type HleditReadMetadata = {
 	path: string;
+	revision: string;
 	requested: {
 		offset: number;
 		limit: number;
@@ -63,6 +64,7 @@ export type HleditErrorMetadata = {
 	candidateEndAnchor?: string;
 	staleAnchors?: HleditStaleAnchor[];
 	currentAnchors?: BatchAnchorContext;
+	currentRevision?: string;
 };
 
 type ApplyResultContext = {
@@ -72,6 +74,10 @@ type ApplyResultContext = {
 
 export type HleditDetails = Record<string, unknown> & {
 	disposition: HleditDisposition;
+	path?: string;
+	evidencePath?: string;
+	revision?: string;
+	updatedAnchors?: BatchAnchorContext;
 	read?: HleditReadMetadata;
 	error?: HleditErrorMetadata;
 };
@@ -82,6 +88,7 @@ export type TextResult = {
 };
 
 const READ_ANCHOR_PATTERN = new RegExp(`^(\\d+)#${ANCHOR_HASH_PATTERN}$`);
+const RAW_REVISION_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -89,6 +96,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isIntegerAtLeast(value: unknown, minimum: number): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value >= minimum;
+}
+
+function isRawRevision(value: unknown): value is string {
+	return typeof value === "string" && RAW_REVISION_PATTERN.test(value);
 }
 
 function parseJsonObject(text: string): Record<string, unknown> | null {
@@ -118,7 +129,13 @@ function parseReadLine(value: unknown, totalLines: number): HleditReadLine | und
 }
 
 function parseReadMetadata(parsed: Record<string, unknown>, request: NormalizedReadRequest): HleditReadMetadata | undefined {
-	if (parsed.ok !== true || !isIntegerAtLeast(parsed.totalLines, 0) || !Array.isArray(parsed.lines) || typeof parsed.truncated !== "boolean") {
+	if (
+		parsed.ok !== true ||
+		!isRawRevision(parsed.revision) ||
+		!isIntegerAtLeast(parsed.totalLines, 0) ||
+		!Array.isArray(parsed.lines) ||
+		typeof parsed.truncated !== "boolean"
+	) {
 		return undefined;
 	}
 
@@ -154,6 +171,7 @@ function parseReadMetadata(parsed: Record<string, unknown>, request: NormalizedR
 
 	return {
 		path: request.path,
+		revision: parsed.revision,
 		requested: {
 			offset: request.offset,
 			limit: request.limit,
@@ -257,7 +275,7 @@ export function readAnchorsResult(run: HleditRun, request: NormalizedReadRequest
 	if (run.exitCode !== 0) {
 		return {
 			content: [{ type: "text", text: text || HLEDIT_INSTALL_HINT }],
-			details: { disposition: "unavailable" },
+			details: { disposition: "unavailable", path: request.path },
 		};
 	}
 
@@ -265,7 +283,7 @@ export function readAnchorsResult(run: HleditRun, request: NormalizedReadRequest
 	if (!parsed) {
 		return {
 			content: [{ type: "text", text: invalidReadResponseText() }],
-			details: { disposition: "unavailable" },
+			details: { disposition: "unavailable", path: request.path },
 		};
 	}
 	if (parsed.ok === false) {
@@ -273,12 +291,12 @@ export function readAnchorsResult(run: HleditRun, request: NormalizedReadRequest
 		if (!error) {
 			return {
 				content: [{ type: "text", text: invalidReadResponseText() }],
-				details: { disposition: "unavailable" },
+				details: { disposition: "unavailable", path: request.path },
 			};
 		}
 		return {
 			content: [{ type: "text", text: formatReadError(error) }],
-			details: { disposition: "rejected", error },
+			details: { disposition: "rejected", path: request.path, error },
 		};
 	}
 
@@ -286,12 +304,12 @@ export function readAnchorsResult(run: HleditRun, request: NormalizedReadRequest
 	if (!read) {
 		return {
 			content: [{ type: "text", text: invalidReadResponseText() }],
-			details: { disposition: "unavailable" },
+			details: { disposition: "unavailable", path: request.path },
 		};
 	}
 	return {
 		content: [{ type: "text", text: formatReadMetadata(read) }],
-		details: { disposition: "succeeded", read },
+		details: { disposition: "succeeded", path: request.path, revision: read.revision, read },
 	};
 }
 
@@ -315,12 +333,18 @@ function lineDeltaSummary(parsed: Record<string, unknown>): string | undefined {
 	return `行数变化：+${added} -${deleted}`;
 }
 
-function appendRemaps(lines: string[], result: Record<string, unknown>): void {
+function appendRemaps(
+	lines: string[],
+	result: Record<string, unknown>,
+	staleAnchors: HleditStaleAnchor[] | undefined,
+): void {
 	if (!Array.isArray(result.remaps) || result.remaps.length === 0) {
 		return;
 	}
 
-	lines.push("当前可用的锚点提示：");
+	const represented = new Set(
+		staleAnchors?.map((anchor) => `${anchor.requestedAnchor}\0${anchor.currentAnchor ?? ""}`) ?? [],
+	);
 	const rendered = new Set<string>();
 	for (const remap of result.remaps) {
 		if (!isRecord(remap)) {
@@ -328,11 +352,16 @@ function appendRemaps(lines: string[], result: Record<string, unknown>): void {
 		}
 		const requested = typeof remap.requested === "string" ? remap.requested : undefined;
 		const current = typeof remap.current === "string" ? remap.current : undefined;
+		if (requested && represented.has(`${requested}\0${current ?? ""}`)) {
+			continue;
+		}
 		const text = requested && current ? `- ${requested} -> ${current}` : requested ? `- ${requested}` : undefined;
-		if (text && !rendered.has(text)) {
-			lines.push(text);
+		if (text) {
 			rendered.add(text);
 		}
+	}
+	if (rendered.size > 0) {
+		lines.push("其他 stale 锚点：", ...rendered);
 	}
 }
 
@@ -499,10 +528,17 @@ function parseApplyErrorMetadata(result: Record<string, unknown>, context: Apply
 	const failedChange = isIntegerAtLeast(result.failed, 0) ? result.failed + 1 : undefined;
 	const currentAnchors = result.error === "stale" ? parseAnchorContext(result.currentAnchors) : undefined;
 	const staleAnchors = result.error === "stale" ? parseStaleAnchors(result, currentAnchors, context) : undefined;
+	const currentRevision = isRawRevision(result.currentRevision) ? result.currentRevision : undefined;
 	let message: string;
 	switch (result.error) {
 		case "stale":
 			message = failedChange === undefined ? "一个或多个锚点已失效。" : `第 ${failedChange} 项修改使用的锚点已失效。`;
+			break;
+		case "insufficient_read_proof":
+			message = "读取证据未覆盖本次修改依赖的全部原始行。";
+			break;
+		case "source_changed_before_commit":
+			message = "目标文件在提交前发生变化，已取消原子替换。";
 			break;
 		case "invalid":
 			message = localizeInvalidApplyMessage(result.message, failedChange);
@@ -525,6 +561,7 @@ function parseApplyErrorMetadata(result: Record<string, unknown>, context: Apply
 		rawMessage: result.message,
 		...(staleAnchors ? { staleAnchors } : {}),
 		...(currentAnchors ? { currentAnchors } : {}),
+		...(currentRevision ? { currentRevision } : {}),
 	};
 }
 
@@ -545,7 +582,7 @@ function formatApplyFailureResult(
 		lines.push(`失败位置：第 ${result.failed + 1} 项修改`);
 	}
 	appendStaleAnchorDetails(lines, error.staleAnchors);
-	appendRemaps(lines, result);
+	appendRemaps(lines, result, error.staleAnchors);
 	if (error.code === "stale") {
 		appendCurrentAnchorContext(lines, error.currentAnchors);
 		if (error.currentAnchors) {
@@ -570,10 +607,7 @@ function appendApplyWarnings(lines: string[], result: Record<string, unknown>): 
 
 function formatApplyResult(result: Record<string, unknown>): string {
 	if (result.contentChanged === false) {
-		const lines = ["无需修改。"];
-		if (typeof result.editsApplied === "number") {
-			lines.push(`已检查操作：${result.editsApplied} 项`);
-		}
+		const lines = ["无需修改；原锚点仍有效。"];
 		appendApplyWarnings(lines, result);
 		return lines.join("\n");
 	}
@@ -604,6 +638,7 @@ function isValidApplySuccess(parsed: Record<string, unknown> | null): boolean {
 		parsed.editsApplied >= 0 &&
 		(parsed.contentChanged === undefined || typeof parsed.contentChanged === "boolean") &&
 		(parsed.warnings === undefined || (Array.isArray(parsed.warnings) && parsed.warnings.every((warning) => typeof warning === "string"))) &&
+		isRawRevision(parsed.revision) &&
 		parseBatchUpdatedAnchorContext(parsed) !== undefined
 	);
 }
@@ -616,6 +651,7 @@ function isValidFileChangeCheckSuccess(parsed: Record<string, unknown> | null): 
 		Number.isInteger(parsed.editsApplied) &&
 		parsed.editsApplied >= 0 &&
 		typeof parsed.contentChanged === "boolean"
+		&& isRawRevision(parsed.revision)
 	);
 }
 
@@ -624,7 +660,19 @@ function invalidFileChangeCheckText(): string {
 }
 
 function invalidApplySuccessText(): string {
-	return `随扩展附带的 hledit 返回了不兼容的成功响应。文件可能已经变化；重试前请调用 hledit_read_anchors 检查当前内容。预期得到 ok:true、非负整数 editsApplied 和有效 updatedAnchors。\n\n${HLEDIT_INSTALL_HINT}`;
+	return `随扩展附带的 hledit 返回了不兼容的成功响应。文件可能已经变化；重试前请调用 hledit_read_anchors 检查当前内容。预期得到 ok:true、有效 revision、非负整数 editsApplied 和有效 updatedAnchors。\n\n${HLEDIT_INSTALL_HINT}`;
+}
+
+function outcomeUnknownText(run: HleditRun): string {
+	const diagnostic = (run.stdout.trimEnd() || run.stderr.trimEnd()).slice(0, 800);
+	const lines = [
+		"hledit 批次的执行结果未知；文件可能已经写入，禁止直接重试原请求。",
+		"请先调用 hledit_read_anchors 重新读取目标文件。",
+	];
+	if (diagnostic) {
+		lines.push(`诊断：${diagnostic}${diagnostic.length === 800 ? "…" : ""}`);
+	}
+	return lines.join("\n");
 }
 
 function formatApplyRunText(
@@ -636,7 +684,7 @@ function formatApplyRunText(
 ): string {
 	const text = run.stdout.trimEnd() || run.stderr.trimEnd();
 	if (run.exitCode !== 0) {
-		return text || HLEDIT_INSTALL_HINT;
+		return run.started === false ? text || HLEDIT_INSTALL_HINT : outcomeUnknownText(run);
 	}
 	if (!text || !parsed) {
 		return invalidApplySuccessText();
@@ -663,6 +711,8 @@ export function extractCliSummary(parsed: Record<string, unknown> | null): Recor
 		summary.warnings = parsed.warnings.map(localizeApplyWarning);
 		summary.rawWarnings = parsed.warnings;
 	}
+	if (isRawRevision(parsed.revision)) summary.revision = parsed.revision;
+	if (isRawRevision(parsed.currentRevision)) summary.currentRevision = parsed.currentRevision;
 	return summary;
 }
 
@@ -672,15 +722,24 @@ export function applyFileChangesResult(run: HleditRun, context: ApplyResultConte
 	const applyError = parsed ? parseApplyErrorMetadata(parsed, context) : undefined;
 	const disposition: HleditDisposition =
 		run.exitCode !== 0
-			? "unavailable"
+			? run.started === false
+				? "unavailable"
+				: "outcome_unknown"
 			: parsed?.ok === false
-				? applyError ? "rejected" : "unavailable"
+				? applyError
+					? "rejected"
+					: "unavailable"
 				: !applySuccessValid
-					? "unavailable"
+					? "outcome_unknown"
 					: "succeeded";
 	return {
 		content: [{ type: "text", text: formatApplyRunText(run, context, parsed, applySuccessValid, applyError) }],
-		details: { disposition, ...extractCliSummary(parsed), ...(applyError ? { error: applyError } : {}) },
+		details: {
+			disposition,
+			...(context.path ? { path: context.path } : {}),
+			...extractCliSummary(parsed),
+			...(applyError ? { error: applyError } : {}),
+		},
 	};
 }
 
@@ -689,7 +748,11 @@ export function fileChangeCheckFailure(run: HleditRun, context: ApplyResultConte
 	if (run.exitCode === 0 && isValidFileChangeCheckSuccess(parsed)) {
 		return undefined;
 	}
-	if (run.exitCode === 0 && parsed?.ok === true) {
+	if (run.exitCode !== 0) {
+		const text = run.stdout.trimEnd() || run.stderr.trimEnd() || HLEDIT_INSTALL_HINT;
+		return unavailableToolResult(text);
+	}
+	if (parsed?.ok === true) {
 		return unavailableToolResult(invalidFileChangeCheckText());
 	}
 	return applyFileChangesResult(run, context);

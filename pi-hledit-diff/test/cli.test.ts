@@ -8,6 +8,18 @@ import test from "node:test";
 import { parseHleditCapabilities, resolveHleditBin, runHledit } from "../src/cli.ts";
 import { parseBatchUpdatedAnchorContext } from "../src/post-edit-context.ts";
 
+const EXPECTED_CAPABILITIES = {
+	version: "2.0.0",
+	anchorProtocolV2: true,
+	readRangeMetadata: true,
+	batchInsertAfter: true,
+	batchCheck: true,
+	batchUpdatedAnchors: true,
+	batchStaleContext: true,
+	batchWireV3: true,
+	batchReadProof: true,
+} as const;
+
 test("resolveHleditBin uses the fixed bundled CLI path", () => {
 	const resolved = resolveHleditBin().replace(/\\/g, "/");
 
@@ -18,7 +30,7 @@ test("resolveHleditBin uses the fixed bundled CLI path", () => {
 test("runHledit executes the fixed bundled CLI", async () => {
 	const run = await runHledit(["capabilities"], undefined, process.cwd(), undefined);
 
-	assert.deepEqual(parseHleditCapabilities(run), { version: "2.0.0", anchorProtocolV2: true, readRangeMetadata: true, batchInsertAfter: true, batchCheck: true, batchUpdatedAnchors: true, batchStaleContext: true });
+	assert.deepEqual(parseHleditCapabilities(run), EXPECTED_CAPABILITIES);
 });
 
 test("runHledit reports an already-aborted invocation", async () => {
@@ -27,13 +39,16 @@ test("runHledit reports an already-aborted invocation", async () => {
 
 	const run = await runHledit(["capabilities"], undefined, process.cwd(), controller.signal);
 
-	assert.deepEqual(run, { stdout: "hledit 执行已取消。", stderr: "", exitCode: 1 });
+	assert.equal(run.stdout, "hledit 执行已取消。");
+	assert.equal(run.stderr, "");
+	assert.equal(run.exitCode, 1);
+	assert.equal(typeof run.started, "boolean");
 });
 
 test("parseHleditCapabilities requires structured reads and patched batch capabilities", () => {
 	assert.deepEqual(
-		parseHleditCapabilities({ stdout: '{"ok":true,"version":"2.0.0","anchorProtocolV2":true,"readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }),
-		{ version: "2.0.0", anchorProtocolV2: true, readRangeMetadata: true, batchInsertAfter: true, batchCheck: true, batchUpdatedAnchors: true, batchStaleContext: true },
+		parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...EXPECTED_CAPABILITIES }), stderr: "", exitCode: 0 }),
+		EXPECTED_CAPABILITIES,
 	);
 	assert.equal(
 		parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }),
@@ -43,6 +58,8 @@ test("parseHleditCapabilities requires structured reads and patched batch capabi
 	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }), undefined);
 	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true}', stderr: "", exitCode: 0 }), undefined);
 	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"2.0.0","readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"2.0.0","anchorProtocolV2":true,"readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"2.0.0","anchorProtocolV2":true,"readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true,"batchWireV3":true}', stderr: "", exitCode: 0 }), undefined);
 	assert.equal(parseHleditCapabilities({ stdout: "not json", stderr: "", exitCode: 0 }), undefined);
 });
 
@@ -98,7 +115,7 @@ test("bundled batch is atomic when a later anchor is stale", async (t) => {
 	const request = JSON.stringify({
 		edits: [
 			{ op: "replace", pos: anchors[0], lines: ["TWO"] },
-			{ op: "delete", pos: staleAnchor, lines: [] },
+			{ op: "delete", pos: staleAnchor },
 		],
 	});
 

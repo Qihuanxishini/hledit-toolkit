@@ -40,7 +40,7 @@
 - 未显式指定 `limit` 的锚点读取默认只返回适合局部编辑的窗口。
 - no-op、stale 和结果未知正文只包含下一步决策所需信息，不重复结构化细节。
 - 新增并发证明不得要求模型复制文件 revision 或内部范围锚点；这些信息由插件维护并注入 CLI 请求。
-- 在支持动态工具激活的 Pi 会话中，写工具只在成功读取后启用。
+- 不通过动态隐藏 apply 节省 schema token；专用局部编辑路径的稳定可见性优先于这部分 token 优化。
 
 ### 2.3 可维护性
 
@@ -478,21 +478,19 @@ pi-hledit-diff/src/read-evidence.ts
 - [ ] 发生 `/reload`、分支切换或无法证明状态时采用安全默认：要求重新读取；
 - [ ] 不从普通聊天文本解析 anchor 或 revision。
 
-### 3.4 写工具动态激活
+### 3.4 锚点工具可见性与执行门控
 
 实施前重新核对当前 Pi extension 文档和实际 provider 行为。
 
 实施：
 
-- [ ] CLI capability 健康时，从当前 session 分支重建读取证据：有有效证据则激活两个锚点工具，否则只激活 `hledit_read_anchors`；
-- [ ] 工具集合变化始终保留其他无关 active tools，并在锚点工具可用时继续替代内置 `edit`；
-- [ ] 第一次成功且结构有效的读取后，增量激活 `hledit_apply_file_changes`；
-- [ ] `session_tree` 后重新按当前分支证据决定是否激活 apply，不能沿用其他分支的激活状态；
-- [ ] 失败读取不激活写工具；
-- [ ] apply execute 仍必须独立验证目标 path 的证据，不能只依赖工具已激活；
-- [ ] 没有充分证据时返回直接可执行的定向读取建议，且不启动 batch；
-- [ ] provider 不支持原生 deferred tools 时仍保持功能正确，只是不保证 schema token 节省；
-- [ ] CLI capability 不可用时保留当前内置 `edit` fallback；该 fallback 不得被误记为锚点读取证据。
+- [x] CLI capability 健康时始终成对启用 `hledit_read_anchors` 与 `hledit_apply_file_changes`；读取证据只决定 apply 是否允许启动 batch，不决定工具是否可见。
+- [x] 工具集合变化始终保留其他无关 active tools，并在锚点工具可用时继续替代内置 `edit`。
+- [x] `session_tree` 后重新按当前分支恢复读取证据，但不沿用其他分支的证据，也不隐藏 apply。
+- [x] 失败读取不建立写入证明；apply execute 独立验证目标 path 的证据，不能只依赖工具已激活。
+- [x] 没有充分证据时返回直接可执行的定向读取建议，且不启动 batch。
+- [x] provider 不支持原生 deferred tools 时仍保持功能正确，只是不保证 schema token 节省。
+- [x] CLI capability 不可用时保留当前内置 `edit` fallback；该 fallback 不得被误记为锚点读取证据。
 
 ### 3.5 提交前 revision recheck
 

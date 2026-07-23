@@ -7,16 +7,7 @@ import {
 	isAnchoredEditingTool,
 	preferBuiltInEditFallback,
 	preferAnchoredEditingTools,
-	preferAnchoredReadTool,
 } from "../src/active-tools.ts";
-
-test("preferAnchoredReadTool activates only anchored reads", () => {
-	assert.deepEqual(preferAnchoredReadTool(["read", "edit", "hledit", "bash", HLEDIT_APPLY_FILE_CHANGES_TOOL]), [
-		"read",
-		"bash",
-		HLEDIT_READ_ANCHORS_TOOL,
-	]);
-});
 
 test("preferAnchoredEditingTools replaces built-in and legacy edit tools", () => {
 	assert.deepEqual(preferAnchoredEditingTools(["read", "edit", "hledit", "bash"]), [

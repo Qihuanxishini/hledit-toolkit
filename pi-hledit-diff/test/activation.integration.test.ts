@@ -64,7 +64,7 @@ function registerActivationHarness() {
 	};
 }
 
-test("apply activation follows valid evidence on the current session branch", async (t) => {
+test("anchored editing tools stay active regardless of current read evidence", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-activation-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
 	const target = join(directory, "target.txt");
@@ -77,8 +77,9 @@ test("apply activation follows valid evidence on the current session branch", as
 		sessionManager: { getBranch: () => branch },
 	};
 	const harness = registerActivationHarness();
+	const expectedActiveTools = ["read", "bash", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL];
 	await harness.listener("session_start")({}, context);
-	assert.deepEqual(harness.activeTools(), ["read", "bash", HLEDIT_READ_ANCHORS_TOOL]);
+	assert.deepEqual(harness.activeTools(), expectedActiveTools);
 
 	const applyTool = harness.tools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(applyTool);
@@ -103,7 +104,7 @@ test("apply activation follows valid evidence on the current session branch", as
 		context,
 	);
 	assert.equal(failedRead.details.disposition, "rejected");
-	assert.deepEqual(harness.activeTools(), ["read", "bash", HLEDIT_READ_ANCHORS_TOOL]);
+	assert.deepEqual(harness.activeTools(), expectedActiveTools);
 
 	const successfulRead = await readTool.execute(
 		"read",
@@ -113,16 +114,26 @@ test("apply activation follows valid evidence on the current session branch", as
 		context,
 	);
 	assert.equal(successfulRead.details.disposition, "succeeded");
-	assert.deepEqual(harness.activeTools(), [
-		"read",
-		"bash",
-		HLEDIT_READ_ANCHORS_TOOL,
-		HLEDIT_APPLY_FILE_CHANGES_TOOL,
-	]);
+	assert.deepEqual(harness.activeTools(), expectedActiveTools);
+	const currentAnchor = successfulRead.details.read?.lines[0]?.anchor;
+	assert.ok(currentAnchor);
+	const noOpApplyParams = {
+		path: "target.txt",
+		changes: [{ operation: "replace_range", start_anchor: currentAnchor, end_anchor: currentAnchor, lines: ["two"] }],
+	} as never;
 
 	branch = [];
 	await harness.listener("session_tree")({}, context);
-	assert.deepEqual(harness.activeTools(), ["read", "bash", HLEDIT_READ_ANCHORS_TOOL]);
+	assert.deepEqual(harness.activeTools(), expectedActiveTools);
+	const clearedBranchApply = await applyTool.execute(
+		"apply-with-cleared-branch",
+		noOpApplyParams,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(clearedBranchApply.details.error?.code, "insufficient_read_proof");
+	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
 
 	branch = [{
 		type: "message",
@@ -133,10 +144,15 @@ test("apply activation follows valid evidence on the current session branch", as
 		},
 	}];
 	await harness.listener("session_tree")({}, context);
-	assert.deepEqual(harness.activeTools(), [
-		"read",
-		"bash",
-		HLEDIT_READ_ANCHORS_TOOL,
-		HLEDIT_APPLY_FILE_CHANGES_TOOL,
-	]);
+	assert.deepEqual(harness.activeTools(), expectedActiveTools);
+	const restoredBranchApply = await applyTool.execute(
+		"apply-with-restored-branch",
+		noOpApplyParams,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(restoredBranchApply.details.disposition, "succeeded");
+	assert.equal(restoredBranchApply.details.contentChanged, false);
+	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
 });

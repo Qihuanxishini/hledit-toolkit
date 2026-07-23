@@ -10,6 +10,7 @@
 - `hledit_apply_file_changes`：对一个文件原子提交一组非冲突修改，并直接返回修改后的新锚点。
 
 编辑语义：
+- 修改现有文本文件时先定向读取受影响区，再用 `hledit_apply_file_changes` 做局部修改；`write` 只用于创建新文件，不用于覆盖现有文件。
 - 锚点格式严格跟随 CLI：`LN#[A-Za-z0-9_-]{3}`；也可将读取结果中的 `LN#HASH:text` 整段原样填入锚点字段，`prepareArguments` 会在 schema 校验前移除冒号后的源码文本。旧两位锚点会在 schema 边界被拒绝，格式合规但内容伪造仍会被 CLI 判为 stale。
 - 公开修改协议只有四种完整操作：`replace_range`、`delete_range`、`insert_before` 和 `insert_after`。范围操作必须同时提供 `start_anchor` 与 `end_anchor`；单行范围使用同一个锚点作为首尾。旧 `replace` / `delete` / `insert` 形状不迁移，由严格 schema 直接拒绝。
 - 成功的未过滤读取会在插件内部记录原始字节 SHA-256 revision 与返回 anchors；范围修改必须覆盖每个原始行，insert 必须覆盖依附行。revision 与 proof 不进入公开工具 schema。
@@ -25,7 +26,7 @@
 - 仅接受有效 UTF-8 文本，并在修改时保留已有 UTF-8 BOM。
 - 工具名称和协议字段保持稳定；Pi 中的调用摘要、结果、错误、警告和重试指引统一使用简体中文。
 
-CLI capability 健康时，插件先用 `hledit_read_anchors` 替换 Pi 的普通 `edit`，仅在当前 session branch 存在有效证据后激活 `hledit_apply_file_changes`；分支切换会从当前 branch 的工具结果重建状态。若 bundled CLI 缺失或不兼容，则恢复内置 `edit`。
+CLI capability 健康时，插件始终用 `hledit_read_anchors` 与 `hledit_apply_file_changes` 替换 Pi 的普通 `edit`。apply 仍会独立校验当前 session branch 的读取证据；分支切换只重建证据，不隐藏修改工具。若 bundled CLI 缺失或不兼容，则恢复内置 `edit`。
 
 ## 独立 TUI 渲染
 

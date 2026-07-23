@@ -191,10 +191,6 @@ export class ReadEvidenceStore {
 		this.files.delete(path);
 	}
 
-	hasEvidence(): boolean {
-		return [...this.files.values()].some((evidence) => evidence.lines.size > 0);
-	}
-
 	recordRead(path: string, read: HleditReadMetadata): void {
 		const evidence = this.files.get(path);
 		if (evidence && evidence.revision !== read.revision) this.files.delete(path);

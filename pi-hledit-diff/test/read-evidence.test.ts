@@ -133,7 +133,7 @@ test("uncertain apply invalidates evidence while a local rejection preserves it"
 	assert.ok("proof" in store.selectProof(PATH, [{ operation: "insert_after", anchor: "1#AAA", lines: ["next"] }]));
 
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("outcome_unknown"), "/workspace");
-	assert.equal(store.hasEvidence(), false);
+	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: "1#AAA", lines: ["next"] }]));
 });
 
 test("complete stale context becomes evidence for its current revision", () => {
@@ -180,7 +180,7 @@ test("truncated stale context invalidates old evidence without creating new proo
 		},
 	}), "/workspace");
 
-	assert.equal(store.hasEvidence(), false);
+	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: "2#BBB", lines: ["next"] }]));
 });
 
 test("branch restoration replays only tool results present on the current branch", () => {
@@ -216,5 +216,5 @@ test("branch restoration replays only tool results present on the current branch
 			],
 		},
 	} as never);
-	assert.equal(store.hasEvidence(), false);
+	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: "1#AAA", lines: ["next"] }]));
 });

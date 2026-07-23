@@ -13,7 +13,6 @@ import {
 	isAnchoredEditingTool,
 	preferBuiltInEditFallback,
 	preferAnchoredEditingTools,
-	preferAnchoredReadTool,
 } from "./src/active-tools.ts";
 import { HLEDIT_INSTALL_HINT, parseHleditCapabilities, resolveHleditBin, runHledit } from "./src/cli.ts";
 import {
@@ -193,9 +192,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 	const synchronizeAnchoredTools = () => {
 		if (!hleditCapabilitiesAvailable) return;
 		const activeTools = pi.getActiveTools();
-		const preferredTools = readEvidence.hasEvidence()
-			? preferAnchoredEditingTools(activeTools)
-			: preferAnchoredReadTool(activeTools);
+		const preferredTools = preferAnchoredEditingTools(activeTools);
 		if (preferredTools.join("\0") !== activeTools.join("\0")) pi.setActiveTools(preferredTools);
 	};
 
@@ -240,6 +237,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		promptSnippet: "原子应用一个文件的锚点修改",
 		promptGuidelines: [
 			"对同一文件的一组完整、互不冲突的修改，只调用一次 hledit_apply_file_changes。lines 只能包含原始文件文本，不能带锚点或 diff 标记。",
+			"修改现有文本文件时，必须先用 hledit_read_anchors 获取受影响区，再用 hledit_apply_file_changes 做局部修改；不得用 write 整文件覆盖来替代。",
 			"hledit_apply_file_changes 的 anchor、start_anchor 和 end_anchor 可原样复制 hledit_read_anchors 输出的 LN#HASH:text；插件会移除冒号后的源码文本，绝不能修改或编造 LN#HASH。",
 			"hledit_apply_file_changes 的 replace_range 和 delete_range 必须同时提供 start_anchor 与 end_anchor；单行范围使用同一个锚点作为首尾。",
 			"hledit_apply_file_changes 使用 insert_before 或 insert_after 插入内容；不得使用含 position 模式字段的 insert。",

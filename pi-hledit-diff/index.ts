@@ -10,6 +10,7 @@ import { resolve } from "node:path";
 import {
 	HLEDIT_APPLY_FILE_CHANGES_TOOL,
 	HLEDIT_READ_ANCHORS_TOOL,
+	HLEDIT_REPLACE_ONCE_TOOL,
 	isAnchoredEditingTool,
 	preferBuiltInEditFallback,
 	preferAnchoredEditingTools,
@@ -18,11 +19,12 @@ import { HLEDIT_INSTALL_HINT, parseHleditCapabilities, resolveHleditBin, runHled
 import {
 	buildFileChangeCheckRequest,
 	buildFileChangeRequest,
+	buildReplaceOnceRequest,
 	findSingleLineRangeExpansionIssue,
 	formatSingleLineRangeExpansionIssue,
 } from "./src/file-changes.ts";
 import { formatBatchUpdatedAnchorContext, type BatchAnchorContext } from "./src/post-edit-context.ts";
-import { prepareFileChangeArguments, prepareReadAnchorsArguments } from "./src/prepare-arguments.ts";
+import { prepareFileChangeArguments, prepareReadAnchorsArguments, prepareReplaceOnceArguments } from "./src/prepare-arguments.ts";
 import { formatReadProofFailure, ReadEvidenceStore, resolveReadEvidencePath } from "./src/read-evidence.ts";
 import { buildReadArgs, normalizeReadRequest, normalizeToolPath } from "./src/read-args.ts";
 import {
@@ -34,14 +36,17 @@ import {
 	readAnchorsResult,
 	readUtf8File,
 	rejectedToolResult,
+	replaceOnceResult,
 	type TextResult,
 	unavailableToolResult,
 } from "./src/result.ts";
 import {
 	HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 	HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
+	HLEDIT_REPLACE_ONCE_PARAMS_SCHEMA,
 	type FileChangeParams,
 	type ReadAnchorsParams,
+	type ReplaceOnceParams,
 } from "./src/schema.ts";
 import {
 	renderFileChangesResult,
@@ -51,9 +56,9 @@ import {
 	type ToolRenderContextLike,
 } from "./src/render.ts";
 
-export { buildFileChangeRequest } from "./src/file-changes.ts";
+export { buildFileChangeRequest, buildReplaceOnceRequest } from "./src/file-changes.ts";
 export { buildReadArgs, normalizeToolPath } from "./src/read-args.ts";
-export type { FileChangeParams, ReadAnchorsParams } from "./src/schema.ts";
+export type { FileChangeParams, ReadAnchorsParams, ReplaceOnceParams } from "./src/schema.ts";
 
 function appendResultText(result: TextResult, text: string | undefined): TextResult["content"] {
 	if (!text) {
@@ -66,6 +71,68 @@ function appendResultText(result: TextResult, text: string | undefined): TextRes
 	return [{ type: "text", text }, ...result.content];
 }
 
+function attachEvidencePath(result: TextResult, normalizedPath: string, evidencePath: string): TextResult {
+	return {
+		...result,
+		details: { ...result.details, path: normalizedPath, evidencePath },
+	};
+}
+
+// 成功响应已由 result.ts 验证；这里统一追加局部锚点上下文和写后 diff。
+async function finalizeSuccessfulEditResult(
+	result: TextResult,
+	run: ReturnType<typeof runHledit> extends Promise<infer Value> ? Value : never,
+	beforeContent: string,
+	normalizedPath: string,
+	absolutePath: string,
+	evidencePath: string,
+): Promise<TextResult> {
+	const parsed = parseRunObject(run)!;
+	const updatedAnchorContext = parsed.updatedAnchors as BatchAnchorContext;
+	const postEditContext = formatBatchUpdatedAnchorContext(updatedAnchorContext);
+	const postEditDetails = {
+		path: normalizedPath,
+		evidencePath,
+		revision: result.details.revision as string,
+		updatedAnchors: updatedAnchorContext,
+		postEditContext: {
+			offset: postEditContext.offset,
+			limit: postEditContext.limit,
+			truncated: postEditContext.truncated,
+		},
+	};
+	const modelPostEditContext = result.details.contentChanged === false ? undefined : postEditContext.text;
+
+	const after = await readUtf8File(absolutePath);
+	if ("error" in after) {
+		return attachEvidencePath({
+			...result,
+			content: appendResultText(
+				result,
+				modelPostEditContext
+					? `${modelPostEditContext}\n\nThe edit was applied, but rereading the file to generate a diff failed.`
+					: "The edit was verified as a no-op, but rereading the file to generate a diff failed.",
+			),
+			details: {
+				...result.details,
+				...postEditDetails,
+				diffError: `The edit was applied, but ${normalizedPath} could not be reread to generate a diff.`,
+				diffErrorRaw: after.error,
+			},
+		}, normalizedPath, evidencePath);
+	}
+
+	return attachEvidencePath({
+		...result,
+		content: modelPostEditContext ? appendResultText(result, modelPostEditContext) : result.content,
+		details: {
+			...result.details,
+			...buildDiffDetails(normalizedPath, beforeContent, after.content, parsed),
+			...postEditDetails,
+		},
+	}, normalizedPath, evidencePath);
+}
+
 async function runFileChangesWithDiff(
 	params: FileChangeParams,
 	ctx: ExtensionContext,
@@ -76,11 +143,7 @@ async function runFileChangesWithDiff(
 	const absolutePath = resolve(ctx.cwd, normalizedPath);
 	const evidencePath = await resolveReadEvidencePath(ctx.cwd, normalizedPath);
 	const normalizedParams = { ...params, path: normalizedPath };
-	const applyContext = { path: normalizedPath, changes: normalizedParams.changes };
-	const attachEvidencePath = (result: TextResult): TextResult => ({
-		...result,
-		details: { ...result.details, path: normalizedPath, evidencePath },
-	});
+	const applyContext = { path: normalizedPath, changes: normalizedParams.changes, operation: "anchored_batch" as const };
 
 	return withFileMutationQueue(absolutePath, async () => {
 		const proofSelection = evidence.selectProof(evidencePath, normalizedParams.changes);
@@ -90,12 +153,14 @@ async function runFileChangesWithDiff(
 					code: proofSelection.failure.code,
 					message: proofSelection.failure.message,
 				}),
+				normalizedPath,
+				evidencePath,
 			);
 		}
 		const request = buildFileChangeRequest(normalizedParams, proofSelection.proof);
 		const before = await readUtf8File(absolutePath);
 		if ("error" in before) {
-			return attachEvidencePath(unavailableToolResult(`修改前无法读取 ${normalizedPath}，因此未执行任何修改。请检查路径、权限和文件编码。`));
+			return attachEvidencePath(unavailableToolResult(`The target could not be read before editing, so no change was started. Check ${normalizedPath}, its permissions, and its text encoding.`), normalizedPath, evidencePath);
 		}
 
 		const singleLineRangeExpansionIssue = findSingleLineRangeExpansionIssue(params, before.content);
@@ -104,18 +169,18 @@ async function runFileChangesWithDiff(
 			const checkRun = await runHledit(checkRequest.args, checkRequest.stdin, ctx.cwd, signal);
 			const checkFailure = fileChangeCheckFailure(checkRun, applyContext);
 			if (checkFailure) {
-				return attachEvidencePath(checkFailure);
+				return attachEvidencePath(checkFailure, normalizedPath, evidencePath);
 			}
 
 			const verifiedIssue = { ...singleLineRangeExpansionIssue, anchorsVerified: true as const };
 			const nearbyDeleteRange = verifiedIssue.nearbyDeleteRange;
 			return attachEvidencePath(
 				rejectedToolResult(
-					`原子批次已拒绝，未写入任何内容。\n${formatSingleLineRangeExpansionIssue(verifiedIssue)}`,
+					`The atomic batch was rejected; no content was written.\n${formatSingleLineRangeExpansionIssue(verifiedIssue)}`,
 					{
 						code: verifiedIssue.code,
-						message: `第 ${verifiedIssue.changeNumber} 项 replace_range 仅覆盖一行且重复原行；请扩大 end_anchor 或改用 insert_after，禁止原样重试。`,
-						hint: "replace_range 必须完整覆盖待替换旧代码；仅追加内容时应使用 insert_after 并移除重复的锚点行。",
+						message: `Change ${verifiedIssue.changeNumber} uses replace_range for one source line while repeating that source line. Expand end_anchor or use insert_after; do not retry the same request.`,
+						hint: "replace_range must cover the complete old code block. For an append-only change, use insert_after and omit the repeated anchor line.",
 						changeNumber: verifiedIssue.changeNumber,
 						operation: "replace_range",
 						anchor: verifiedIssue.anchor,
@@ -128,60 +193,43 @@ async function runFileChangesWithDiff(
 							: {}),
 					},
 				),
+				normalizedPath,
+				evidencePath,
 			);
 		}
 
 		const run = await runHledit(request.args, request.stdin, ctx.cwd, signal);
 		const result = applyFileChangesResult(run, applyContext);
 		if (result.details.disposition !== "succeeded") {
-			return attachEvidencePath(result);
+			return attachEvidencePath(result, normalizedPath, evidencePath);
+		}
+		return finalizeSuccessfulEditResult(result, run, before.content, normalizedPath, absolutePath, evidencePath);
+	});
+}
+
+async function runReplaceOnceWithDiff(
+	params: ReplaceOnceParams,
+	ctx: ExtensionContext,
+	signal: AbortSignal | undefined,
+): Promise<TextResult> {
+	const normalizedPath = normalizeToolPath(params.path);
+	const absolutePath = resolve(ctx.cwd, normalizedPath);
+	const evidencePath = await resolveReadEvidencePath(ctx.cwd, normalizedPath);
+	const normalizedParams = { ...params, path: normalizedPath };
+
+	return withFileMutationQueue(absolutePath, async () => {
+		const before = await readUtf8File(absolutePath);
+		if ("error" in before) {
+			return attachEvidencePath(unavailableToolResult(`The target could not be read before editing, so no change was started. Check ${normalizedPath}, its permissions, and its text encoding.`), normalizedPath, evidencePath);
 		}
 
-		const parsed = parseRunObject(run)!;
-		// applyFileChangesResult 已在外部 CLI 边界验证 updatedAnchors；内部链路直接信任该不变量。
-		const updatedAnchorContext = parsed.updatedAnchors as BatchAnchorContext;
-		const postEditContext = formatBatchUpdatedAnchorContext(updatedAnchorContext);
-		const postEditDetails = {
-			path: normalizedPath,
-			evidencePath,
-			revision: result.details.revision as string,
-			updatedAnchors: updatedAnchorContext,
-			postEditContext: {
-				offset: postEditContext.offset,
-				limit: postEditContext.limit,
-				truncated: postEditContext.truncated,
-			},
-		};
-		const modelPostEditContext = result.details.contentChanged === false ? undefined : postEditContext.text;
-
-		const after = await readUtf8File(absolutePath);
-		if ("error" in after) {
-			return attachEvidencePath({
-				...result,
-				content: appendResultText(
-					result,
-					modelPostEditContext
-						? `${modelPostEditContext}\n\n修改已应用，但重新读取文件以生成差异时失败。`
-						: "修改已验证为 no-op，但重新读取文件以生成差异时失败。",
-				),
-				details: {
-					...result.details,
-					...postEditDetails,
-					diffError: `修改已应用，但无法重新读取 ${normalizedPath} 以生成差异。`,
-					diffErrorRaw: after.error,
-				},
-			});
+		const request = buildReplaceOnceRequest(normalizedParams);
+		const run = await runHledit(request.args, request.stdin, ctx.cwd, signal);
+		const result = replaceOnceResult(run, normalizedPath);
+		if (result.details.disposition !== "succeeded") {
+			return attachEvidencePath(result, normalizedPath, evidencePath);
 		}
-
-		return attachEvidencePath({
-			...result,
-			content: modelPostEditContext ? appendResultText(result, modelPostEditContext) : result.content,
-			details: {
-				...result.details,
-				...buildDiffDetails(normalizedPath, before.content, after.content, parsed),
-				...postEditDetails,
-			},
-		});
+		return finalizeSuccessfulEditResult(result, run, before.content, normalizedPath, absolutePath, evidencePath);
 	});
 }
 
@@ -198,12 +246,12 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool(({
 		name: HLEDIT_READ_ANCHORS_TOOL,
-		label: "Read Anchors",
-		description: "读取文本文件，并返回可用于后续 stale-safe 修改的 LN#HASH 锚点。",
-		promptSnippet: "修改文本文件前读取最新锚点",
+		label: "Read for Edit",
+		description: "Read a text file and return LN#HASH anchors for subsequent stale-safe edits.",
+		promptSnippet: "Read fresh anchors before editing text",
 		promptGuidelines: [
-			"修改文本文件前立即调用 hledit_read_anchors；必须原样复制 LN#HASH，绝不能编造锚点。",
-			"hledit_read_anchors 在位置已知时只使用 offset 和 limit 读取受影响范围。可将输出中的 LN#HASH:text 整段原样填入 hledit_apply_file_changes 的锚点字段，插件会移除冒号后的源码文本；不得修改 LN#HASH。",
+			"When a task explicitly requires editing an existing text file, make the first read of the intended target with hledit_read_anchors. Use ordinary read only for reference files or exploration before the edit target is known.",
+			"Use hledit_read_anchors with offset and limit for a known location; use grep and context to locate an edit in a known file. Only returned lines without source-line truncation establish local read proof. Range edits must cover every original line, and LN#HASH:text anchors must be copied verbatim into hledit_apply_file_changes.",
 		],
 		parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 		prepareArguments: prepareReadAnchorsArguments,
@@ -233,17 +281,12 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 	pi.registerTool(({
 		name: HLEDIT_APPLY_FILE_CHANGES_TOOL,
 		label: "Apply File Changes",
-		description: "对一个文本文件原子应用一组互不冲突的 stale-safe 修改。",
-		promptSnippet: "原子应用一个文件的锚点修改",
+		description: "Atomically apply one complete, non-overlapping batch of stale-safe edits to a text file.",
+		promptSnippet: "Atomically apply anchored edits to one file",
 		promptGuidelines: [
-			"对同一文件的一组完整、互不冲突的修改，只调用一次 hledit_apply_file_changes。lines 只能包含原始文件文本，不能带锚点或 diff 标记。",
-			"修改现有文本文件时，必须先用 hledit_read_anchors 获取受影响区，再用 hledit_apply_file_changes 做局部修改；不得用 write 整文件覆盖来替代。",
-			"hledit_apply_file_changes 的 anchor、start_anchor 和 end_anchor 可原样复制 hledit_read_anchors 输出的 LN#HASH:text；插件会移除冒号后的源码文本，绝不能修改或编造 LN#HASH。",
-			"hledit_apply_file_changes 的 replace_range 和 delete_range 必须同时提供 start_anchor 与 end_anchor；单行范围使用同一个锚点作为首尾。",
-			"hledit_apply_file_changes 使用 insert_before 或 insert_after 插入内容；不得使用含 position 模式字段的 insert。",
-			"hledit_apply_file_changes 因单行 replace_range 扩展被拒绝后不得原样重试；替换代码块时扩大 end_anchor，保留锚点行时改用 insert_after 且不要重复锚点行。",
-			"hledit_apply_file_changes 中不得出现 #??/#XX 等占位锚点、operation:read 或未完成的修改；必须先单独调用 hledit_read_anchors。",
-			"hledit_apply_file_changes 是原子批次：任一项无效、冲突或锚点失效都会零写入。stale 返回的当前锚点快照只能供核对；不得自动重试或覆盖并发修改。只有确认快照窗口仍覆盖原定目标及完整范围时，才可使用其中的新锚点；快照缺失、截断或无法确认范围时必须重新读取。",
+			"For existing text files, use hledit_apply_file_changes; never overwrite the whole file with write. Submit one complete, non-overlapping batch per file. For multiline replacements or inserts, prefer a newline-delimited string for lines; arrays remain suitable for a few sparse lines.",
+			"For hledit_apply_file_changes, copy anchor, start_anchor, and end_anchor verbatim as LN#HASH:text from either the latest hledit_read_anchors result or a successful edit's returned updated-anchor local window. Use post-edit anchors only inside that returned window; do not alter, invent, or submit placeholder anchors.",
+			"If hledit_apply_file_changes returns stale, use returned current anchors only when their complete, untruncated local window covers the whole intended target and range; otherwise call hledit_read_anchors. After truncation, an incomplete snapshot, or insufficient proof, make the targeted read requested by the failure. Never repair anchors automatically, retry unchanged input, or overwrite concurrent changes.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 		prepareArguments: prepareFileChangeArguments,
@@ -262,6 +305,39 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		): Promise<TextResult> {
 			const result = await runFileChangesWithDiff(params, ctx, signal, readEvidence);
 			readEvidence.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, result.details, ctx.cwd);
+			synchronizeAnchoredTools();
+			return result;
+		},
+	}) as never);
+
+
+	pi.registerTool(({
+		name: HLEDIT_REPLACE_ONCE_TOOL,
+		label: "Replace Once",
+		description: "Atomically replace one unique, exact contiguous block of text without a prior anchor read.",
+		promptSnippet: "Replace one unique exact text block",
+		promptGuidelines: [
+			"Use hledit_replace_once only when old_lines is the complete, known old text and must occur exactly once in the current file. It uses current exact content as its precondition and does not require hledit_read_anchors first.",
+			"For hledit_replace_once multiline old_lines and new_lines, prefer newline-delimited strings. An empty string is one blank line, not deletion. Zero or multiple matches reject the write.",
+			"After hledit_replace_once is rejected, do not loosen the match or retry unchanged. Use the English candidate-range or reread guidance, then use hledit_read_anchors and an anchored edit when a target needs disambiguation.",
+		],
+		parameters: HLEDIT_REPLACE_ONCE_PARAMS_SCHEMA,
+		prepareArguments: prepareReplaceOnceArguments,
+		renderCall(args: unknown, theme: RenderTheme, context: ToolRenderContextLike) {
+			return renderHleditCall("replace_once", args, theme, context);
+		},
+		renderResult(result: TextResult, options: ToolRenderResultOptions, theme: RenderTheme, context: ToolRenderContextLike) {
+			return renderFileChangesResult(result, options, theme, context);
+		},
+		async execute(
+			_toolCallId: string,
+			params: ReplaceOnceParams,
+			signal: AbortSignal | undefined,
+			_onUpdate: AgentToolUpdateCallback<unknown> | undefined,
+			ctx: ExtensionContext,
+		): Promise<TextResult> {
+			const result = await runReplaceOnceWithDiff(params, ctx, signal);
+			readEvidence.updateFromToolResult(HLEDIT_REPLACE_ONCE_TOOL, result.details, ctx.cwd);
 			synchronizeAnchoredTools();
 			return result;
 		},
@@ -292,7 +368,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		const preferredTools = preferBuiltInEditFallback(activeTools);
 		if (preferredTools.join("\0") !== activeTools.join("\0")) pi.setActiveTools(preferredTools);
 		if (!warnedHleditUnavailable) {
-			const message = `hledit 当前不可用，已保留 Pi 内置 edit 工具。可运行 /hledit-status 查看详情。\n\n${HLEDIT_INSTALL_HINT}`;
+			const message = `hledit is unavailable, so Pi's built-in edit tool remains active. Run /hledit-status for details.\n\n${HLEDIT_INSTALL_HINT}`;
 			if (ctx.hasUI) ctx.ui.notify(message, "warning");
 			else console.warn(message);
 			warnedHleditUnavailable = true;
@@ -314,9 +390,9 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			if (capabilities) {
 				ctx.ui.notify(`hledit 已就绪：${bin}（版本 ${capabilities.version}；支持结构化范围读取、读取证明和提交前 revision 复检）`, "info");
 			} else if (run.exitCode === 0) {
-				ctx.ui.notify(`hledit 版本不兼容：${bin} 未声明所需的结构化读取和原子批次能力。\n\n${HLEDIT_INSTALL_HINT}`, "error");
+				ctx.ui.notify(`Incompatible hledit version: ${bin} does not declare the required structured read and atomic batch capabilities.\n\n${HLEDIT_INSTALL_HINT}`, "error");
 			} else {
-				ctx.ui.notify(`hledit 启动失败：${bin}\n\n${HLEDIT_INSTALL_HINT}`, "error");
+				ctx.ui.notify(`Could not start hledit: ${bin}\n\n${HLEDIT_INSTALL_HINT}`, "error");
 			}
 		},
 	});

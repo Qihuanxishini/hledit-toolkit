@@ -89,6 +89,7 @@ type CLICapabilities struct {
 	ReadRangeMetadata   bool   `json:"readRangeMetadata"`
 	BatchWireV3         bool   `json:"batchWireV3"`
 	BatchReadProof      bool   `json:"batchReadProof"`
+	ContentReplaceOnce  bool   `json:"contentReplaceOnce"`
 }
 
 // ────────────────────────────────────────────────────────────────────────────

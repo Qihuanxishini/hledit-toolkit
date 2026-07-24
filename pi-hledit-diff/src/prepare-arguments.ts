@@ -1,4 +1,4 @@
-import type { FileChangeParams, ReadAnchorsParams } from "./schema.ts";
+import type { FileChangeParams, ReadAnchorsParams, ReplaceOnceParams } from "./schema.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -58,7 +58,7 @@ function normalizeAnchor(value: unknown): unknown {
 	return anchor?.[1] ?? value;
 }
 
-function normalizeRawLines(value: unknown): unknown {
+function normalizeReplacementLines(value: unknown): unknown {
 	if (typeof value !== "string") {
 		return value;
 	}
@@ -76,7 +76,7 @@ function normalizeChange(value: unknown): unknown {
 		return parsed;
 	}
 
-	// 只修复不改变编辑语义的序列化偏差；旧 operation 与旧字段由严格 schema 直接拒绝。
+	// 将公开输入的等价表达规范化为内部形状；旧 operation 与旧字段仍由严格 schema 拒绝。
 	const change: JsonRecord = { ...parsed };
 	for (const field of ["anchor", "start_anchor", "end_anchor"] as const) {
 		if (field in change) {
@@ -84,7 +84,7 @@ function normalizeChange(value: unknown): unknown {
 		}
 	}
 	if ("lines" in change) {
-		change.lines = normalizeRawLines(change.lines);
+		change.lines = normalizeReplacementLines(change.lines);
 	}
 	return change;
 }
@@ -122,4 +122,16 @@ export function prepareFileChangeArguments(args: unknown): FileChangeParams {
 		...parsed,
 		changes: normalizeChanges(parsed.changes),
 	} as FileChangeParams;
+}
+
+export function prepareReplaceOnceArguments(args: unknown): ReplaceOnceParams {
+	const parsed = parseJsonStructure(args, isRecord);
+	if (!isRecord(parsed)) {
+		return parsed as ReplaceOnceParams;
+	}
+	return {
+		...parsed,
+		old_lines: normalizeReplacementLines(parsed.old_lines),
+		new_lines: normalizeReplacementLines(parsed.new_lines),
+	} as ReplaceOnceParams;
 }

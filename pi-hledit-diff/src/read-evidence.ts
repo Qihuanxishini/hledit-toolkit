@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import {
 	HLEDIT_APPLY_FILE_CHANGES_TOOL,
 	HLEDIT_READ_ANCHORS_TOOL,
+	HLEDIT_REPLACE_ONCE_TOOL,
 } from "./active-tools.ts";
 import { lineFromAnchor, type HleditBatchReadProof } from "./file-changes.ts";
 import { parseAnchorContext, type BatchAnchorContext } from "./post-edit-context.ts";
@@ -22,11 +23,14 @@ type FileReadEvidence = {
 	lines: Map<number, EvidenceLine>;
 };
 
+type ReadProofLineRange = { start: number; end: number };
+
 export type ReadProofFailure = {
 	code: "insufficient_read_proof";
 	message: string;
 	requiredLines: number[];
 	missingLines: number[];
+	suggestedReadRange?: ReadProofLineRange;
 };
 
 export type ReadProofSelection =
@@ -78,17 +82,16 @@ function evidencePathFromDetails(details: Record<string, unknown>, cwd: string):
 	return path ? resolve(cwd, path) : undefined;
 }
 
-type RequestedLineRange = { start: number; end: number };
 
 type RequestedChangeEvidence = {
-	ranges: RequestedLineRange[];
+	ranges: ReadProofLineRange[];
 	endpointAnchors: Map<number, string>;
 };
 
 const MAX_REPORTED_MISSING_LINES = 20;
 
 function requestedChangeEvidence(changes: FileChangeParams["changes"]): RequestedChangeEvidence | undefined {
-	const ranges: RequestedLineRange[] = [];
+	const ranges: ReadProofLineRange[] = [];
 	const endpointAnchors = new Map<number, string>();
 	for (const change of changes) {
 		if (change.operation === "insert_before" || change.operation === "insert_after") {
@@ -108,7 +111,7 @@ function requestedChangeEvidence(changes: FileChangeParams["changes"]): Requeste
 	}
 
 	ranges.sort((left, right) => left.start - right.start || left.end - right.end);
-	const mergedRanges: RequestedLineRange[] = [];
+	const mergedRanges: ReadProofLineRange[] = [];
 	for (const range of ranges) {
 		const previous = mergedRanges.at(-1);
 		if (previous && range.start <= previous.end + 1) {
@@ -120,20 +123,22 @@ function requestedChangeEvidence(changes: FileChangeParams["changes"]): Requeste
 	return { ranges: mergedRanges, endpointAnchors };
 }
 
-function summarizedRequiredLines(ranges: RequestedLineRange[]): number[] {
+function summarizedRequiredLines(ranges: ReadProofLineRange[]): number[] {
 	return ranges.flatMap((range) => range.start === range.end ? [range.start] : [range.start, range.end]);
 }
 
 function collectProofCoverage(
-	ranges: RequestedLineRange[],
+	ranges: ReadProofLineRange[],
 	evidenceLines: Map<number, EvidenceLine>,
-): { coveredLines: number[]; missingLines: number[] } {
+): { coveredLines: number[]; missingLines: number[]; firstMissingRange: ReadProofLineRange | undefined } {
 	const availableLines = [...evidenceLines.keys()].sort((left, right) => left - right);
 	const coveredLines: number[] = [];
 	const missingLines: number[] = [];
+	let firstMissingRange: ReadProofLineRange | undefined;
 	let availableIndex = 0;
 
 	const appendMissingRange = (start: number, end: number): boolean => {
+		firstMissingRange ??= { start, end };
 		const reportCount = Math.min(end - start + 1, MAX_REPORTED_MISSING_LINES - missingLines.length);
 		for (let offset = 0; offset < reportCount; offset += 1) missingLines.push(start + offset);
 		return missingLines.length >= MAX_REPORTED_MISSING_LINES;
@@ -145,17 +150,17 @@ function collectProofCoverage(
 		while (availableLines[availableIndex] !== undefined && availableLines[availableIndex]! <= range.end) {
 			const availableLine = availableLines[availableIndex]!;
 			if (availableLine > expectedLine && appendMissingRange(expectedLine, availableLine - 1)) {
-				return { coveredLines, missingLines };
+				return { coveredLines, missingLines, firstMissingRange };
 			}
 			coveredLines.push(availableLine);
 			expectedLine = availableLine + 1;
 			availableIndex += 1;
 		}
 		if (expectedLine <= range.end && appendMissingRange(expectedLine, range.end)) {
-			return { coveredLines, missingLines };
+			return { coveredLines, missingLines, firstMissingRange };
 		}
 	}
-	return { coveredLines, missingLines };
+	return { coveredLines, missingLines, firstMissingRange };
 }
 
 export async function resolveReadEvidencePath(cwd: string, path: string): Promise<string> {
@@ -169,14 +174,19 @@ export async function resolveReadEvidencePath(cwd: string, path: string): Promis
 
 export function formatReadProofFailure(path: string, failure: ReadProofFailure): string {
 	const targetLines = failure.missingLines.length > 0 ? failure.missingLines : failure.requiredLines;
-	const firstLine = targetLines[0] ?? 1;
-	const lastLine = targetLines[targetLines.length - 1] ?? firstLine;
+	const firstLine = failure.suggestedReadRange?.start ?? targetLines[0] ?? 1;
+	const lastLine = failure.suggestedReadRange?.end ?? targetLines[targetLines.length - 1] ?? firstLine;
 	const offset = Math.max(1, firstLine - 2);
-	const limit = Math.min(MAX_READ_LIMIT, Math.max(12, lastLine - offset + 3));
+	const preferredLimit = Math.max(12, lastLine - offset + 3);
+	const limit = Math.min(MAX_READ_LIMIT, preferredLimit);
+	const lastSuggestedLine = offset + limit - 1;
+	const readInstruction = lastSuggestedLine < lastLine
+		? `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: ${limit} }) first, then continue with nextOffset until line ${lastLine} is covered before submitting the change.`
+		: `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: ${limit} }) first, confirm the complete target range, then submit the change.`;
 	return [
-		"缺少覆盖本次修改范围的有效读取证据，因此未启动 batch，也未写入任何内容。",
-		`原因：${failure.message}`,
-		`请先调用 hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: ${limit} })，确认完整目标范围后再提交修改。`,
+		"Valid read proof does not cover every source line required by this change. Batch was not started and no content was written.",
+		`Reason: ${failure.message}`,
+		readInstruction,
 	].join("\n");
 }
 
@@ -194,8 +204,7 @@ export class ReadEvidenceStore {
 	recordRead(path: string, read: HleditReadMetadata): void {
 		const evidence = this.files.get(path);
 		if (evidence && evidence.revision !== read.revision) this.files.delete(path);
-		// grep 返回的是搜索结果而不是连续读取窗口；修改前必须再读取明确范围。
-		if (read.requested.grep) return;
+		// 过滤读取可以贡献离散行；范围是否完整由 selectProof 统一判断。
 		const next = evidence?.revision === read.revision
 			? evidence
 			: { revision: read.revision, lines: new Map<number, EvidenceLine>() };
@@ -241,7 +250,7 @@ export class ReadEvidenceStore {
 			return {
 				failure: {
 					code: "insufficient_read_proof",
-					message: "无法确定本次修改所依赖的原始行。",
+					message: "The source lines required by this change could not be determined.",
 					requiredLines: [],
 					missingLines: [],
 				},
@@ -257,9 +266,10 @@ export class ReadEvidenceStore {
 			return {
 				failure: {
 					code: "insufficient_read_proof",
-					message: `尚未读取第 ${firstRequired}-${lastRequired} 行的当前锚点。`,
+					message: `No current anchors have been read for lines ${firstRequired}-${lastRequired}.`,
 					requiredLines,
 					missingLines: coverage.missingLines,
+					...(coverage.firstMissingRange ? { suggestedReadRange: coverage.firstMissingRange } : {}),
 				},
 			};
 		}
@@ -269,9 +279,10 @@ export class ReadEvidenceStore {
 			return {
 				failure: {
 					code: "insufficient_read_proof",
-					message: `读取证据缺少第 ${coverage.missingLines.join(", ")} 行${coverage.missingLines.length === MAX_REPORTED_MISSING_LINES ? "（仅列出前 20 行）" : ""}。`,
+					message: `Read proof is missing lines ${coverage.missingLines.join(", ")}${coverage.missingLines.length === MAX_REPORTED_MISSING_LINES ? " (only the first 20 are listed)" : ""}.`,
 					requiredLines,
 					missingLines: coverage.missingLines,
+					...(coverage.firstMissingRange ? { suggestedReadRange: coverage.firstMissingRange } : {}),
 				},
 			};
 		}
@@ -281,9 +292,10 @@ export class ReadEvidenceStore {
 				return {
 					failure: {
 						code: "insufficient_read_proof",
-						message: `第 ${line} 行提交的锚点与当前分支最近读取到的锚点不一致。`,
+						message: `The submitted anchor for line ${line} does not match the most recently read anchor on this branch.`,
 						requiredLines,
 						missingLines: [line],
+						suggestedReadRange: { start: line, end: line },
 					},
 				};
 			}
@@ -317,7 +329,7 @@ export class ReadEvidenceStore {
 				continue;
 			}
 
-			if (entry.message.toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) continue;
+			if (entry.message.toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL && entry.message.toolName !== HLEDIT_REPLACE_ONCE_TOOL) continue;
 			this.recordApplyResult(path, details as HleditDetails);
 		}
 	}
@@ -333,7 +345,7 @@ export class ReadEvidenceStore {
 			else this.invalidate(path);
 			return;
 		}
-		if (toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) return;
+		if (toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL && toolName !== HLEDIT_REPLACE_ONCE_TOOL) return;
 
 		this.recordApplyResult(path, details);
 	}

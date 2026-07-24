@@ -3,7 +3,7 @@
 ## 1. Binary & Invocation
 
 ```
-hledit <verb> [flags] <file> [anchor] [end-anchor] <content-source>
+hledit <verb> [arguments]
 ```
 
 - Logical outcomes (success, stale anchors, invalid anchors/content, binary/encoding/range/io errors) exit 0 and are reported on stdout.
@@ -18,7 +18,7 @@ hledit capabilities
 Outputs one JSON object describing behavior that integrations may require:
 
 ```json
-{ "ok": true, "version": "2.0.0", "anchorProtocolV2": true, "readRangeMetadata": true, "batchInsertAfter": true, "batchCheck": true, "batchUpdatedAnchors": true, "batchStaleContext": true, "batchWireV3": true, "batchReadProof": true }
+{ "ok": true, "version": "2.1.0", "anchorProtocolV2": true, "readRangeMetadata": true, "batchInsertAfter": true, "batchCheck": true, "batchUpdatedAnchors": true, "batchStaleContext": true, "batchWireV3": true, "batchReadProof": true, "contentReplaceOnce": true }
 ```
 
 The bundled Pi extension requires every capability shown above; a successful `help` command alone is not a compatibility guarantee.
@@ -198,6 +198,23 @@ Application:
 - `--check` returns the loaded revision without writing. Apply prepares and syncs one temporary replacement, rechecks the target's raw-byte revision, and then performs one atomic replacement.
 - A detectable change between planning and commit returns `error:"source_changed_before_commit"` with `currentRevision`; the temporary file is removed and external content is preserved.
 
+### 2.8 `replace-once`
+
+```
+hledit replace-once <file>
+```
+
+Reads one strict JSON object from stdin:
+
+```json
+{ "old_lines": ["old line"], "new_lines": ["new line"] }
+```
+
+- The decoder rejects unknown fields and trailing JSON values.
+- `old_lines` and `new_lines` must each contain at least one line. An empty string is a blank line; an empty `new_lines` array is rejected so deletion remains an explicit operation.
+- The CLI searches the current logical lines for exact, contiguous `old_lines` matches. Zero matches return `error:"content_not_found"`; multiple matches return `error:"content_ambiguous"`, `matchCount`, and up to 20 `{startLine,endLine}` candidates with `candidatesTruncated:true` when more exist. Both outcomes write nothing.
+- A unique match replaces exactly that range. Success uses the same `contentChanged`, raw-byte revision, bounded `updatedAnchors`, pre-commit revision recheck, and atomic write guarantees as batch. An identical replacement is a no-op but still returns fresh `updatedAnchors`.
+
 ## 3. Hash Algorithm
 
 ```
@@ -358,6 +375,7 @@ Exit code 1 is only for infrastructure failures. All logical errors (stale, inva
 ├── batch_command.go      # Shared plan loading with separate check/apply commit paths
 ├── read.go               # read + read-range + anchors verbs and revision output
 ├── edit.go               # replace, replace-range, insert verbs
+├── replace_once.go       # strict unique exact-content replacement
 ├── textfile.go           # UTF-8/BOM/newline parsing and raw-byte revision
 ├── hash.go               # FNV-1a line hash and Base64url anchor format
 ├── types.go              # Shared response types

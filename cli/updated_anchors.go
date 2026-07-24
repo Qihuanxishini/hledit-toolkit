@@ -58,10 +58,8 @@ func buildUpdatedAnchorContext(lines []string, firstChanged, lastChanged, linesA
 		limit = 0
 	}
 
-	endExclusive := offset - 1 + limit
-	boundedLines := lines[:endExclusive]
 	readLines, truncatedByBytes, _ := collectAnnotatedLines(
-		boundedLines,
+		lines,
 		offset-1,
 		limit,
 		updatedAnchorMaxBytes,

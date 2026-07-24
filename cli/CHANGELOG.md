@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.1.0] — 2026-07-24
+
+### Added
+
+- Add `hledit replace-once <file>` for strict JSON stdin requests that atomically replace one unique exact contiguous line block.
+- Advertise `contentReplaceOnce:true`; successful replacements return revision-bearing `BatchEditResult` metadata and bounded `updatedAnchors`.
+- Return `content_not_found` for zero exact matches and `content_ambiguous` with up to 20 candidate line ranges for multiple matches; both paths write nothing.
+
+### Fixed
+
+- Build post-edit anchor windows from the actual local offset instead of incorrectly annotating lines from the start of files changed near the end.
+
 
 ## [2.0.0] — 2026-07-21
 

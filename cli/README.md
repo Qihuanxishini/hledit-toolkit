@@ -117,12 +117,13 @@ make check
 
 ## Optional Pi integration
 
-This monorepo includes the [`pi-hledit-diff`](../pi-hledit-diff/) extension. It bundles this CLI and exposes two strict tools:
+This monorepo includes the [`pi-hledit-diff`](../pi-hledit-diff/) extension. It bundles this CLI and exposes three strict tools:
 
 - `hledit_read_anchors`
 - `hledit_apply_file_changes`
+- `hledit_replace_once`
 
-The extension requires `anchorProtocolV2:true`, `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, `batchUpdatedAnchors:true`, `batchStaleContext:true`, `batchWireV3:true`, and `batchReadProof:true`. It consumes revision-bearing structured reads and does not use the legacy single-tool `op` protocol or an edits-only write path.
+The extension requires `anchorProtocolV2:true`, `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, `batchUpdatedAnchors:true`, `batchStaleContext:true`, `batchWireV3:true`, `batchReadProof:true`, and `contentReplaceOnce:true`. It consumes revision-bearing structured reads for anchored batches, uses unique exact content matching for replace-once, and does not use the legacy single-tool `op` protocol or an edits-only write path.
 
 After installing the extension in Pi, reload it:
 
@@ -151,12 +152,13 @@ hledit replace <file> <anchor> <content-source>
 hledit replace-range <file> <anchor> <end-anchor> <content-source>
 hledit insert [--before|--after] <file> <anchor> <content-source>
 hledit batch [--check] <file>
+hledit replace-once <file>
 ```
 
 `--grep` matches substrings. `--context N` adds N lines before/after each match. `--pretty` adds ANSI styling for human reading; `--json` stays machine-readable and unstyled.
 `<content-source>` is either `-` for stdin or a file path.
 
-`hledit capabilities` emits machine-readable JSON for integrations. This tree additionally reports `batchWireV3:true` and `batchReadProof:true`; structured-read and patched-batch clients should require the complete capability set listed above.
+`hledit capabilities` emits machine-readable JSON for integrations. This tree additionally reports `batchWireV3:true`, `batchReadProof:true`, and `contentReplaceOnce:true`; structured-read, patched-batch, and content-replacement clients should require the complete capability set listed above.
 
 ## Examples
 
@@ -204,6 +206,14 @@ echo '{"edits":[{"op":"replace","pos":"12#aB3","lines":["fixed"]}]}' | hledit ba
 ```
 
 Batch `insert` places lines before its anchor by default. Set `"after": true` to place them after it.
+
+Replace one uniquely occurring exact text block with strict JSON on stdin:
+
+```bash
+printf '%s\n' '{"old_lines":["old block"],"new_lines":["new block"]}' | hledit replace-once main.go
+```
+
+`replace-once` rejects unknown fields, trailing JSON, an empty line array, no match, and multiple matches. It returns candidate line ranges for an ambiguous match and performs the same pre-commit revision recheck and atomic write as batch.
 Batch wire v3 has one canonical shape: `replace` requires `lines` (an empty array deletes), `delete` omits `lines`, and `insert` requires non-empty `lines`; only insert may carry `after:true`. An optional `proof` object supplies a lowercase raw-byte SHA-256 `revision` and strictly increasing `anchors` covering every consumed or insertion-anchor line.
 Delete a line or range by piping empty stdin and using `-` as the content source:
 

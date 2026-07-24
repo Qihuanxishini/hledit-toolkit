@@ -39,6 +39,16 @@ test("prepareFileChangeArguments treats one trailing newline as a string termina
   assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
 });
 
+test("prepareFileChangeArguments treats an empty string as one blank line", () => {
+  const prepared = prepareFileChangeArguments({
+    path: "src/a.ts",
+    changes: [{ operation: "insert_after", anchor: "1#BHJ", lines: "" }],
+  });
+
+  assert.deepEqual(prepared.changes, [{ operation: "insert_after", anchor: "1#BHJ", lines: [""] }]);
+  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
+});
+
 test("prepareFileChangeArguments accepts a serialized changes array from tool callers", () => {
   const prepared = prepareFileChangeArguments({
     path: "src/a.ts",

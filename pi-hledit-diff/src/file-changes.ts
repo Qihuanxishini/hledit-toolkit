@@ -1,4 +1,4 @@
-import type { FileChangeParams } from "./schema.ts";
+import type { FileChangeParams, ReplaceOnceParams } from "./schema.ts";
 
 export const ANCHOR_HASH_PATTERN = "[A-Za-z0-9_-]{3}";
 export const ANCHOR_PATTERN = `^\\d+#${ANCHOR_HASH_PATTERN}$`;
@@ -67,6 +67,13 @@ export function buildFileChangeRequest(params: FileChangeParams, proof?: HleditB
 
 export function buildFileChangeCheckRequest(params: FileChangeParams, proof?: HleditBatchReadProof): { args: string[]; stdin: string } {
 	return { args: ["batch", "--check", params.path], stdin: serializeCliBatchRequest(params, proof) };
+}
+
+export function buildReplaceOnceRequest(params: ReplaceOnceParams): { args: string[]; stdin: string } {
+	return {
+		args: ["replace-once", params.path],
+		stdin: JSON.stringify({ old_lines: params.old_lines, new_lines: params.new_lines }),
+	};
 }
 
 export function lineFromAnchor(anchor: unknown): number | undefined {
@@ -177,14 +184,14 @@ export function formatSingleLineRangeExpansionIssue(issue: VerifiedSingleLineRan
 		2,
 	);
 	const lines = [
-		`第 ${issue.changeNumber} 项修改被拒绝。`,
-		"实际收到：",
+		`Change ${issue.changeNumber} was rejected.`,
+		"Received:",
 		"- operation: replace_range",
 		`- start_anchor: ${issue.anchor}`,
-		`- end_anchor: ${issue.anchor}（与 start_anchor 相同）`,
-		`- lines: ${issue.outputLineCount} 行`,
-		"该 replace_range 只覆盖一个源文件行；本次 lines 首行又重复了该行，执行可能保留本应被替换的后续旧代码。",
-		"禁止使用相同参数重试。",
+		`- end_anchor: ${issue.anchor} (same as start_anchor)`,
+		`- lines: ${issue.outputLineCount}`,
+		"This replace_range covers one source line, while its first replacement line repeats that source line. Applying it could retain old code that should have been replaced.",
+		"Do not retry with the same parameters.",
 	];
 
 	if (issue.nearbyDeleteRange) {
@@ -200,19 +207,19 @@ export function formatSingleLineRangeExpansionIssue(issue: VerifiedSingleLineRan
 			2,
 		);
 		lines.push(
-			`检测到同批次第 ${hint.changeNumber} 项 delete_range 覆盖 ${hint.startAnchor} 到 ${hint.endAnchor}，且本批次锚点已通过 --check 验证。`,
-			"若该 delete_range 属于同一个待替换旧代码块，优先将两项合并为以下 replace_range，并移除原 delete_range：",
+			`Change ${hint.changeNumber} is a delete_range from ${hint.startAnchor} through ${hint.endAnchor}, and this batch's anchors passed --check.`,
+			"If that delete_range belongs to the same old code block, merge both changes into this replace_range and remove the delete_range:",
 			mergedTemplate,
-			"若不是同一代码块，请重新调用 hledit_read_anchors 读取正确的块尾锚点。",
+			"Otherwise, call hledit_read_anchors to read the correct block-end anchor.",
 		);
 	} else {
 		lines.push(
-			"若要替换现有代码块，请先调用 hledit_read_anchors 读取块尾，再将真实块尾写入同一项 replace_range 的 end_anchor；当前没有可安全使用的结束锚点，因此不提供占位锚点。",
+			"To replace an existing code block, call hledit_read_anchors to read its true end, then use that end anchor in this replace_range. No safe placeholder end anchor is available.",
 		);
 	}
 
 	lines.push(
-		"若本意是保留锚点行并在其后新增内容，可直接改用以下 insert_after；其中 lines 已移除重复的锚点行：",
+		"If the intent is to keep the anchored line and append content after it, use this insert_after instead. Its lines omit the repeated anchored line:",
 		insertTemplate,
 	);
 	return lines.join("\n");

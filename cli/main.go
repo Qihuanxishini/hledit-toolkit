@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-const version = "2.0.0"
+const version = "2.1.0"
 
 // splitArgs separates a command's args into flags and positionals so that
 // flags may appear before OR after the positional file argument (e.g.
@@ -55,6 +55,7 @@ Usage:
   hledit replace <file> <anchor> <content-source>
   hledit replace-range <file> <anchor> <end-anchor> <content-source>
   hledit insert [--before|--after] <file> <anchor> <content-source>
+  hledit replace-once <file>
   hledit batch [--check] <file>
 
 Arguments:
@@ -78,6 +79,7 @@ Examples:
   printf '// done\n' | hledit insert --after main.go 99#nK2 -
   echo '{"edits":[{"op":"replace","pos":"12#aB3","lines":["fixed"]}]}' | hledit batch main.go
   echo '{"edits":[{"op":"replace","pos":"12#aB3","lines":["fixed"]}]}' | hledit batch --check main.go
+  echo '{"old_lines":["const timeout = 1000;"],"new_lines":["const timeout = 1500;"]}' | hledit replace-once main.go
 
 Notes:
   - replace/replace-range with empty content deletes the target line/range.
@@ -163,6 +165,12 @@ func run(argv []string) int {
 		}
 		return mustRun(cmdReplace(args[0], args[1], args[2]))
 
+	case "replace-once":
+		if len(args) != 1 {
+			fmt.Fprint(os.Stderr, usage)
+			return 2
+		}
+		return mustRun(cmdReplaceOnce(args[0]))
 	case "replace-range":
 		if len(args) != 4 {
 			fmt.Fprint(os.Stderr, usage)
@@ -212,6 +220,7 @@ func run(argv []string) int {
 			ReadRangeMetadata:   true,
 			BatchWireV3:         true,
 			BatchReadProof:      true,
+			ContentReplaceOnce:  true,
 		}))
 
 	case "-h", "--help", "help":

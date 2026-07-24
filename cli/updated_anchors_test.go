@@ -20,6 +20,24 @@ func TestBuildUpdatedAnchorContext(t *testing.T) {
 		}
 	})
 
+	t.Run("returns source lines from the local offset", func(t *testing.T) {
+		lines := make([]string, 12)
+		for i := range lines {
+			lines[i] = intToStr(i + 1)
+		}
+		got := buildUpdatedAnchorContext(lines, 10, 10, 1)
+		if got == nil || got.Offset != 8 || got.Limit != 5 || got.DesiredLimit != 5 || got.Truncated {
+			t.Fatalf("context metadata = %#v", got)
+		}
+		for index, line := range got.Lines {
+			lineNumber := index + got.Offset
+			text := intToStr(lineNumber)
+			if line.Anchor != formatTag(lineNumber, text) || line.Text != text {
+				t.Fatalf("line %d = %#v, want %s", lineNumber, line, text)
+			}
+		}
+	})
+
 	t.Run("caps large changed spans", func(t *testing.T) {
 		lines := make([]string, 100)
 		for i := range lines {

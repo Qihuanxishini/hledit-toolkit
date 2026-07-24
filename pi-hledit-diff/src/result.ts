@@ -6,7 +6,7 @@ import { parseAnchorContext, parseBatchUpdatedAnchorContext, type BatchAnchorCon
 import type { NormalizedReadRequest } from "./read-args.ts";
 import type { FileChangeParams } from "./schema.ts";
 
-export type HleditToolKind = "read_anchors" | "apply_file_changes";
+export type HleditToolKind = "read_anchors" | "apply_file_changes" | "replace_once";
 export type HleditDisposition = "succeeded" | "rejected" | "unavailable" | "outcome_unknown";
 
 export type HleditReadLine = {
@@ -49,6 +49,11 @@ export type HleditStaleAnchor = {
 	currentTextTruncated?: true;
 };
 
+export type ContentMatchCandidate = {
+	startLine: number;
+	endLine: number;
+};
+
 export type HleditErrorMetadata = {
 	code: string;
 	message: string;
@@ -65,11 +70,15 @@ export type HleditErrorMetadata = {
 	staleAnchors?: HleditStaleAnchor[];
 	currentAnchors?: BatchAnchorContext;
 	currentRevision?: string;
+	matchCount?: number;
+	candidates?: ContentMatchCandidate[];
+	candidatesTruncated?: true;
 };
 
 type ApplyResultContext = {
 	path?: string;
 	changes?: FileChangeParams["changes"];
+	operation?: "anchored_batch" | "content_replace_once";
 };
 
 export type HleditDetails = Record<string, unknown> & {
@@ -198,18 +207,18 @@ function localizeReadErrorMessage(
 	totalLines: number | undefined,
 ): string {
 	if (code === "range" && requestedOffset !== undefined && totalLines !== undefined) {
-		return `起始行 ${requestedOffset} 超出文件范围（文件共 ${totalLines} 行）。`;
+		return `Starting line ${requestedOffset} is outside the file range (${totalLines} total lines).`;
 	}
 	if (code === "binary") {
-		return "目标文件疑似为二进制，无法按文本读取。";
+		return "The target appears to be binary and cannot be read as text.";
 	}
 	if (code === "encoding") {
-		return "目标文件不是有效的 UTF-8 文本，已拒绝读取以避免损坏原始字节。";
+		return "The target is not valid UTF-8 text; reading was rejected to protect the original bytes.";
 	}
 	if (code === "io") {
-		return "读取文件失败；请检查路径、权限以及文件是否仍然存在。";
+		return "The file could not be read. Check its path, permissions, and whether it still exists.";
 	}
-	return `hledit 拒绝了本次读取（错误代码：${code}）。`;
+	return `hledit rejected this read (error code: ${code}).`;
 }
 
 function parseReadErrorMetadata(parsed: Record<string, unknown>): HleditErrorMetadata | undefined {
@@ -221,8 +230,8 @@ function parseReadErrorMetadata(parsed: Record<string, unknown>): HleditErrorMet
 	let hint: string | undefined;
 	if (parsed.error === "range" && totalLines !== undefined) {
 		hint = totalLines === 0
-			? "文件为空，当前没有可读取的正整数行号。"
-			: `请将 offset 设为 1 到 ${totalLines} 之间的整数。`;
+			? "The file is empty, so no positive line number can be read."
+			: `Set offset to an integer from 1 through ${totalLines}.`;
 	}
 	return {
 		code: parsed.error,
@@ -261,13 +270,13 @@ function formatReadMetadata(read: HleditReadMetadata): string {
 
 function formatReadError(error: HleditErrorMetadata): string {
 	const lines = [error.message];
-	if (error.hint) lines.push(`建议：${error.hint}`);
-	lines.push(`错误代码：${error.code}`);
+	if (error.hint) lines.push(`Suggestion: ${error.hint}`);
+	lines.push(`Error code: ${error.code}`);
 	return lines.join("\n");
 }
 
 function invalidReadResponseText(): string {
-	return `锚点读取失败：随扩展附带的 hledit 返回了不兼容的响应。预期得到包含 ok、totalLines、有效锚点行、截断状态及可选 nextOffset 的结构化 JSON。\n\n${HLEDIT_INSTALL_HINT}`;
+	return `Anchor read failed because the bundled hledit returned an incompatible response. Expected structured JSON with ok, totalLines, valid anchor lines, truncation state, and optional nextOffset.\n\n${HLEDIT_INSTALL_HINT}`;
 }
 
 export function readAnchorsResult(run: HleditRun, request: NormalizedReadRequest): TextResult {
@@ -361,7 +370,7 @@ function appendRemaps(
 		}
 	}
 	if (rendered.size > 0) {
-		lines.push("其他 stale 锚点：", ...rendered);
+		lines.push("Other stale anchors:", ...rendered);
 	}
 }
 
@@ -429,40 +438,43 @@ function appendStaleAnchorDetails(lines: string[], staleAnchors: HleditStaleAnch
 		return;
 	}
 
-	lines.push(`第 ${staleAnchors[0]!.changeNumber} 项锚点核对：`);
+	lines.push(`Anchor verification for change ${staleAnchors[0]!.changeNumber}:`);
 	for (const staleAnchor of staleAnchors) {
 		const fields = staleAnchor.fields.join("/");
-		lines.push(`- 字段：${fields}`, `  提交的锚点：${staleAnchor.requestedAnchor}`);
+		lines.push(`- Field: ${fields}`, `  Submitted anchor: ${staleAnchor.requestedAnchor}`);
 		if (staleAnchor.currentAnchor) {
 			const annotatedAnchor =
 				staleAnchor.currentText === undefined
 					? staleAnchor.currentAnchor
-					: `${staleAnchor.currentAnchor}:${staleAnchor.currentText}${staleAnchor.currentTextTruncated ? "（文本已截断）" : ""}`;
+					: `${staleAnchor.currentAnchor}:${staleAnchor.currentText}${staleAnchor.currentTextTruncated ? " (text truncated)" : ""}`;
 			lines.push(
-				`  当前同号行：${annotatedAnchor}`,
-				`  核对目标后，可在下一次显式提交中将 ${fields} 改为 ${staleAnchor.currentAnchor}。`,
+				`  Current line at the same number: ${annotatedAnchor}`,
+				`  After verifying the intended target, explicitly replace ${fields} with ${staleAnchor.currentAnchor} in a new request.`,
 			);
 		} else {
-			lines.push("  当前同号行不存在；必须重新读取受影响范围。");
+			lines.push("  The current line no longer exists; reread the affected range.");
 		}
 	}
-	lines.push("上述内容仅供核对；工具不会自动修正锚点或重试批次。");
+	lines.push("This information is for verification only. The tool never repairs anchors or retries a batch automatically.");
 }
 
 function appendCurrentAnchorContext(lines: string[], context: BatchAnchorContext | undefined): void {
 	if (!context) {
 		return;
 	}
-	lines.push("提交时文件中的当前锚点快照（请先核对内容；下一次提交仍会再次校验）：");
-	lines.push(context.lines.map((line) => `${line.anchor}:${line.text}`).join("\n") || "（文件为空）");
-	lines.push("该快照不会自动重试或覆盖并发修改；只有确认窗口仍覆盖原定目标及完整范围时，才可使用其中的新锚点；否则必须重新读取受影响范围。");
+	const lastLine = context.limit === 0 ? undefined : context.offset + context.limit - 1;
+	lines.push(lastLine === undefined
+		? "Current anchor snapshot at submission time (the file is empty):"
+		: `Current anchor snapshot at submission time (local window: lines ${context.offset}-${lastLine}):`);
+	lines.push(context.lines.map((line) => `${line.anchor}:${line.text}`).join("\n") || "(file is empty)");
+	lines.push("This snapshot never retries or overwrites concurrent changes. Reuse its anchors only after confirming that this complete window still covers the intended target and range; otherwise reread the affected range.");
 	if (context.truncated || context.lines.some((line) => line.textTruncated)) {
-		lines.push(`当前快照已截断；请调用 hledit_read_anchors，并使用 offset:${context.offset}、limit:${context.desiredLimit} 获取完整范围。`);
+		lines.push(`The current snapshot is truncated. Call hledit_read_anchors with offset:${context.offset} and limit:${context.desiredLimit} to obtain the complete range.`);
 	}
 }
 
 function staleReadInstruction(result: Record<string, unknown>, path: string | undefined): string {
-	const genericInstruction = "重试前请重新调用 hledit_read_anchors 读取受影响范围；不要复用修改前的旧锚点。";
+	const genericInstruction = "Before retrying, call hledit_read_anchors to reread the affected range. Do not reuse anchors from before the change.";
 	if (!path || !Array.isArray(result.remaps)) {
 		return genericInstruction;
 	}
@@ -483,44 +495,58 @@ function staleReadInstruction(result: Record<string, unknown>, path: string | un
 		return genericInstruction;
 	}
 	const offset = Math.max(1, Math.min(...remappedLineNumbers) - 2);
-	return `重试前请调用 hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: 12 })；不要复用修改前的旧锚点。`;
+	return `Before retrying, call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: 12 }). Do not reuse anchors from before the change.`;
 }
 
 function localizeInvalidApplyMessage(rawMessage: string, failedChange: number | undefined): string {
-	const prefix = failedChange === undefined ? "批次修改" : `第 ${failedChange} 项修改`;
+	const prefix = failedChange === undefined ? "The batch request" : `Change ${failedChange}`;
 	const unknownField = /unknown field "([^"]+)"/.exec(rawMessage);
-	if (unknownField) return `批次 JSON 包含不支持的字段 ${JSON.stringify(unknownField[1])}；请检查字段拼写。`;
-	if (rawMessage.includes("batch request contains no edits")) return "批次中没有任何修改项。";
-	if (rawMessage.includes("invalid batch request")) return "批次 JSON 结构无效，无法解析修改请求。";
-	if (rawMessage.includes("invalid end anchor")) return `${prefix}的 end_anchor 格式无效。`;
-	if (rawMessage.includes("invalid anchor")) return `${prefix}的 anchor 格式无效。`;
-	if (rawMessage.includes("start line") && rawMessage.includes("> end line")) return `${prefix}的起始行晚于结束行。`;
-	if (rawMessage.includes("insert does not accept end_pos")) return `${prefix}是 insert，不能同时提供 end_anchor。`;
-	if (rawMessage.includes("insert requires non-empty content")) return `${prefix}是 insert，lines 至少需要包含一行。`;
-	if (rawMessage.includes("unknown op")) return `${prefix}使用了不支持的 operation。`;
+	if (unknownField) return `The batch JSON contains unsupported field ${JSON.stringify(unknownField[1])}. Check the field spelling.`;
+	if (rawMessage.includes("batch request contains no edits")) return "The batch contains no changes.";
+	if (rawMessage.includes("invalid batch request")) return "The batch JSON shape is invalid and could not be parsed.";
+	if (rawMessage.includes("invalid end anchor")) return `${prefix} has an invalid end_anchor format.`;
+	if (rawMessage.includes("invalid anchor")) return `${prefix} has an invalid anchor format.`;
+	if (rawMessage.includes("start line") && rawMessage.includes("> end line")) return `${prefix} starts after its end line.`;
+	if (rawMessage.includes("insert does not accept end_pos")) return `${prefix} is an insert and cannot include end_anchor.`;
+	if (rawMessage.includes("insert requires non-empty content")) return `${prefix} is an insert and lines must contain at least one line.`;
+	if (rawMessage.includes("unknown op")) return `${prefix} uses an unsupported operation.`;
 	if (rawMessage.includes("overlaps") || rawMessage.includes("conflicts") || rawMessage.includes("already consumed range")) {
-		return `${prefix}与同批次的其他修改范围重叠；请合并或调整为互不冲突的修改。`;
+		return `${prefix} overlaps another change in the same batch. Merge them or make the changes non-overlapping.`;
 	}
-	return `${prefix}无效；请检查 operation、锚点、范围顺序和 lines 内容。`;
+	return `${prefix} is invalid. Check operation, anchors, range order, and lines.`;
 }
 
 function localizeIOApplyMessage(rawMessage: string): string {
 	const hardLinks = /file has (\d+) hard links/.exec(rawMessage);
 	if (hardLinks) {
-		return `目标文件存在 ${hardLinks[1]} 个 hardlink。为同时保证原子性和链接身份，本次写入已拒绝。`;
+		return `The target has ${hardLinks[1]} hard links. The write was rejected because preserving link identity would require a non-atomic update.`;
 	}
-	if (rawMessage.includes("non-regular file")) return "目标不是普通文件，已拒绝写入。";
-	if (rawMessage.includes("could not be read")) return "无法读取目标文件；请检查路径、权限以及文件是否仍然存在。";
-	if (rawMessage.includes("resolve target")) return "无法解析目标文件；symlink 可能已失效或路径不可访问。";
-	if (rawMessage.includes("resolve parent")) return "无法解析目标文件所在目录。";
-	if (rawMessage.includes("inspect hard links")) return "无法确认目标文件的 hardlink 状态，因此为安全起见拒绝写入。";
-	if (rawMessage.includes("create temporary sibling")) return "无法在目标文件所在目录创建原子写入所需的临时文件。";
-	if (rawMessage.includes("preserve permissions")) return "无法把原文件权限复制到临时文件。";
-	if (rawMessage.includes("write temporary file")) return "写入临时文件失败，目标文件保持不变。";
-	if (rawMessage.includes("synchronize temporary file")) return "同步临时文件失败，目标文件保持不变。";
-	if (rawMessage.includes("close temporary file")) return "关闭临时文件失败，目标文件保持不变。";
-	if (rawMessage.includes("replace target")) return "原子替换目标文件失败。";
-	return "文件操作失败；请检查路径、权限、文件类型和链接状态。";
+	if (rawMessage.includes("non-regular file")) return "The target is not a regular file, so the write was rejected.";
+	if (rawMessage.includes("could not be read")) return "The target could not be read. Check its path, permissions, and whether it still exists.";
+	if (rawMessage.includes("resolve target")) return "The target could not be resolved; its symlink may be broken or inaccessible.";
+	if (rawMessage.includes("resolve parent")) return "The target directory could not be resolved.";
+	if (rawMessage.includes("inspect hard links")) return "The target hard-link state could not be verified, so the write was rejected.";
+	if (rawMessage.includes("create temporary sibling")) return "The temporary sibling required for an atomic write could not be created.";
+	if (rawMessage.includes("preserve permissions")) return "The original file permissions could not be copied to the temporary file.";
+	if (rawMessage.includes("write temporary file")) return "Writing the temporary file failed; the target was left unchanged.";
+	if (rawMessage.includes("synchronize temporary file")) return "Synchronizing the temporary file failed; the target was left unchanged.";
+	if (rawMessage.includes("close temporary file")) return "Closing the temporary file failed; the target was left unchanged.";
+	if (rawMessage.includes("replace target")) return "The atomic target replacement failed.";
+	return "The file operation failed. Check the path, permissions, file type, and link state.";
+}
+
+function parseContentMatchCandidates(result: Record<string, unknown>): ContentMatchCandidate[] | undefined {
+	if (!Array.isArray(result.candidates)) {
+		return undefined;
+	}
+	const candidates: ContentMatchCandidate[] = [];
+	for (const candidate of result.candidates) {
+		if (!isRecord(candidate) || !isIntegerAtLeast(candidate.startLine, 1) || !isIntegerAtLeast(candidate.endLine, candidate.startLine)) {
+			return undefined;
+		}
+		candidates.push({ startLine: candidate.startLine, endLine: candidate.endLine });
+	}
+	return candidates;
 }
 
 function parseApplyErrorMetadata(result: Record<string, unknown>, context: ApplyResultContext): HleditErrorMetadata | undefined {
@@ -529,31 +555,42 @@ function parseApplyErrorMetadata(result: Record<string, unknown>, context: Apply
 	const currentAnchors = result.error === "stale" ? parseAnchorContext(result.currentAnchors) : undefined;
 	const staleAnchors = result.error === "stale" ? parseStaleAnchors(result, currentAnchors, context) : undefined;
 	const currentRevision = isRawRevision(result.currentRevision) ? result.currentRevision : undefined;
+	const matchCount = isIntegerAtLeast(result.matchCount, 2) ? result.matchCount : undefined;
+	const candidates = result.error === "content_ambiguous" ? parseContentMatchCandidates(result) : undefined;
+	const candidatesTruncated = result.candidatesTruncated === true ? true : undefined;
 	let message: string;
 	switch (result.error) {
 		case "stale":
-			message = failedChange === undefined ? "一个或多个锚点已失效。" : `第 ${failedChange} 项修改使用的锚点已失效。`;
+			message = failedChange === undefined ? "One or more anchors are stale." : `Change ${failedChange} uses a stale anchor.`;
 			break;
 		case "insufficient_read_proof":
-			message = "读取证据未覆盖本次修改依赖的全部原始行。";
+			message = "Read proof does not cover every original source line required by this change.";
 			break;
 		case "source_changed_before_commit":
-			message = "目标文件在提交前发生变化，已取消原子替换。";
+			message = "The target changed before atomic commit. No content was written.";
+			break;
+		case "content_not_found":
+			message = "old_lines do not match any contiguous block in the current file.";
+			break;
+		case "content_ambiguous":
+			message = matchCount === undefined
+				? "old_lines match more than one contiguous block in the current file."
+				: `old_lines match ${matchCount} contiguous blocks in the current file.`;
 			break;
 		case "invalid":
 			message = localizeInvalidApplyMessage(result.message, failedChange);
 			break;
 		case "binary":
-			message = "目标文件疑似为二进制，无法按文本修改。";
+			message = "The target appears to be binary and cannot be modified as text.";
 			break;
 		case "encoding":
-			message = "目标文件不是有效的 UTF-8 文本，已拒绝修改以避免损坏原始字节。";
+			message = "The target is not valid UTF-8 text; the edit was rejected to protect the original bytes.";
 			break;
 		case "io":
 			message = localizeIOApplyMessage(result.message);
 			break;
 		default:
-			message = `hledit 拒绝了本次修改（错误代码：${result.error}）。`;
+			message = `hledit rejected this edit (error code: ${result.error}).`;
 	}
 	return {
 		code: result.error,
@@ -562,6 +599,9 @@ function parseApplyErrorMetadata(result: Record<string, unknown>, context: Apply
 		...(staleAnchors ? { staleAnchors } : {}),
 		...(currentAnchors ? { currentAnchors } : {}),
 		...(currentRevision ? { currentRevision } : {}),
+		...(matchCount !== undefined ? { matchCount } : {}),
+		...(candidates ? { candidates } : {}),
+		...(candidatesTruncated ? { candidatesTruncated } : {}),
 	};
 }
 
@@ -572,25 +612,56 @@ function localizeApplyWarning(warning: string): string {
 	return "文件已成功修改，但写入持久性存在警告；详细技术信息已保留在工具结果中。";
 }
 
+function appendContentMatchRecovery(lines: string[], error: HleditErrorMetadata, path: string | undefined): void {
+	if (error.code === "content_not_found") {
+		lines.push("The exact old_lines precondition is no longer present. Do not weaken or approximate the match.");
+		if (path) lines.push(`Call hledit_read_anchors({ path: ${JSON.stringify(path)} }) to inspect the intended target before submitting an anchored edit.`);
+		return;
+	}
+	if (error.code !== "content_ambiguous") {
+		return;
+	}
+	if (error.candidates && error.candidates.length > 0) {
+		lines.push("Candidate ranges:", ...error.candidates.map((candidate) => `- lines ${candidate.startLine}-${candidate.endLine}`));
+		if (error.candidatesTruncated) lines.push("Only the first candidate ranges are shown.");
+		const first = error.candidates[0]!;
+		const offset = Math.max(1, first.startLine - 2);
+		if (path) lines.push(`Call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: 12 }) and choose the intended block before submitting an anchored edit.`);
+		return;
+	}
+	lines.push("old_lines are ambiguous. Call hledit_read_anchors to inspect and choose the intended block before submitting an anchored edit.");
+}
+
 function formatApplyFailureResult(
 	result: Record<string, unknown>,
 	context: ApplyResultContext,
 	error: HleditErrorMetadata,
 ): string {
-	const lines = ["原子批次已拒绝，未写入任何内容。", `原因：${error.message}`, `错误代码：${error.code}`];
+	const contentMatch = context.operation === "content_replace_once";
+	const lines = [
+		contentMatch ? "Content-match replacement was rejected; no content was written." : "The atomic batch was rejected; no content was written.",
+		`Reason: ${error.message}`,
+		`Error code: ${error.code}`,
+	];
 	if (isIntegerAtLeast(result.failed, 0)) {
-		lines.push(`失败位置：第 ${result.failed + 1} 项修改`);
+		lines.push(`Failed change: ${result.failed + 1}`);
 	}
 	appendStaleAnchorDetails(lines, error.staleAnchors);
 	appendRemaps(lines, result, error.staleAnchors);
 	if (error.code === "stale") {
 		appendCurrentAnchorContext(lines, error.currentAnchors);
 		if (error.currentAnchors) {
-			lines.push("只有确认上方窗口仍覆盖原定目标及完整范围时，才可使用其中的新锚点重新提交；否则请重新调用 hledit_read_anchors。");
+			lines.push("Only reuse these anchors after confirming that the window still covers the intended target and complete range; otherwise call hledit_read_anchors again.");
 		} else {
 			lines.push(staleReadInstruction(result, context.path));
 		}
 	}
+	if (error.code === "source_changed_before_commit") {
+		lines.push(context.path
+			? `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)} }) before retrying; do not reuse the prior request.`
+			: "Call hledit_read_anchors before retrying; do not reuse the prior request.");
+	}
+	appendContentMatchRecovery(lines, error, context.path);
 	return lines.join("\n");
 }
 
@@ -605,9 +676,9 @@ function appendApplyWarnings(lines: string[], result: Record<string, unknown>): 
 	lines.push("警告：", ...warnings.map((warning) => `- ${localizeApplyWarning(warning)}`));
 }
 
-function formatApplyResult(result: Record<string, unknown>): string {
+function formatApplyResult(result: Record<string, unknown>, context: ApplyResultContext): string {
 	if (result.contentChanged === false) {
-		const lines = ["无需修改；原锚点仍有效。"];
+		const lines = [context.operation === "content_replace_once" ? "无需修改；精确内容前置条件仍成立。" : "无需修改；原锚点仍有效。"];
 		appendApplyWarnings(lines, result);
 		return lines.join("\n");
 	}
@@ -630,12 +701,12 @@ function formatApplyResult(result: Record<string, unknown>): string {
 	return lines.join("\n");
 }
 
-function isValidApplySuccess(parsed: Record<string, unknown> | null): boolean {
+function isValidApplySuccess(parsed: Record<string, unknown> | null, context: ApplyResultContext): boolean {
 	return (
 		parsed?.ok === true &&
 		typeof parsed.editsApplied === "number" &&
 		Number.isInteger(parsed.editsApplied) &&
-		parsed.editsApplied >= 0 &&
+		(context.operation === "content_replace_once" ? parsed.editsApplied === 1 : parsed.editsApplied >= 0) &&
 		(parsed.contentChanged === undefined || typeof parsed.contentChanged === "boolean") &&
 		(parsed.warnings === undefined || (Array.isArray(parsed.warnings) && parsed.warnings.every((warning) => typeof warning === "string"))) &&
 		isRawRevision(parsed.revision) &&
@@ -656,21 +727,21 @@ function isValidFileChangeCheckSuccess(parsed: Record<string, unknown> | null): 
 }
 
 function invalidFileChangeCheckText(): string {
-	return "hledit 返回了不兼容的 --check 响应，工具未继续执行写入。请调用 hledit_read_anchors 检查目标文件后再重试。";
+	return "hledit returned an incompatible --check response, so no write was attempted. Call hledit_read_anchors to inspect the target before retrying.";
 }
 
 function invalidApplySuccessText(): string {
-	return `随扩展附带的 hledit 返回了不兼容的成功响应。文件可能已经变化；重试前请调用 hledit_read_anchors 检查当前内容。预期得到 ok:true、有效 revision、非负整数 editsApplied 和有效 updatedAnchors。\n\n${HLEDIT_INSTALL_HINT}`;
+	return `The bundled hledit returned an incompatible success response. The file may have changed; call hledit_read_anchors before retrying. Expected ok:true, a valid revision, non-negative editsApplied, and valid updatedAnchors.\n\n${HLEDIT_INSTALL_HINT}`;
 }
 
 function outcomeUnknownText(run: HleditRun): string {
 	const diagnostic = (run.stdout.trimEnd() || run.stderr.trimEnd()).slice(0, 800);
 	const lines = [
-		"hledit 批次的执行结果未知；文件可能已经写入，禁止直接重试原请求。",
-		"请先调用 hledit_read_anchors 重新读取目标文件。",
+		"The hledit write outcome is unknown; the file may already have changed. Do not retry the original request.",
+		"Call hledit_read_anchors to reread the target file first.",
 	];
 	if (diagnostic) {
-		lines.push(`诊断：${diagnostic}${diagnostic.length === 800 ? "…" : ""}`);
+		lines.push(`Diagnostic: ${diagnostic}${diagnostic.length === 800 ? "…" : ""}`);
 	}
 	return lines.join("\n");
 }
@@ -692,7 +763,7 @@ function formatApplyRunText(
 	if (parsed.ok === false) {
 		return applyError ? formatApplyFailureResult(parsed, context, applyError) : invalidApplySuccessText();
 	}
-	return applySuccessValid ? formatApplyResult(parsed) : invalidApplySuccessText();
+	return applySuccessValid ? formatApplyResult(parsed, context) : invalidApplySuccessText();
 }
 
 export function extractCliSummary(parsed: Record<string, unknown> | null): Record<string, unknown> {
@@ -718,7 +789,7 @@ export function extractCliSummary(parsed: Record<string, unknown> | null): Recor
 
 export function applyFileChangesResult(run: HleditRun, context: ApplyResultContext = {}): TextResult {
 	const parsed = parseRunObject(run);
-	const applySuccessValid = isValidApplySuccess(parsed);
+	const applySuccessValid = isValidApplySuccess(parsed, context);
 	const applyError = parsed ? parseApplyErrorMetadata(parsed, context) : undefined;
 	const disposition: HleditDisposition =
 		run.exitCode !== 0
@@ -741,6 +812,10 @@ export function applyFileChangesResult(run: HleditRun, context: ApplyResultConte
 			...(applyError ? { error: applyError } : {}),
 		},
 	};
+}
+
+export function replaceOnceResult(run: HleditRun, path: string | undefined): TextResult {
+	return applyFileChangesResult(run, { path, operation: "content_replace_once" });
 }
 
 export function fileChangeCheckFailure(run: HleditRun, context: ApplyResultContext = {}): TextResult | undefined {

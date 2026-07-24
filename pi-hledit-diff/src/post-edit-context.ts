@@ -74,10 +74,14 @@ export function parseBatchUpdatedAnchorContext(parsed: Record<string, unknown> |
 
 export function formatBatchUpdatedAnchorContext(context: BatchAnchorContext): PostEditContextResult {
 	const truncated = context.truncated || context.lines.some((line) => line.textTruncated);
+	const lastLine = context.limit === 0 ? undefined : context.offset + context.limit - 1;
+	const scope = lastLine === undefined
+		? "更新后的锚点（局部窗口；文件现为空）："
+		: `更新后的锚点（仅第 ${context.offset}-${lastLine} 行的受影响窗口，不是完整文件）：`;
 	const output = [
-		"更新后的锚点：",
+		scope,
 		context.lines.map((line) => `${line.anchor}:${line.text}`).join("\n") || "（文件为空）",
-		"后续修改请使用这些新锚点，或重新调用 hledit_read_anchors。不要继续使用本次修改前读取的锚点。",
+		"后续修改只能使用此窗口内的新锚点；目标不在窗口内时请重新调用 hledit_read_anchors。不要继续使用本次修改前读取的锚点。",
 	];
 	if (truncated) {
 		output.push(`锚点上下文已截断；请调用 hledit_read_anchors，并使用 offset:${context.offset}、limit:${context.desiredLimit}。`);

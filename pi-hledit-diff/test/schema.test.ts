@@ -52,6 +52,16 @@ test("apply file changes accepts only complete explicit operations", () => {
   );
 });
 
+test("apply file changes accepts multiline string payloads", () => {
+  for (const change of [
+    { operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: "first\nsecond" },
+    { operation: "insert_before", anchor: "2#BBK", lines: "before\nafter" },
+    { operation: "insert_after", anchor: "3#JKL", lines: "after\nnext" },
+  ]) {
+    assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, { path: "src/a.ts", changes: [change] }), true);
+  }
+});
+
 test("apply file changes rejects old operation shapes", () => {
   for (const change of [
     { operation: "replace", anchor: "1#BHJ", lines: ["next"] },

@@ -24,7 +24,7 @@ dist/hledit
 make install LOCAL_BIN="$HOME/bin"
 ```
 
-The `dist/` directory and root `hledit` binary are ignored by git. We do not commit compiled binaries.
+The `dist/` directory and root `hledit` binary are ignored by git. The Windows x64 CLI bundled by `pi-hledit-diff/bin/hledit.exe` is the intentional exception: it is tracked so the Pi extension has a capability-locked runtime binary.
 
 ## Deferred: GoReleaser
 

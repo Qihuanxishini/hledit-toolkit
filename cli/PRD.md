@@ -18,13 +18,14 @@ LLM agents that edit by reproducing old text fail silently on whitespace mismatc
 | `replace-range` | Replace line range by start/end anchors | `hledit replace-range main.go 5#aB3 8#xY7 -` |
 | `insert` | Insert lines before or after an anchor | `hledit insert --after main.go 5#aB3 -` |
 | `batch` | Validate and atomically apply multiple edits; optional read proof covers every consumed source line | `hledit batch main.go` |
+| `replace-once` | Atomically replace a uniquely occurring exact contiguous line block | `hledit replace-once main.go` |
 
-Delete is `replace`/`replace-range` with empty content.
+Delete is `replace`/`replace-range` with empty content. `replace-once` does not accept an empty `new_lines` array; deletion remains an explicit anchored operation.
 
 ## CLI Contract
 
 ```
-hledit <verb> <file> <anchor> [end-anchor] <content-source>
+hledit <verb> [arguments]
 ```
 
 - **content-source**: `-` for stdin, or a file path. Only for write verbs.
@@ -41,6 +42,7 @@ hledit <verb> <file> <anchor> [end-anchor] <content-source>
 6. **Stale detection** — if any anchor doesn't match current content, reject the whole batch and return current-anchor hints so the agent can locate and re-read the affected range.
 7. **Raw-byte revision + read proof** — JSON reads expose a SHA-256 revision; optional batch proof binds that revision to every source line consumed by the request, detecting interior changes that stable endpoint anchors alone would miss.
 8. **Pre-commit revision recheck** — after preparing and syncing the temporary replacement, batch apply re-reads the target and rejects detectable source changes before rename. A very short race remains between this check and the platform replacement call; this is not a linearizable CAS guarantee.
+9. **Unique content precondition** — `replace-once` requires exactly one contiguous `old_lines` match in the loaded snapshot. The same raw-byte revision recheck and atomic write path then protects the selected replacement from detectable concurrent changes.
 
 ## Not In Scope
 

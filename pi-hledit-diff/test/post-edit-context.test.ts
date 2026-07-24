@@ -19,7 +19,7 @@ test("formatBatchUpdatedAnchorContext formats CLI-provided anchors", () => {
 	assert.ok(context);
 
 	assert.deepEqual(formatBatchUpdatedAnchorContext(context), {
-		text: "更新后的锚点：\n1#BHJ:one\n2#BBK:TWO\n后续修改请使用这些新锚点，或重新调用 hledit_read_anchors。不要继续使用本次修改前读取的锚点。",
+		text: "更新后的锚点（仅第 1-2 行的受影响窗口，不是完整文件）：\n1#BHJ:one\n2#BBK:TWO\n后续修改只能使用此窗口内的新锚点；目标不在窗口内时请重新调用 hledit_read_anchors。不要继续使用本次修改前读取的锚点。",
 		offset: 1,
 		limit: 2,
 		truncated: false,

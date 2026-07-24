@@ -211,10 +211,10 @@ function createAnchoredSourceRowsComponent(
 
 function renderFailure(result: TextResult, expanded: boolean, theme: RenderTheme): RenderComponent {
     const rawLines = getText(result).split(/\r?\n/).filter(Boolean);
-    const first = rawLines[0] ?? "工具执行失败。";
+    const first = rawLines[0] ?? "Tool execution failed.";
     const structuredMessage = result.details.error?.message;
-    const reasonLine = rawLines.find((line) => line.startsWith("原因：") || line.startsWith("Message:"));
-    const fallbackReason = reasonLine?.replace(/^(?:原因：|Message:\s*)/, "") ?? rawLines[1];
+    const reasonLine = rawLines.find((line) => line.startsWith("Reason:") || line.startsWith("Message:"));
+    const fallbackReason = reasonLine?.replace(/^(?:Reason:|Message:\s*)/, "") ?? rawLines[1];
     const summary = structuredMessage ?? (fallbackReason ? `${first} ${fallbackReason}` : first);
     return component((width) => {
         if (!expanded) return [truncateToWidth(theme.fg("error", `× ${summary}`), width, "")];
@@ -235,10 +235,10 @@ export function renderHleditCall(
     const grep = kind === "read_anchors" && typeof input.grep === "string" ? input.grep : undefined;
     const range = kind === "read_anchors"
 		? grep ? undefined : formatLineRange(offset ?? 1, (offset ?? 1) + (limit ?? MAX_READ_LIMIT) - 1)
-		: fileChangeLineRanges(input.changes);
+		: kind === "apply_file_changes" ? fileChangeLineRanges(input.changes) : undefined;
     const operationCount = kind === "apply_file_changes" && Array.isArray(input.changes) ? input.changes.length : undefined;
     const grepContext = kind === "read_anchors" && typeof input.context === "number" && Number.isInteger(input.context) && input.context > 0 ? input.context : undefined;
-    const title = theme.fg("toolTitle", theme.bold(kind === "read_anchors" ? "read anchors" : "apply changes"));
+    const title = theme.fg("toolTitle", theme.bold(kind === "read_anchors" ? "read for edit" : kind === "replace_once" ? "replace once" : "apply changes"));
     const styledPath = path ? linkedToolPath(theme.fg("accent", path), path, context) : undefined;
     const target = styledPath ? styledPath + (range ? theme.fg("warning", `:${range}`) : "") : theme.fg("dim", "…");
     let suffix = "";
@@ -344,7 +344,9 @@ export function renderFileChangesResult(
     context: ToolRenderContextLike,
 ): RenderComponent {
     if (options.isPartial) {
-        return component((width) => [truncateToWidth(theme.fg("warning", "正在应用锚点修改…"), width, "")]);
+        const args = isRecord(context.args) ? context.args : {};
+        const contentMatch = "old_lines" in args && "new_lines" in args;
+        return component((width) => [truncateToWidth(theme.fg("warning", contentMatch ? "正在应用精确内容替换…" : "正在应用锚点修改…"), width, "")]);
     }
     if (result.details.disposition !== "succeeded" || context.isError) {
         return renderFailure(result, options.expanded, theme);
@@ -368,6 +370,16 @@ export function renderFileChangesResult(
         });
     }
 
+    const postEditContext = isRecord(result.details.postEditContext) ? result.details.postEditContext : undefined;
+    const windowOffset = typeof postEditContext?.offset === "number" ? postEditContext.offset : undefined;
+    const windowLimit = typeof postEditContext?.limit === "number" ? postEditContext.limit : undefined;
+    const windowLastLine = windowOffset !== undefined && windowLimit !== undefined && windowLimit > 0
+        ? windowOffset + windowLimit - 1
+        : undefined;
+    const updatedAnchorHeading = windowLastLine === undefined
+        ? "更新后的锚点（局部窗口）"
+        : `更新后的锚点（局部窗口：第 ${windowOffset}-${windowLastLine} 行）`;
+
     const updatedAnchors = options.expanded ? parseAnchoredOutput(getText(result)).lines : [];
     const updatedAnchorRows = createAnchoredSourceRowsComponent(updatedAnchors, path, theme);
     if (updatedAnchors.length === 0 && !diffWarning && writeWarnings.length === 0) return diffComponent;
@@ -378,7 +390,7 @@ export function renderFileChangesResult(
         if (updatedAnchors.length > 0) {
             lines.push(
                 "",
-                truncateToWidth(theme.fg("muted", theme.bold("更新后的锚点")), width, ""),
+                truncateToWidth(theme.fg("muted", theme.bold(updatedAnchorHeading)), width, ""),
                 ...updatedAnchorRows.render(width),
             );
         }

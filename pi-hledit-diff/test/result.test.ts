@@ -10,6 +10,7 @@ import {
     parseRunObject,
     readAnchorsResult,
     rejectedToolResult,
+    replaceOnceResult,
     unavailableToolResult,
 } from "../src/result.ts";
 
@@ -65,15 +66,15 @@ test("readAnchorsResult returns actionable structured range errors", () => {
         { path: "src/a.ts", offset: 600, limit: 40 },
     );
 
-    assert.equal(result.content[0]?.text, "起始行 600 超出文件范围（文件共 599 行）。\n建议：请将 offset 设为 1 到 599 之间的整数。\n错误代码：range");
+    assert.equal(result.content[0]?.text, "Starting line 600 is outside the file range (599 total lines).\nSuggestion: Set offset to an integer from 1 through 599.\nError code: range");
     assert.deepEqual(result.details, {
         disposition: "rejected",
         path: "src/a.ts",
         error: {
             code: "range",
-            message: "起始行 600 超出文件范围（文件共 599 行）。",
+            message: "Starting line 600 is outside the file range (599 total lines).",
 			rawMessage: "offset 600 exceeds file length 599",
-            hint: "请将 offset 设为 1 到 599 之间的整数。",
+            hint: "Set offset to an integer from 1 through 599.",
             requestedOffset: 600,
             totalLines: 599,
         },
@@ -87,10 +88,10 @@ test("readAnchorsResult localizes invalid UTF-8 errors", () => {
 		{ path: "src/a.ts", offset: 1, limit: 20 },
 	);
 
-	assert.equal(result.content[0]?.text, "目标文件不是有效的 UTF-8 文本，已拒绝读取以避免损坏原始字节。\n错误代码：encoding");
+	assert.equal(result.content[0]?.text, "The target is not valid UTF-8 text; reading was rejected to protect the original bytes.\nError code: encoding");
 	assert.deepEqual(result.details.error, {
 		code: "encoding",
-		message: "目标文件不是有效的 UTF-8 文本，已拒绝读取以避免损坏原始字节。",
+		message: "The target is not valid UTF-8 text; reading was rejected to protect the original bytes.",
 		rawMessage: "file is not valid UTF-8",
 	});
 });
@@ -121,7 +122,7 @@ test("readAnchorsResult rejects non-sequential unfiltered output", () => {
     );
 
     assert.equal(result.details.disposition, "unavailable");
-    assert.match(result.content[0]?.text ?? "", /不兼容的响应/);
+    assert.match(result.content[0]?.text ?? "", /incompatible response/);
 });
 
 test("readAnchorsResult formats a complete empty filtered result", () => {
@@ -184,10 +185,10 @@ test("applyFileChangesResult warns that an unverified success may have changed t
 	const result = applyFileChangesResult({ stdout: "unexpected output", stderr: "", exitCode: 0 });
 	const text = result.content[0]?.text ?? "";
 
-	assert.match(text, /不兼容的成功响应/);
-	assert.match(text, /文件可能已经变化/);
-	assert.match(text, /调用 hledit_read_anchors/);
-	assert.doesNotMatch(text, /^未执行任何修改/);
+	assert.match(text, /incompatible success response/);
+	assert.match(text, /file may have changed/);
+	assert.match(text, /call hledit_read_anchors/);
+	assert.doesNotMatch(text, /^No write was attempted/);
     assert.deepEqual(result.details, { disposition: "outcome_unknown" });
 	assert.equal(isFailedHleditResult(result.details), true);
 });
@@ -195,8 +196,8 @@ test("applyFileChangesResult warns that an unverified success may have changed t
 test("applyFileChangesResult marks a started failed batch as outcome unknown", () => {
   const result = applyFileChangesResult({ stdout: "hledit timed out", stderr: "", exitCode: 1, started: true });
   assert.equal(result.details.disposition, "outcome_unknown");
-  assert.match(result.content[0]?.text ?? "", /执行结果未知/);
-  assert.match(result.content[0]?.text ?? "", /禁止直接重试/);
+  assert.match(result.content[0]?.text ?? "", /write outcome is unknown/);
+  assert.match(result.content[0]?.text ?? "", /Do not retry/);
 });
 
 test("applyFileChangesResult marks a batch that never started as unavailable", () => {
@@ -213,7 +214,24 @@ test("applyFileChangesResult requires editsApplied and updatedAnchors", () => {
     assert.deepEqual(missing.details, { disposition: "outcome_unknown" });
     assert.deepEqual(invalid.details, { disposition: "outcome_unknown", editsApplied: -1 });
     assert.deepEqual(missingAnchors.details, { disposition: "outcome_unknown", editsApplied: 1 });
-    assert.match(missingAnchors.content[0]?.text ?? "", /有效 updatedAnchors/);
+    assert.match(missingAnchors.content[0]?.text ?? "", /valid updatedAnchors/);
+});
+
+test("replaceOnceResult requires exactly one applied edit", () => {
+	const result = replaceOnceResult({
+		stdout: JSON.stringify({
+			ok: true,
+			revision: REVISION,
+			editsApplied: 0,
+			contentChanged: false,
+			updatedAnchors: { lines: [{ line: 1, anchor: "1#BHJ", text: "unchanged" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false },
+		}),
+		stderr: "",
+		exitCode: 0,
+	}, "src/a.ts");
+
+	assert.equal(result.details.disposition, "outcome_unknown");
+	assert.match(result.content[0]?.text ?? "", /incompatible success response/);
 });
 
 test("fileChangeCheckFailure accepts only an explicit validate-only success", () => {
@@ -230,7 +248,7 @@ test("fileChangeCheckFailure accepts only an explicit validate-only success", ()
 
 	assert.equal(valid, undefined);
 	assert.equal(incompatible?.details.disposition, "unavailable");
-	assert.match(incompatible?.content[0]?.text ?? "", /不兼容的 --check 响应/);
+	assert.match(incompatible?.content[0]?.text ?? "", /incompatible --check response/);
 	assert.match(incompatible?.content[0]?.text ?? "", /hledit_read_anchors/);
 });
 
@@ -242,7 +260,7 @@ test("applyFileChangesResult localizes proof and pre-commit revision rejections"
 	});
 	assert.equal(insufficient.details.disposition, "rejected");
 	assert.equal(insufficient.details.error?.code, "insufficient_read_proof");
-	assert.match(insufficient.content[0]?.text ?? "", /读取证据未覆盖/);
+	assert.match(insufficient.content[0]?.text ?? "", /Read proof does not cover/);
 
 	const changed = applyFileChangesResult({
 		stdout: JSON.stringify({ ok: false, error: "source_changed_before_commit", message: "source changed before commit", currentRevision: REVISION }),
@@ -252,8 +270,8 @@ test("applyFileChangesResult localizes proof and pre-commit revision rejections"
 	assert.equal(changed.details.disposition, "rejected");
 	assert.equal(changed.details.currentRevision, REVISION);
 	assert.equal(changed.details.error?.currentRevision, REVISION);
-	assert.match(changed.content[0]?.text ?? "", /目标文件在提交前发生变化/);
-	assert.match(changed.content[0]?.text ?? "", /^原子批次已拒绝，未写入任何内容/);
+	assert.match(changed.content[0]?.text ?? "", /The target changed before atomic commit/);
+	assert.match(changed.content[0]?.text ?? "", /^The atomic batch was rejected; no content was written/);
 });
 
 test("applyFileChangesResult falls back to rereading when a stale snapshot is unavailable", () => {
@@ -262,13 +280,13 @@ test("applyFileChangesResult falls back to rereading when a stale snapshot is un
         { path: "src/a.ts" },
     );
 
-    assert.match(result.content[0]?.text ?? "", /^原子批次已拒绝，未写入任何内容。\n原因：第 1 项修改使用的锚点已失效。\n错误代码：stale/m);
+    assert.match(result.content[0]?.text ?? "", /^The atomic batch was rejected; no content was written\.\nReason: Change 1 uses a stale anchor\.\nError code: stale/m);
     assert.match(result.content[0]?.text ?? "", /2#BHJ -> 2#BBK/);
-    assert.match(result.content[0]?.text ?? "", /重试前请调用 hledit_read_anchors\(\{ path: "src\/a\.ts", offset: 1, limit: 12 \}\)/);
+    assert.match(result.content[0]?.text ?? "", /Before retrying, call hledit_read_anchors\(\{ path: "src\/a\.ts", offset: 1, limit: 12 \}\)/);
     assert.deepEqual(result.details, {
 		disposition: "rejected",
 		path: "src/a.ts",
-		error: { code: "stale", message: "第 1 项修改使用的锚点已失效。", rawMessage: "edit 0: anchor stale" },
+		error: { code: "stale", message: "Change 1 uses a stale anchor.", rawMessage: "edit 0: anchor stale" },
 	});
     assert.equal(isFailedHleditResult(result.details), true);
 });
@@ -309,14 +327,13 @@ test("applyFileChangesResult exposes validated stale snapshot context", () => {
 	const text = result.content[0]?.text ?? "";
 
 	assert.match(text, /2#BBK:modified/);
-	assert.match(text, /不会自动重试或覆盖并发修改/);
-	assert.match(text, /使用其中的新锚点重新提交/);
-	assert.doesNotMatch(text, /重试前请调用 hledit_read_anchors/);
-	assert.match(text, /字段：start_anchor\/end_anchor/);
-	assert.match(text, /提交的锚点：2#BHJ/);
-	assert.match(text, /当前同号行：2#BBK:modified/);
-	assert.match(text, /显式提交中将 start_anchor\/end_anchor 改为 2#BBK/);
-	assert.match(text, /工具不会自动修正锚点或重试批次/);
+	assert.match(text, /never retries or overwrites concurrent changes/);
+	assert.match(text, /explicitly replace start_anchor\/end_anchor with 2#BBK/);
+	assert.doesNotMatch(text, /Before retrying, call hledit_read_anchors/);
+	assert.match(text, /Field: start_anchor\/end_anchor/);
+	assert.match(text, /Submitted anchor: 2#BHJ/);
+	assert.match(text, /Current line at the same number: 2#BBK:modified/);
+	assert.match(text, /never repairs anchors or retries a batch/);
 	assert.equal(text.match(/2#BHJ -> 2#BBK/g)?.length ?? 0, 0);
 	assert.deepEqual(result.details.error?.staleAnchors, [
 		{
@@ -341,11 +358,11 @@ test("applyFileChangesResult surfaces the hardlink rejection reason", () => {
 		exitCode: 0,
 	});
 
-	assert.match(result.content[0]?.text ?? "", /目标文件存在 2 个 hardlink/);
-	assert.doesNotMatch(result.content[0]?.text ?? "", /preserving link identity/);
+	assert.match(result.content[0]?.text ?? "", /The target has 2 hard links/);
+	assert.match(result.content[0]?.text ?? "", /preserving link identity/);
 	assert.deepEqual(result.details.error, {
 		code: "io",
-		message: "目标文件存在 2 个 hardlink。为同时保证原子性和链接身份，本次写入已拒绝。",
+		message: "The target has 2 hard links. The write was rejected because preserving link identity would require a non-atomic update.",
 		rawMessage,
 	});
 });
@@ -358,10 +375,10 @@ test("applyFileChangesResult localizes unknown batch fields", () => {
 		exitCode: 0,
 	});
 
-	assert.match(result.content[0]?.text ?? "", /批次 JSON 包含不支持的字段 "linez"/);
+	assert.match(result.content[0]?.text ?? "", /batch JSON contains unsupported field "linez"/);
 	assert.deepEqual(result.details.error, {
 		code: "invalid",
-		message: '批次 JSON 包含不支持的字段 "linez"；请检查字段拼写。',
+		message: 'The batch JSON contains unsupported field "linez". Check the field spelling.',
 		rawMessage,
 	});
 });

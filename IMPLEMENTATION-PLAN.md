@@ -64,7 +64,7 @@
 
 ## 4. 必须保持的不变量
 
-1. 插件只公开 `hledit_read_anchors` 与 `hledit_apply_file_changes`。
+1. 插件公开 `hledit_read_anchors`、`hledit_apply_file_changes` 与独立的 `hledit_replace_once`；前两者保持锚点 proof 语义，后者以唯一精确内容为前置条件。
 2. 一次 apply 只修改一个文件，且整批原子成功或原子失败。
 3. 所有模型提交的 anchor 必须来自工具输出，不得生成或模糊匹配。
 4. 插件不直接写目标文件，不绕过 `withFileMutationQueue()`。
@@ -484,7 +484,7 @@ pi-hledit-diff/src/read-evidence.ts
 
 实施：
 
-- [x] CLI capability 健康时始终成对启用 `hledit_read_anchors` 与 `hledit_apply_file_changes`；读取证据只决定 apply 是否允许启动 batch，不决定工具是否可见。
+- [x] CLI capability 健康时始终启用 `hledit_read_anchors`、`hledit_apply_file_changes` 与 `hledit_replace_once`；读取证据只决定 apply 是否允许启动 batch，不决定工具是否可见。
 - [x] 工具集合变化始终保留其他无关 active tools，并在锚点工具可用时继续替代内置 `edit`。
 - [x] `session_tree` 后重新按当前分支恢复读取证据，但不沿用其他分支的证据，也不隐藏 apply。
 - [x] 失败读取不建立写入证明；apply execute 独立验证目标 path 的证据，不能只依赖工具已激活。
@@ -654,7 +654,7 @@ Phase 1～3 只有同时满足以下条件才视为完成：
 - [x] 没有恢复旧工具方言、自动 stale 重试或隐式兼容写路径；
 - [x] 没有声称消除了 D6 中仍存在的极短外部竞争窗口；
 - [x] 最终工作区差异经过人工复审；
-- [x] 未执行正式部署；最终结果必须明确说明。
+- [x] Phase 1～3 原始完成记录未执行正式部署；后续版本的部署与真实窗口验收记录见第 13 节。
 
 ## 12. 复审记录
 
@@ -671,3 +671,13 @@ Phase 1～3 只有同时满足以下条件才视为完成：
 执行完成记录（2026-07-23）：Phase 0～3 已按复审顺序实施；最终验证为 201 个 Go 测试、`go vet ./...`、116 个 Node 测试、TypeScript typecheck、bundled capability 核对和 `git diff --check` 全部通过。正式 Pi 运行目录未部署。
 
 复审后仍保留的已知限制：pre-commit revision recheck 与最终 rename 之间存在极短竞争窗口；在没有经过验证的平台锁定方案前，不宣称线性化 CAS。
+
+## 13. 后续版本记录
+
+### 2026-07-24
+
+- 公开 `lines` 输入扩展为换行分隔字符串或单行字符串数组，执行层仍规范化为 `string[]`。
+- CLI 与插件升级到 `2.1.0`：新增 `contentReplaceOnce:true` 和 `hledit_replace_once` / `replace-once`，严格要求唯一连续精确匹配、原子 revision 复检及零/多匹配零写入。
+- 修复后段编辑的 `updatedAnchors` 局部窗口错误取自文件开头的问题；插件只在完整返回窗口覆盖目标时复用新锚点。
+- 模型可见工具提示与 schema 描述使用英文；工具失败正文与恢复指引使用英文，成功 UI 和警告保留中文。
+- 运行时白名单已同步到 Pi 全局扩展目录，bundled capability、自动回归和真实 Pi 窗口测试均通过。

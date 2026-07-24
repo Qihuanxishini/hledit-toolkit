@@ -9,7 +9,7 @@ import { parseHleditCapabilities, resolveHleditBin, runHledit } from "../src/cli
 import { parseBatchUpdatedAnchorContext } from "../src/post-edit-context.ts";
 
 const EXPECTED_CAPABILITIES = {
-	version: "2.0.0",
+	version: "2.1.0",
 	anchorProtocolV2: true,
 	readRangeMetadata: true,
 	batchInsertAfter: true,
@@ -18,6 +18,7 @@ const EXPECTED_CAPABILITIES = {
 	batchStaleContext: true,
 	batchWireV3: true,
 	batchReadProof: true,
+	contentReplaceOnce: true,
 } as const;
 
 test("resolveHleditBin uses the fixed bundled CLI path", () => {
@@ -39,7 +40,7 @@ test("runHledit reports an already-aborted invocation", async () => {
 
 	const run = await runHledit(["capabilities"], undefined, process.cwd(), controller.signal);
 
-	assert.equal(run.stdout, "hledit 执行已取消。");
+	assert.equal(run.stdout, "hledit execution was cancelled.");
 	assert.equal(run.stderr, "");
 	assert.equal(run.exitCode, 1);
 	assert.equal(typeof run.started, "boolean");
@@ -97,6 +98,35 @@ test("bundled batch emits plugin-compatible updated anchors", async (t) => {
 	assert.ok(updatedAnchors);
 	assert.equal(updatedAnchors.lines.some((line) => line.text === "TWO"), true);
 	assert.equal(await readFile(target, "utf8"), "one\nTWO\nthree\n");
+});
+
+
+test("bundled replace-once replaces one unique block and rejects ambiguity", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-diff-replace-once-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "one\ntwo\nthree\ntwo\n", "utf8");
+
+	const ambiguous = await runHledit(
+		["replace-once", target],
+		JSON.stringify({ old_lines: ["two"], new_lines: ["TWO"] }),
+		directory,
+		undefined,
+	);
+	const ambiguousResult = JSON.parse(ambiguous.stdout) as Record<string, unknown>;
+	assert.deepEqual(ambiguousResult.candidates, [{ startLine: 2, endLine: 2 }, { startLine: 4, endLine: 4 }]);
+	assert.equal(ambiguousResult.error, "content_ambiguous");
+
+	const applied = await runHledit(
+		["replace-once", target],
+		JSON.stringify({ old_lines: ["one", "two", "three"], new_lines: ["ONE", "TWO", "THREE"] }),
+		directory,
+		undefined,
+	);
+	const appliedResult = JSON.parse(applied.stdout) as Record<string, unknown>;
+	assert.equal(appliedResult.ok, true);
+	assert.equal(appliedResult.editsApplied, 1);
+	assert.equal(await readFile(target, "utf8"), "ONE\nTWO\nTHREE\ntwo\n");
 });
 
 test("bundled batch is atomic when a later anchor is stale", async (t) => {

@@ -5,12 +5,15 @@ import { join } from "node:path";
 import test from "node:test";
 
 import piHleditDiffExtension from "../index.ts";
-import { HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_READ_ANCHORS_TOOL } from "../src/active-tools.ts";
+import { HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_READ_ANCHORS_TOOL, HLEDIT_REPLACE_ONCE_TOOL } from "../src/active-tools.ts";
 import type { TextResult } from "../src/result.ts";
 
 type ToolResultListener = (event: { toolName: string; details: unknown }, context: { cwd: string }) => unknown;
 type RegisteredTool = {
 	name: string;
+	label?: string;
+	description?: string;
+	promptSnippet?: string;
 	promptGuidelines?: string[];
 	prepareArguments?: (args: unknown) => unknown;
 	execute: (toolCallId: string, params: never, signal: AbortSignal | undefined, onUpdate: undefined, context: { cwd: string }) => Promise<TextResult>;
@@ -36,27 +39,49 @@ function registerExtensionForTest(): { registeredTools: Map<string, RegisteredTo
 	return { registeredTools, toolResultListener };
 }
 
-test("extension registers both tools and escalates logical hledit failures", () => {
+test("extension registers all editing tools and escalates logical hledit failures", () => {
 	const { registeredTools, toolResultListener } = registerExtensionForTest();
 
-	assert.deepEqual([...registeredTools.keys()], [HLEDIT_READ_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL]);
+	assert.deepEqual([...registeredTools.keys()], [HLEDIT_READ_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_REPLACE_ONCE_TOOL]);
 	const context = { cwd: process.cwd() };
 	assert.deepEqual(toolResultListener({ toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL, details: { disposition: "rejected" } }, context), { isError: true });
 	assert.deepEqual(toolResultListener({ toolName: HLEDIT_READ_ANCHORS_TOOL, details: { disposition: "unavailable" } }, context), { isError: true });
+	assert.deepEqual(toolResultListener({ toolName: HLEDIT_REPLACE_ONCE_TOOL, details: { disposition: "rejected" } }, context), { isError: true });
 	assert.equal(toolResultListener({ toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL, details: { disposition: "succeeded" } }, context), undefined);
 	assert.equal(toolResultListener({ toolName: "bash", details: { disposition: "rejected" } }, context), undefined);
 });
 
-test("registered prompt guidelines name their target tool", () => {
+test("registered tool metadata gives accurate English safeguards", () => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
-	assert.ok(readTool?.promptGuidelines && applyTool?.promptGuidelines);
+	const replaceOnceTool = registeredTools.get(HLEDIT_REPLACE_ONCE_TOOL);
+	assert.ok(readTool?.description && readTool.promptSnippet && readTool.promptGuidelines);
+	assert.ok(applyTool?.description && applyTool.promptSnippet && applyTool.promptGuidelines);
+	assert.ok(replaceOnceTool?.description && replaceOnceTool.promptSnippet && replaceOnceTool.promptGuidelines);
 
+	assert.equal(readTool.label, "Read for Edit");
+	assert.equal(readTool.promptGuidelines.length, 2);
+	assert.equal(applyTool.promptGuidelines.length, 3);
+	assert.equal(replaceOnceTool.promptGuidelines.length, 3);
+	for (const tool of [readTool, applyTool, replaceOnceTool]) {
+		assert.ok(tool.description && tool.promptSnippet && tool.promptGuidelines);
+		assert.doesNotMatch(tool.description, /[\u4E00-\u9FFF]/u);
+		assert.doesNotMatch(tool.promptSnippet, /[\u4E00-\u9FFF]/u);
+		assert.ok(tool.promptGuidelines.every((guideline) => !/[\u4E00-\u9FFF]/u.test(guideline)));
+	}
 	assert.ok(readTool.promptGuidelines.every((guideline) => guideline.includes(HLEDIT_READ_ANCHORS_TOOL)));
 	assert.ok(applyTool.promptGuidelines.every((guideline) => guideline.includes(HLEDIT_APPLY_FILE_CHANGES_TOOL)));
-	assert.ok(readTool.promptGuidelines.some((guideline) => guideline.includes("LN#HASH:text")));
-	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("LN#HASH:text")));
+	assert.ok(replaceOnceTool.promptGuidelines.every((guideline) => guideline.includes(HLEDIT_REPLACE_ONCE_TOOL)));
+	assert.match(readTool.description, /LN#HASH anchors/);
+	assert.ok(readTool.promptGuidelines.some((guideline) => guideline.includes("first read") && guideline.includes("ordinary read")));
+	assert.ok(readTool.promptGuidelines.some((guideline) => guideline.includes("grep") && guideline.includes("local read proof")));
+	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("never overwrite the whole file with write")));
+	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("newline-delimited string")));
+	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("updated-anchor local window")));
+	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("complete, untruncated local window")));
+	assert.ok(replaceOnceTool.promptGuidelines.some((guideline) => guideline.includes("exactly once") && guideline.includes("old_lines")));
+	assert.ok(replaceOnceTool.promptGuidelines.some((guideline) => guideline.includes("empty string") && guideline.includes("not deletion")));
 });
 
 test("apply tool exposes JSON-string argument preparation to Pi", () => {
@@ -74,6 +99,34 @@ test("apply tool exposes JSON-string argument preparation to Pi", () => {
 			changes: [{ operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: ["first", "second"] }],
 		},
 	);
+});
+
+
+test("replace-once tool normalizes multiline text and rejects ambiguity without writing", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const replaceOnceTool = registeredTools.get(HLEDIT_REPLACE_ONCE_TOOL);
+	assert.ok(replaceOnceTool?.prepareArguments);
+	assert.deepEqual(replaceOnceTool.prepareArguments({ path: "target.txt", old_lines: "old\nblock\n", new_lines: "new\nblock" }), {
+		path: "target.txt",
+		old_lines: ["old", "block"],
+		new_lines: ["new", "block"],
+	});
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-replace-once-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "needle\nother\nneedle\n", "utf8");
+	const result = await replaceOnceTool.execute(
+		"replace-once",
+		{ path: "target.txt", old_lines: ["needle"], new_lines: ["next"] } as never,
+		undefined,
+		undefined,
+		{ cwd: directory },
+	);
+	assert.equal(result.details.disposition, "rejected");
+	assert.equal(result.details.error?.code, "content_ambiguous");
+	assert.match(result.content[0]?.text ?? "", /Candidate ranges:[\s\S]*lines 1-1[\s\S]*lines 3-3/);
+	assert.equal(await readFile(target, "utf8"), "needle\nother\nneedle\n");
 });
 
 test("read tool returns structured ranges and actionable EOF errors", async (t) => {
@@ -104,8 +157,8 @@ test("read tool returns structured ranges and actionable EOF errors", async (t) 
 
 	const rangeError = await readTool.execute("read", { path: "target.txt", offset: 4, limit: 1 } as never, undefined, undefined, context);
 	assert.equal(rangeError.details.disposition, "rejected");
-	assert.equal(rangeError.details.error?.message, "起始行 4 超出文件范围（文件共 3 行）。");
-	assert.equal(rangeError.content[0]?.text.split("\n", 1)[0], "起始行 4 超出文件范围（文件共 3 行）。");
+	assert.equal(rangeError.details.error?.message, "Starting line 4 is outside the file range (3 total lines).");
+	assert.equal(rangeError.content[0]?.text.split("\n", 1)[0], "Starting line 4 is outside the file range (3 total lines).");
 });
 
 test("read tool accepts a grep result that exactly fills the byte budget at EOF", async (t) => {
@@ -158,7 +211,7 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 	);
 
 	assert.equal(applyResult.details.disposition, "succeeded");
-	assert.match(applyResult.content[0]?.text ?? "", /更新后的锚点：/);
+	assert.match(applyResult.content[0]?.text ?? "", /更新后的锚点（仅第/);
 	assert.match(applyResult.content[0]?.text ?? "", /TWO/);
 	assert.equal(await readFile(join(directory, "target.txt"), "utf8"), "one\nTWO\nthree\n");
 });
@@ -279,19 +332,19 @@ test("apply tool rejects accidental single-line range expansion with actionable 
 	assert.equal(applyResult.details.disposition, "rejected");
 	assert.deepEqual(applyResult.details.error, {
 		code: "single_line_range_expansion",
-		message: "第 1 项 replace_range 仅覆盖一行且重复原行；请扩大 end_anchor 或改用 insert_after，禁止原样重试。",
-		hint: "replace_range 必须完整覆盖待替换旧代码；仅追加内容时应使用 insert_after 并移除重复的锚点行。",
+		message: "Change 1 uses replace_range for one source line while repeating that source line. Expand end_anchor or use insert_after; do not retry the same request.",
+		hint: "replace_range must cover the complete old code block. For an append-only change, use insert_after and omit the repeated anchor line.",
 		changeNumber: 1,
 		operation: "replace_range",
 		anchor,
 		outputLineCount: 2,
 	});
 	const text = applyResult.content[0]?.text ?? "";
-	assert.match(text, /原子批次已拒绝，未写入任何内容/);
-	assert.match(text, /实际收到：[\s\S]*end_anchor: .*与 start_anchor 相同/);
-	assert.match(text, /禁止使用相同参数重试/);
-	assert.match(text, /当前没有可安全使用的结束锚点/);
-	assert.doesNotMatch(text, /<从最新 hledit_read_anchors/);
+	assert.match(text, /The atomic batch was rejected; no content was written/);
+	assert.match(text, /Received:[\s\S]*end_anchor: .*same as start_anchor/);
+	assert.match(text, /Do not retry with the same parameters/);
+	assert.match(text, /No safe placeholder end anchor is available/);
+	assert.doesNotMatch(text, /<from the latest hledit_read_anchors/);
 	assert.match(text, /"operation": "insert_after"[\s\S]*"lines": \[[\s\S]*"inserted"/);
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
 });
@@ -324,9 +377,9 @@ test("apply tool rejects an anchor that does not match its read proof before sta
 
 	assert.equal(applyResult.details.disposition, "rejected");
 	assert.equal(applyResult.details.error?.code, "insufficient_read_proof");
-	assert.match(applyResult.content[0]?.text ?? "", /提交的锚点与当前分支最近读取到的锚点不一致/);
-	assert.match(applyResult.content[0]?.text ?? "", /请先调用 hledit_read_anchors/);
-	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /single_line_range_expansion|单行 replace_range|当前锚点快照/);
+	assert.match(applyResult.content[0]?.text ?? "", /submitted anchor for line 2 does not match/);
+	assert.match(applyResult.content[0]?.text ?? "", /Call hledit_read_anchors/);
+	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /single_line_range_expansion|Current anchor snapshot/);
 	assert.equal(await readFile(target, "utf8"), original);
 });
 
@@ -366,7 +419,7 @@ test("apply tool suggests merging a nearby delete range without writing", async 
 	assert.equal(applyResult.details.disposition, "rejected");
 	assert.equal(applyResult.details.error?.relatedChangeNumber, 2);
 	assert.equal(applyResult.details.error?.candidateEndAnchor, deleteEndAnchor);
-	assert.match(applyResult.content[0]?.text ?? "", /检测到同批次第 2 项 delete_range 覆盖/);
-	assert.match(applyResult.content[0]?.text ?? "", /移除原 delete_range/);
+	assert.match(applyResult.content[0]?.text ?? "", /Change 2 is a delete_range from/);
+	assert.match(applyResult.content[0]?.text ?? "", /remove the delete_range/);
 	assert.equal(await readFile(target, "utf8"), original);
 });

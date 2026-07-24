@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildFileChangeCheckRequest,
   buildFileChangeRequest,
+  buildReplaceOnceRequest,
   fileChangeLineRanges,
   findSingleLineRangeExpansionIssue,
   formatSingleLineRangeExpansionIssue,
@@ -35,6 +36,14 @@ test("buildFileChangeRequest translates every supported change", () => {
         { op: "insert", pos: "6#MNP", after: true, lines: ["one", "two"] },
       ],
     }),
+  });
+});
+
+
+test("buildReplaceOnceRequest sends canonical exact content preconditions", () => {
+  assert.deepEqual(buildReplaceOnceRequest({ path: "src/a.ts", old_lines: ["old", "block"], new_lines: ["new"] }), {
+    args: ["replace-once", "src/a.ts"],
+    stdin: '{"old_lines":["old","block"],"new_lines":["new"]}',
   });
 });
 
@@ -75,10 +84,10 @@ test("findSingleLineRangeExpansionIssue returns actionable structured guidance",
     insertLines: ["inserted"],
   });
   const text = formatSingleLineRangeExpansionIssue(verifiedIssue(issue));
-  assert.match(text, /实际收到：[\s\S]*end_anchor: 2#BHJ/);
-  assert.match(text, /禁止使用相同参数重试/);
-  assert.match(text, /当前没有可安全使用的结束锚点/);
-  assert.doesNotMatch(text, /<从最新 hledit_read_anchors/);
+  assert.match(text, /Received:[\s\S]*end_anchor: 2#BHJ \(same as start_anchor\)/);
+  assert.match(text, /Do not retry with the same parameters/);
+  assert.match(text, /No safe placeholder end anchor is available/);
+  assert.doesNotMatch(text, /<from the latest hledit_read_anchors/);
   assert.match(text, /"operation": "insert_after"[\s\S]*"lines": [\s\S]*"inserted"/);
 });
 
@@ -100,9 +109,9 @@ test("findSingleLineRangeExpansionIssue points out a nearby delete range", () =>
     endAnchor: "6#MNP",
   });
   const text = formatSingleLineRangeExpansionIssue(verifiedIssue(issue));
-  assert.match(text, /第 2 项 delete_range 覆盖 4#JKL 到 6#MNP/);
+  assert.match(text, /Change 2 is a delete_range from 4#JKL through 6#MNP/);
   assert.match(text, /"end_anchor": "6#MNP"/);
-  assert.match(text, /移除原 delete_range/);
+  assert.match(text, /remove the delete_range/);
 });
 
 test("findSingleLineRangeExpansionIssue does not guess between multiple nearby delete ranges", () => {
@@ -119,7 +128,7 @@ test("findSingleLineRangeExpansionIssue does not guess between multiple nearby d
   );
 
   assert.equal(issue?.nearbyDeleteRange, undefined);
-  assert.doesNotMatch(formatSingleLineRangeExpansionIssue(verifiedIssue(issue)), /检测到同批次/);
+  assert.doesNotMatch(formatSingleLineRangeExpansionIssue(verifiedIssue(issue)), /Change 2 is a delete_range/);
 });
 
 test("findSingleLineRangeExpansionIssue allows explicit ranges, rewrites, and adjacent deletes", () => {

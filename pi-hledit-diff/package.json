@@ -11,9 +11,9 @@
     "check": "npm run typecheck && npm test"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "^0.80.7",
-    "@earendil-works/pi-coding-agent": "^0.80.7",
-    "@earendil-works/pi-tui": "^0.80.7",
+    "@earendil-works/pi-ai": "^0.82.0",
+    "@earendil-works/pi-coding-agent": "^0.82.0",
+    "@earendil-works/pi-tui": "^0.82.0",
     "typebox": "^1.1.38"
   },
   "pi": {
@@ -22,9 +22,9 @@
     ]
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.80.7",
-    "@earendil-works/pi-coding-agent": "0.80.7",
-    "@earendil-works/pi-tui": "0.80.7",
+    "@earendil-works/pi-ai": "0.82.0",
+    "@earendil-works/pi-coding-agent": "0.82.0",
+    "@earendil-works/pi-tui": "0.82.0",
     "@types/node": "^26.1.1",
     "typebox": "1.1.38",
     "typescript": "^7.0.2"

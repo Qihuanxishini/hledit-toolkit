@@ -623,10 +623,10 @@ func TestBatchCheckAndApplyRejectSamePlan(t *testing.T) {
 		},
 		{
 			name:  "physical conflict",
-			lines: []string{"alpha", "bravo", "charlie"},
+			lines: []string{"alpha", "bravo", "charlie", "delta"},
 			request: BatchEditRequest{Edits: []BatchEditOp{
-				{OP: "insert", Pos: formatTag(1, "alpha"), After: true, Lines: []string{"between"}},
-				{OP: "delete", Pos: formatTag(2, "bravo")},
+				{OP: "insert", Pos: formatTag(2, "bravo"), After: true, Lines: []string{"interior"}},
+				{OP: "delete", Pos: formatTag(2, "bravo"), EndPos: formatTag(3, "charlie")},
 			}},
 			code: "invalid",
 		},
@@ -773,9 +773,28 @@ func TestCmdBatchInsertAfter(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects an after insert that conflicts with a replace", func(t *testing.T) {
+	t.Run("accepts an after insert at a replaced line's trailing boundary", func(t *testing.T) {
 		dir := t.TempDir()
 		target := editTestWriteLinesFile(t, dir, "target.txt", "alpha", "bravo", "charlie")
+
+		out := batchTestWriteReq(t, target,
+			BatchEditOp{OP: "insert", Pos: formatTag(2, "bravo"), After: true, Lines: []string{"one"}},
+			BatchEditOp{OP: "replace", Pos: formatTag(2, "bravo"), Lines: []string{"BRAVO"}},
+		)
+
+		var got BatchEditResult
+		batchTestMustUnmarshal(t, out, &got)
+		if !got.OK {
+			t.Fatalf("batch output = %s; want deterministic edge insert to succeed", out)
+		}
+		if lines := batchTestReadLines(t, target); !equalLines(lines, []string{"alpha", "BRAVO", "one", "charlie"}) {
+			t.Fatalf("target lines = %#v; want insert after the replacement output", lines)
+		}
+	})
+
+	t.Run("rejects an after insert inside a replaced range", func(t *testing.T) {
+		dir := t.TempDir()
+		target := editTestWriteLinesFile(t, dir, "target.txt", "alpha", "bravo", "charlie", "delta")
 		originalContent, err := os.ReadFile(target)
 		if err != nil {
 			t.Fatal(err)
@@ -783,7 +802,7 @@ func TestCmdBatchInsertAfter(t *testing.T) {
 
 		out := batchTestWriteReq(t, target,
 			BatchEditOp{OP: "insert", Pos: formatTag(2, "bravo"), After: true, Lines: []string{"one"}},
-			BatchEditOp{OP: "replace", Pos: formatTag(2, "bravo"), Lines: []string{"BRAVO"}},
+			BatchEditOp{OP: "replace", Pos: formatTag(2, "bravo"), EndPos: formatTag(3, "charlie"), Lines: []string{"BLOCK"}},
 		)
 
 		var got BatchEditError
@@ -825,26 +844,38 @@ func TestCmdBatchSinglePassBoundaries(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects an insert at a range boundary", func(t *testing.T) {
+	t.Run("accepts an insert at a range's leading boundary and rejects interior boundaries", func(t *testing.T) {
 		dir := t.TempDir()
-		target := editTestWriteLinesFile(t, dir, "target.txt", "alpha", "bravo", "charlie")
-		originalContent, err := os.ReadFile(target)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		out := batchTestWriteReq(t, target,
+		edgeTarget := editTestWriteLinesFile(t, dir, "edge.txt", "alpha", "bravo", "charlie")
+		edgeOut := batchTestWriteReq(t, edgeTarget,
 			BatchEditOp{OP: "insert", Pos: formatTag(1, "alpha"), After: true, Lines: []string{"before-range"}},
 			BatchEditOp{OP: "delete", Pos: formatTag(2, "bravo")},
 		)
-
-		var got BatchEditError
-		batchTestMustUnmarshal(t, out, &got)
-		if got.OK || got.Error != "invalid" || !strings.Contains(got.Message, "physical boundary") {
-			t.Fatalf("batch output = %#v; want range-boundary rejection", got)
+		var edgeResult BatchEditResult
+		batchTestMustUnmarshal(t, edgeOut, &edgeResult)
+		if !edgeResult.OK {
+			t.Fatalf("batch output = %s; want leading-edge insert to succeed", edgeOut)
 		}
-		if afterContent, err := os.ReadFile(target); err != nil || string(afterContent) != string(originalContent) {
-			t.Fatalf("range-boundary conflict modified target: %q", afterContent)
+		if lines := batchTestReadLines(t, edgeTarget); !equalLines(lines, []string{"alpha", "before-range", "charlie"}) {
+			t.Fatalf("edge target lines = %#v", lines)
+		}
+
+		interiorTarget := editTestWriteLinesFile(t, dir, "interior.txt", "alpha", "bravo", "charlie")
+		originalContent, err := os.ReadFile(interiorTarget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		interiorOut := batchTestWriteReq(t, interiorTarget,
+			BatchEditOp{OP: "insert", Pos: formatTag(2, "bravo"), After: true, Lines: []string{"interior"}},
+			BatchEditOp{OP: "delete", Pos: formatTag(2, "bravo"), EndPos: formatTag(3, "charlie")},
+		)
+		var interiorErr BatchEditError
+		batchTestMustUnmarshal(t, interiorOut, &interiorErr)
+		if interiorErr.OK || interiorErr.Error != "invalid" || !strings.Contains(interiorErr.Message, "interior physical boundary") {
+			t.Fatalf("batch output = %#v; want interior-boundary rejection", interiorErr)
+		}
+		if afterContent, err := os.ReadFile(interiorTarget); err != nil || string(afterContent) != string(originalContent) {
+			t.Fatalf("interior-boundary conflict modified target: %q", afterContent)
 		}
 	})
 

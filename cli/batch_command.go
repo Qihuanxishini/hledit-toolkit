@@ -45,6 +45,7 @@ func batchEditResultFromPlan(plan BatchPlan, revision string) BatchEditResult {
 		EditsApplied:     len(plan.Edits),
 		ContentChanged:   plan.ContentChanged,
 		Revision:         revision,
+		EditDeltas:       plan.EditDeltas,
 	}
 }
 

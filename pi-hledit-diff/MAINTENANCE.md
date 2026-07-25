@@ -47,7 +47,9 @@ CLI 必须返回非空版本，并同时声明：
   "batchStaleContext": true,
   "batchWireV3": true,
   "batchReadProof": true,
-  "contentReplaceOnce": true
+  "contentReplaceOnce": true,
+  "batchEditDeltas": true,
+  "readIgnoreCase": true
 }
 ```
 
@@ -74,11 +76,12 @@ CLI 必须返回非空版本，并同时声明：
   limit?: number,
   grep?: string,
   context?: number,
+  ignore_case?: boolean,
 }
 ```
 
 任务已明确要求修改现有文本文件时，第一次读取预计会修改的目标文件就使用 `hledit_read_anchors`（TUI label 为 `Read for Edit`）；普通 `read` 只用于参考文件或尚未确定修改目标的探索。所有 anchor 必须从输出逐字复制，不得手写或猜测 hash。
-未显式提供 `limit` 时插件默认读取 160 行；公开上限保持 2000，已知位置应使用更小的定向窗口，已知文件但未知位置时可用 `grep` 和 `context` 获取局部 proof。
+未显式提供 `limit` 时插件默认读取 160 行；公开上限保持 2000，已知位置应使用更小的定向窗口，已知文件但未知位置时可用 `grep` 和 `context` 获取局部 proof，`ignore_case: true` 时子串匹配不区分大小写（透传 CLI `--ignore-case`）。`prepareArguments` 会把越界的整数参数钳制进 schema 合法域（`offset < 1` → 1、`limit > 2000` → 2000、`limit < 1` → 移除、`context < 0` → 0）并宽容转换 `"true"/"false"` 布尔字符串；非整数形状仍由严格 schema 拒绝。
 
 插件固定调用 `read-range --json`。成功响应必须包含：
 
@@ -156,7 +159,17 @@ proof 必须覆盖 replace/delete 消费的每个原始行以及 insert 依附�
 
 枚举字段使用 `StringEnum`；变更集合使用严格的判别联合。
 
-CLI capability 健康时，active tools 始终启用 `hledit_read_anchors`、`hledit_apply_file_changes` 与 `hledit_replace_once`，并替换内置 `edit`。工具切换必须保留无关 active tools；`session_tree` 只按当前 branch 重建读取证据，不再改变工具可见性。apply 执行时仍独立验证目标 path 的证据，证据不足则不启动 batch。CLI 不可用时恢复 Pi 内置 `edit`。
+CLI capability 健康时，active tools 始终启用 `hledit_read_anchors`、`hledit_apply_file_changes` 与 `hledit_replace_once`，并替换内置 `edit`。三个工具都声明 `constrainedSampling: { type: "json_schema", strict: "prefer" }`，支持的 provider 在采样阶段强制 schema，不支持的自动回落普通调用。工具切换必须保留无关 active tools；`session_tree` 只按当前 branch 重建读取证据，不再改变工具可见性。apply 执行时仍独立验证目标 path 的证据，证据不足则不启动 batch。CLI 不可用时恢复 Pi 内置 `edit`。
+
+### 证据重映射与更名提示
+
+成功 batch / replace-once 返回的 `editDeltas` 描述每项编辑在原始行坐标系中的消费区间与行数差（纯插入是 `oldEnd === oldStart-1` 的空区间）。证据层用统一规则平移旧证据行：行落在任一消费区间内则丢弃；否则行号累加所有 `oldEnd` 小于该行的 delta。
+
+- 平移行的新锚点由插件内 `anchor-hash.ts`（CLI `computeLineHash` 的复刻）重算；每行必须先用旧行号重现旧锚点（自校验），失败则丢弃该行证据。CLI 的 proof/revision 校验始终兜底，复刻漂移最多造成一次多余拒绝，绝不产生错误写入。
+- hash 复刻与 bundled CLI 的一致性由 golden 对拍测试锁定（`test/anchor-hash.test.ts`）；改动 hash 语义属于锚点协议升级，必须两侧同步并更新对拍。
+- 重映射同时维护"旧锚点 → 新锚点"的更名表（跨多次编辑链式合并）。模型提交编辑前旧锚点时，`selectProof` 先做 what-if 评估：把已验证更名替换进请求后重算 coverage 与端点匹配。全部恢复时拒绝正文只给"替换更名后重提交"的指引并标记 `renamesRestoreProof: true`；更名之外仍有缺口时给出"替换更名 + 定向重读剩余缺口"的复合指引，重读范围按替换后的坐标计算。两种路径都在 `details.error.renamedAnchors` 列出更名；插件不自动改写请求。
+- 缺少 `editDeltas` 的成功响应（不应出现于 bundled CLI）退化为仅窗口证据；no-op（revision 未变）与重映射后的同 revision 窗口按行合并进现有证据，不再把整份证据收缩成 ≤20 行窗口。
+- `unavailable`（CLI 未启动、前置读取失败、ok:false 不兼容拒绝）不再使证据失效——目标从未被写入，revision 校验兜底；`outcome_unknown`、stale 与 `source_changed_before_commit` 仍按原规则失效或替换。
 
 ### `hledit_replace_once`
 
@@ -168,7 +181,7 @@ CLI capability 健康时，active tools 始终启用 `hledit_read_anchors`、`hl
 }
 ```
 
-它只接受当前文件中恰好一次出现的 `old_lines` 连续精确匹配。请求严格拒绝未知字段、尾随 JSON、空 `old_lines` 或空 `new_lines` 数组；空字符串是一个空白行。它不需要 anchor proof，零次匹配返回 `content_not_found`，多次匹配返回 `content_ambiguous`、匹配总数和最多 20 个候选行范围，均不写入。插件在同一 `withFileMutationQueue` 中仅为 diff 读取修改前文本，再调用 CLI；CLI 在原子写入前仍复检 revision。成功响应与 batch 一样包含 `revision`、`contentChanged`、`editsApplied:1` 和局部 `updatedAnchors`，以便重建读取证据。
+它只接受当前文件中恰好一次出现的 `old_lines` 连续精确匹配。请求严格拒绝未知字段、尾随 JSON、空 `old_lines` 或空 `new_lines` 数组；`old_lines` 的空字符串表示一个空白行，`new_lines` 的空字符串被 schema 拒绝——空行用 `[""]` 表达，删除必须走 `hledit_apply_file_changes` 的 `delete_range`。它不需要 anchor proof，零次匹配返回 `content_not_found`，多次匹配返回 `content_ambiguous`、匹配总数和最多 20 个候选行范围，均不写入。插件在同一 `withFileMutationQueue` 中仅为 diff 读取修改前文本，再调用 CLI；CLI 在原子写入前仍复检 revision。成功响应与 batch 一样包含 `revision`、`contentChanged`、`editsApplied:1` 和局部 `updatedAnchors`，以便重建读取证据。
 
 ## 执行路径与一致性边界
 
@@ -183,17 +196,17 @@ withFileMutationQueue(real path)
       → check 成功：返回恢复指导，不执行写入
   → 普通请求：带隐藏 proof 调用 hledit batch
   → CLI plan + pre-commit revision recheck + atomic replace
-  → 验证 ok / revision / editsApplied / updatedAnchors
+  → 验证 ok / revision / editsApplied / editDeltas / updatedAnchors
   → read after
   → diff / patch details
-  → 用新 revision / updatedAnchors 更新证据
+  → 按 editDeltas 重映射区间外旧证据（自校验），再合并新 revision / updatedAnchors 窗口
 ```
 
 约束：
 
 - 插件不直接写目标文件；
 - 普通写入路径只发送一次非 check CLI batch 请求；高风险单行范围路径只发送一次 `batch --check`，同一次工具调用中绝不在 check 后继续真正 batch；
-- CLI 负责 hash 校验、stale、冲突检测、CRLF 保留和原子写入；
+- CLI 负责 hash 校验、stale、冲突检测、行尾保留（整份文件统一为原文件的主导行尾：含任一 CRLF 即全 CRLF，否则 LF；混合行尾文件在内容变更时被整体规范化，属明确接受的行为）和原子写入；
 - 插件只识别语义明确的单行范围重复护栏；恢复指导仅使用已经通过 check 的 anchor，但仍不会猜测、补全、改写或静默丢弃 change；
 - `batch --check` 仅用于高风险护栏的错误优先级与恢复数据验证，不作为正常写入前置步骤；
 - diff/patch 只放入 `details`，不注入 LLM 可见正文；工具错误的 `details` 供 TUI、session 和扩展 hook 使用，模型纠错必须依赖 `content` 中的正文；
@@ -234,19 +247,22 @@ CLI 必须拒绝且不得写入：
 - 空 batch；
 - `insert` 携带 `end_pos` 或空内容；
 - 多个 insert 映射到同一物理 boundary（例如 `insert_after(N)` 与 `insert_before(N+1)`）；
-- insert 的物理 boundary 落入 replace/delete 消费的边界范围；
+- insert 的物理 boundary 落入 replace/delete 消费区间的**内部**（开区间；range 的前后边界上依附锚点行的 insert 是确定的，允许并分别输出在 range 之前/之后）；
 - replace/delete 范围重叠；
 - 任一 stale、越界或非法 anchor。
 
+rebuild、统计与 `editDeltas` 共用同一物理输出排序：按 boundary 升序，同一 boundary 上 insert 先于 range。
+
 ## 成功响应与新锚点
 
-非 check batch 与 replace-once 的成功响应必须包含当前原始字节 `revision`：
+非 check batch 与 replace-once 的成功响应必须包含当前原始字节 `revision` 与非空 `editDeltas`：
 ```json
 {
   "ok": true,
   "revision": "sha256:<64 lowercase hex digits>",
   "editsApplied": 1,
   "contentChanged": true,
+  "editDeltas": [{"oldStart":12,"oldEnd":12,"delta":0}],
   "updatedAnchors": {
     "lines": [{"line":12,"anchor":"12#aB3","text":"updated"}],
     "offset": 10,
@@ -267,6 +283,9 @@ CLI 必须拒绝且不得写入：
 - anchor 行号与 `line` 一致；
 - `text` 与 `textTruncated` 类型正确。
 - `contentChanged` 若存在则必须为 boolean；bundled CLI 始终返回该字段；
+- `linesAdded` / `linesDeleted` 必须是非负整数（bundled CLI 恒输出）；
+- `editDeltas` 必须是非空数组，每项 `oldStart >= 1`、`oldEnd >= oldStart-1`、三个字段均为 safe integer；空区间必须 `delta > 0`，非空区间的 `delta` 不得低于整段删除；各项按物理边界升序且消费区间互不重叠；条数必须等于 `editsApplied`，`delta` 总和必须等于 `linesAdded - linesDeleted`；
+- anchored batch 的 `editDeltas` 与公开请求逐项互核（插件按 `(oldStart, oldEnd)` 双键升序从 changes 复算期望值，等价于 CLI 的物理输出顺序）；replace-once 的单项 delta 必须满足消费区间长度等于 `old_lines` 行数、`delta` 等于 `new_lines - old_lines` 行数差。任何不一致都按不兼容成功响应处理（`outcome_unknown`，要求重读，不得用于证据重映射）；
 - `warnings` 若存在则必须是 string array，并同时进入模型正文与 TUI。
 
 CLI 默认使用修改区域前后 2 行、最多 20 行和约 4096 bytes 的局部窗口；它不是完整文件。发生截断时，插件要求模型用 `hledit_read_anchors` 定向重读。
@@ -297,19 +316,21 @@ CLI 默认使用修改区域前后 2 行、最多 20 行和约 4096 bytes 的局
 已启动但退出、超时、取消、输出超限或响应不完整的 apply 使用 `outcome_unknown`；工具必须先重新读取当前文件，禁止直接重试原请求。没有启动 CLI 的情况使用 `unavailable`。
 
 stale 的 remap 只用于定位，不能自动替换后重试。CLI 能构建同快照窗口时返回 `currentRevision` / `currentAnchors`；插件把它们放入 details，并根据失败 change 列出提交锚点和当前同号行。proof revision mismatch 等无法提供完整窗口的 stale 结果必须重新读取。只有未截断窗口覆盖原定目标全部行时，证据层才可按新 revision 使用其中 anchors；任何路径都不得自动修正、重试或覆盖并发修改。
+证据层的更名提示（`renamedAnchors`）与 stale remap 不同：它只覆盖本插件自己的成功编辑在原子链内验证过的行号平移（内容字节未变），在 `insufficient_read_proof` 拒绝的 details 与正文中列出"旧锚点 → 新锚点"，由模型显式替换后重提交；插件同样不自动改写请求，CLI 校验兜底。更名足以恢复完整 proof 时（`renamesRestoreProof: true`）正文不附加重读建议，避免诱导放弃廉价重提交；更名之外仍有缺口时正文必须同时包含更名列表与剩余缺口的定向重读。
 
 ## 源码结构
 
 | 文件 | 职责 |
 | --- | --- |
-| `index.ts` | 工具注册、mutation 主流程、错误升级和 session 工具激活。 |
+| `index.ts` | 工具注册（含 constrained sampling）、mutation 主流程、错误升级和 session 工具激活。 |
 | `src/schema.ts` | 严格工具 schema 与参数类型。 |
 | `src/file-changes.ts` | 将四种公开 change 映射为 CLI batch JSON，并识别高风险单行范围扩展。 |
-| `src/read-evidence.ts` | 按 canonical path/revision 合并读取证据，生成隐藏 proof，恢复 branch 状态并处理 apply 失效。 |
+| `src/read-evidence.ts` | 按 canonical path/revision 合并读取证据，生成隐藏 proof，基于 `editDeltas` 重映射证据并维护锚点更名表，恢复 branch 状态并处理 apply 失效。 |
+| `src/anchor-hash.ts` | CLI `computeLineHash` 的复刻（含自校验契约），仅用于证据重映射；由 golden 对拍测试锁定。 |
 | `src/active-tools.ts` | 激活锚点工具或恢复 Pi 内置 `edit`。 |
-| `src/read-args.ts` | 归一化读取请求并构造强制 `--json` 的 CLI `read-range` 参数。 |
+| `src/read-args.ts` | 归一化读取请求并构造强制 `--json` 的 CLI `read-range` 参数（含 `--ignore-case`）。 |
 | `src/cli.ts` | 固定 bundled CLI 路径、capability 验证、超时与输出上限。 |
-| `src/result.ts` | 验证结构化读取/编辑响应与 `batch --check` 成功标记，生成模型正文、disposition、actionable error、stale 字段核对信息和 diff details。 |
+| `src/result.ts` | 验证结构化读取/编辑响应、`editDeltas` 与 `batch --check` 成功标记，生成模型正文、disposition、actionable error、stale 字段核对信息和 diff details。 |
 | `src/post-edit-context.ts` | 验证并格式化 CLI 返回的 `updatedAnchors`。 |
 | `src/render.ts` | 工具调用、锚点读取、成功/失败状态与新锚点 TUI 渲染。 |
 | `src/diff-renderer.ts` | 独立自适应 diff 渲染，包括统一/双栏布局、语法高亮、折叠和宽度保护。 |
@@ -350,7 +371,7 @@ capabilities 必须同时返回 `anchorProtocolV2:true`、`readRangeMetadata:tru
 
 ## 真实 Pi 验收
 
-同步运行时白名单后，在新 Pi 窗口或 `/reload` 后先执行 `/hledit-status`，确认 bundled CLI 版本为 `2.1.0` 且 capability 可用。真实窗口验收至少覆盖：
+同步运行时白名单后，在新 Pi 窗口或 `/reload` 后先执行 `/hledit-status`，确认 bundled CLI 版本为 `2.2.1` 且 capability 可用。真实窗口验收至少覆盖：
 
 1. `hledit_read_anchors` 的范围读取和 `grep` / `context` 局部 proof；
 2. `hledit_apply_file_changes` 的单行、换行分隔多行、空白行和成功后局部 `updatedAnchors` 复用；

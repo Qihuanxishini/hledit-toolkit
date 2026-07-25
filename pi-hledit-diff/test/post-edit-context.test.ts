@@ -19,7 +19,7 @@ test("formatBatchUpdatedAnchorContext formats CLI-provided anchors", () => {
 	assert.ok(context);
 
 	assert.deepEqual(formatBatchUpdatedAnchorContext(context), {
-		text: "更新后的锚点（仅第 1-2 行的受影响窗口，不是完整文件）：\n1#BHJ:one\n2#BBK:TWO\n后续修改只能使用此窗口内的新锚点；目标不在窗口内时请重新调用 hledit_read_anchors。不要继续使用本次修改前读取的锚点。",
+		text: "Updated anchors (only the affected window, lines 1-2; not the whole file):\n1#BHJ:one\n2#BBK:TWO\nLater changes inside this window must use these new anchors. Anchors read earlier stay valid for unchanged lines outside the window; if an edit shifted a line number, a rejected call lists the verified renamed anchor to resubmit with. Call hledit_read_anchors only for ranges that were never read or when a failure requests a targeted read.",
 		offset: 1,
 		limit: 2,
 		truncated: false,
@@ -40,7 +40,7 @@ test("formatBatchUpdatedAnchorContext preserves CLI truncation guidance", () => 
 
 	const result = formatBatchUpdatedAnchorContext(context);
 	assert.equal(result.truncated, true);
-	assert.match(result.text, /offset:8、limit:25/);
+	assert.match(result.text, /offset:8 and limit:25/);
 });
 
 test("formatBatchUpdatedAnchorContext formats an empty file", () => {
@@ -49,7 +49,7 @@ test("formatBatchUpdatedAnchorContext formats an empty file", () => {
 	});
 	assert.ok(context);
 
-	assert.match(formatBatchUpdatedAnchorContext(context).text, /（文件为空）/);
+	assert.match(formatBatchUpdatedAnchorContext(context).text, /\(the file is empty\)/);
 });
 
 test("parseBatchUpdatedAnchorContext enforces the full batch contract", () => {

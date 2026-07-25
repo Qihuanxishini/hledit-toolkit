@@ -33,7 +33,7 @@ test("readAnchorsResult exposes actual range, total lines, and continuation", ()
         { path: "src/a.ts", offset: 2, limit: 2 },
     );
 
-    assert.equal(result.content[0]?.text, "2#BHJ:two\n3#BJL:three\n-- 已显示第 2-3 行（文件共 5 行）；继续读取请使用 offset 4 --");
+    assert.equal(result.content[0]?.text, "2#BHJ:two\n3#BJL:three\n-- Showing lines 2-3 of 5; continue with offset 4 --");
     assert.equal(result.details.disposition, "succeeded");
     assert.deepEqual(result.details.read?.requested, { offset: 2, limit: 2 });
     assert.deepEqual(result.details.read?.actual, { firstLine: 2, lastLine: 3, lineCount: 2, totalLines: 5 });
@@ -51,7 +51,7 @@ test("readAnchorsResult marks a completed range as EOF", () => {
         { path: "src/a.ts", offset: 4, limit: 20 },
     );
 
-    assert.match(result.content[0]?.text ?? "", /已显示第 4-5 行（文件共 5 行）；已到文件末尾/);
+    assert.match(result.content[0]?.text ?? "", /Showing lines 4-5 of 5; end of file/);
     assert.equal(result.details.read?.eof, true);
     assert.equal(result.details.read?.nextOffset, undefined);
 });
@@ -108,7 +108,7 @@ test("readAnchorsResult distinguishes source-line truncation from pagination", (
 
     assert.equal(result.details.read?.textTruncated, true);
     assert.equal(result.details.read?.nextOffset, undefined);
-    assert.match(result.content[0]?.text ?? "", /按行续读无法恢复被省略的行内文本/);
+    assert.match(result.content[0]?.text ?? "", /rereading line ranges cannot recover the omitted in-line text/);
 });
 
 test("readAnchorsResult rejects non-sequential unfiltered output", () => {
@@ -131,19 +131,19 @@ test("readAnchorsResult formats a complete empty filtered result", () => {
         { path: "src/a.ts", offset: 1, limit: 20, grep: "missing", context: 2 },
     );
 
-    assert.equal(result.content[0]?.text, '-- 文件共 5 行，未找到包含 "missing" 的内容 --');
+    assert.equal(result.content[0]?.text, '-- No lines containing "missing" were found (5 lines total) --');
     assert.deepEqual(result.details.read?.actual, { lineCount: 0, totalLines: 5 });
     assert.deepEqual(result.details.read?.requested, { offset: 1, limit: 20, grep: "missing", context: 2 });
 });
 
 test("applyFileChangesResult summarizes successful file changes", () => {
     const result = applyFileChangesResult({
-        stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 2, contentChanged: true, firstChangedLine: 3, lastChangedLine: 5, linesAdded: 4, linesDeleted: 1, updatedAnchors: { lines: [{ line: 3, anchor: "3#BHJ", text: "changed" }], offset: 3, limit: 1, desiredLimit: 1, truncated: false } }),
+        stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 2, contentChanged: true, firstChangedLine: 3, lastChangedLine: 5, linesAdded: 4, linesDeleted: 1, editDeltas: [{ oldStart: 3, oldEnd: 3, delta: 2 }, { oldStart: 5, oldEnd: 4, delta: 1 }], updatedAnchors: { lines: [{ line: 3, anchor: "3#BHJ", text: "changed" }], offset: 3, limit: 1, desiredLimit: 1, truncated: false } }),
         stderr: "",
         exitCode: 0,
     });
 
-    assert.equal(result.content[0]?.text, "修改已应用。\n已应用操作：2 项\n影响行：3-5\n行数变化：+4 -1");
+    assert.equal(result.content[0]?.text, "Changes were applied.\nOperations applied: 2\nAffected lines: 3-5\nLine delta: +4 -1");
     assert.deepEqual(result.details, {
         disposition: "succeeded",
         revision: REVISION,
@@ -153,31 +153,32 @@ test("applyFileChangesResult summarizes successful file changes", () => {
         lastChangedLine: 5,
         linesAdded: 4,
         linesDeleted: 1,
+        editDeltas: [{ oldStart: 3, oldEnd: 3, delta: 2 }, { oldStart: 5, oldEnd: 4, delta: 1 }],
     });
     assert.equal(isFailedHleditResult(result.details), false);
 });
 
 test("applyFileChangesResult reports a successful no-op", () => {
     const result = applyFileChangesResult({
-        stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 1, contentChanged: false, firstChangedLine: 3, lastChangedLine: 3, linesAdded: 1, linesDeleted: 1, updatedAnchors: { lines: [{ line: 3, anchor: "3#BHJ", text: "unchanged" }], offset: 3, limit: 1, desiredLimit: 1, truncated: false } }),
+        stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 1, contentChanged: false, firstChangedLine: 3, lastChangedLine: 3, linesAdded: 1, linesDeleted: 1, editDeltas: [{ oldStart: 3, oldEnd: 3, delta: 0 }], updatedAnchors: { lines: [{ line: 3, anchor: "3#BHJ", text: "unchanged" }], offset: 3, limit: 1, desiredLimit: 1, truncated: false } }),
         stderr: "",
         exitCode: 0,
     });
 
-    assert.equal(result.content[0]?.text, "无需修改；原锚点仍有效。");
+    assert.equal(result.content[0]?.text, "No changes were needed; the original anchors are still valid.");
     assert.equal(result.details.disposition, "succeeded");
     assert.equal(result.details.contentChanged, false);
 });
 
 test("applyFileChangesResult preserves post-write durability warnings", () => {
     const result = applyFileChangesResult({
-        stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 1, contentChanged: true, warnings: ["file was replaced, but directory metadata could not be synchronized: access denied"], updatedAnchors: { lines: [{ line: 1, anchor: "1#BHJ", text: "changed" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false } }),
+        stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 1, contentChanged: true, linesAdded: 1, linesDeleted: 1, warnings: ["file was replaced, but directory metadata could not be synchronized: access denied"], editDeltas: [{ oldStart: 1, oldEnd: 1, delta: 0 }], updatedAnchors: { lines: [{ line: 1, anchor: "1#BHJ", text: "changed" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false } }),
         stderr: "",
         exitCode: 0,
     });
 
-    assert.equal(result.content[0]?.text, "修改已应用。\n已应用操作：1 项\n警告：\n- 文件内容已成功替换，但目录元数据未能同步；断电等极端场景下，持久性保证可能降低。");
-    assert.deepEqual(result.details.warnings, ["文件内容已成功替换，但目录元数据未能同步；断电等极端场景下，持久性保证可能降低。"]);
+    assert.equal(result.content[0]?.text, "Changes were applied.\nOperations applied: 1\nLine delta: +1 -1\nWarnings:\n- The file content was replaced, but directory metadata could not be synchronized; durability may be reduced in extreme scenarios such as power loss.");
+    assert.deepEqual(result.details.warnings, ["The file content was replaced, but directory metadata could not be synchronized; durability may be reduced in extreme scenarios such as power loss."]);
     assert.deepEqual(result.details.rawWarnings, ["file was replaced, but directory metadata could not be synchronized: access denied"]);
 });
 
@@ -215,6 +216,107 @@ test("applyFileChangesResult requires editsApplied and updatedAnchors", () => {
     assert.deepEqual(invalid.details, { disposition: "outcome_unknown", editsApplied: -1 });
     assert.deepEqual(missingAnchors.details, { disposition: "outcome_unknown", editsApplied: 1 });
     assert.match(missingAnchors.content[0]?.text ?? "", /valid updatedAnchors/);
+});
+
+test("applyFileChangesResult rejects internally inconsistent editDeltas", () => {
+	const base = {
+		ok: true,
+		revision: REVISION,
+		contentChanged: true,
+		linesAdded: 4,
+		linesDeleted: 1,
+		updatedAnchors: { lines: [{ line: 3, anchor: "3#BHJ", text: "changed" }], offset: 3, limit: 1, desiredLimit: 1, truncated: false },
+	};
+	const run = (payload: Record<string, unknown>) =>
+		applyFileChangesResult({ stdout: JSON.stringify(payload), stderr: "", exitCode: 0 });
+
+	const countMismatch = run({ ...base, editsApplied: 2, editDeltas: [{ oldStart: 3, oldEnd: 3, delta: 3 }] });
+	assert.equal(countMismatch.details.disposition, "outcome_unknown");
+	assert.match(countMismatch.content[0]?.text ?? "", /editDeltas consistent with the request/);
+
+	const sumMismatch = run({ ...base, editsApplied: 1, editDeltas: [{ oldStart: 3, oldEnd: 3, delta: 1 }] });
+	assert.equal(sumMismatch.details.disposition, "outcome_unknown");
+
+	const missingLineCounts = run({
+		ok: true,
+		revision: REVISION,
+		contentChanged: true,
+		editsApplied: 1,
+		editDeltas: [{ oldStart: 3, oldEnd: 3, delta: 3 }],
+		updatedAnchors: base.updatedAnchors,
+	});
+	assert.equal(missingLineCounts.details.disposition, "outcome_unknown");
+
+	const outOfOrder = run({ ...base, editsApplied: 2, editDeltas: [{ oldStart: 5, oldEnd: 6, delta: 2 }, { oldStart: 3, oldEnd: 3, delta: 1 }] });
+	assert.equal(outOfOrder.details.disposition, "outcome_unknown");
+
+	const overlapping = run({ ...base, editsApplied: 2, editDeltas: [{ oldStart: 3, oldEnd: 5, delta: 2 }, { oldStart: 4, oldEnd: 6, delta: 1 }] });
+	assert.equal(overlapping.details.disposition, "outcome_unknown");
+
+	const unsafeInteger = run({ ...base, editsApplied: 1, editDeltas: [{ oldStart: 9007199254740993, oldEnd: 9007199254740993, delta: 3 }] });
+	assert.equal(unsafeInteger.details.disposition, "outcome_unknown");
+});
+
+test("applyFileChangesResult verifies editDeltas against the anchored batch request", () => {
+	const context = {
+		path: "src/a.ts",
+		operation: "anchored_batch" as const,
+		changes: [
+			{ operation: "insert_after" as const, anchor: "2#BHJ", lines: ["x", "y"] },
+			{ operation: "replace_range" as const, start_anchor: "5#BKM", end_anchor: "6#BLN", lines: ["z"] },
+		],
+	};
+	const payload = (editDeltas: Array<Record<string, unknown>>, editsApplied = 2) => JSON.stringify({
+		ok: true,
+		revision: REVISION,
+		editsApplied,
+		contentChanged: true,
+		linesAdded: 3,
+		linesDeleted: 2,
+		editDeltas,
+		updatedAnchors: { lines: [{ line: 3, anchor: "3#BHJ", text: "x" }], offset: 3, limit: 1, desiredLimit: 1, truncated: false },
+	});
+
+	// CLI 物理顺序：insert_after 2 → 空区间 [3,2]；replace [5,6] 1 行 → delta -1。
+	const consistent = applyFileChangesResult(
+		{ stdout: payload([{ oldStart: 3, oldEnd: 2, delta: 2 }, { oldStart: 5, oldEnd: 6, delta: -1 }]), stderr: "", exitCode: 0 },
+		context,
+	);
+	assert.equal(consistent.details.disposition, "succeeded");
+
+	const wrongInterval = applyFileChangesResult(
+		{ stdout: payload([{ oldStart: 3, oldEnd: 2, delta: 2 }, { oldStart: 7, oldEnd: 8, delta: -1 }]), stderr: "", exitCode: 0 },
+		context,
+	);
+	assert.equal(wrongInterval.details.disposition, "outcome_unknown");
+	assert.match(wrongInterval.content[0]?.text ?? "", /editDeltas consistent with the request/);
+
+	const missingChange = applyFileChangesResult(
+		{ stdout: payload([{ oldStart: 3, oldEnd: 2, delta: 1 }], 1), stderr: "", exitCode: 0 },
+		context,
+	);
+	assert.equal(missingChange.details.disposition, "outcome_unknown");
+});
+
+test("replaceOnceResult verifies the single delta against request line counts", () => {
+	const payload = (delta: Record<string, unknown>) => JSON.stringify({
+		ok: true,
+		revision: REVISION,
+		editsApplied: 1,
+		contentChanged: true,
+		linesAdded: 3,
+		linesDeleted: 2,
+		editDeltas: [delta],
+		updatedAnchors: { lines: [{ line: 4, anchor: "4#BHJ", text: "new" }], offset: 4, limit: 1, desiredLimit: 1, truncated: false },
+	});
+	const counts = { oldLineCount: 2, newLineCount: 3 };
+
+	const consistent = replaceOnceResult({ stdout: payload({ oldStart: 4, oldEnd: 5, delta: 1 }), stderr: "", exitCode: 0 }, "src/a.ts", counts);
+	assert.equal(consistent.details.disposition, "succeeded");
+
+	const wrongSpan = replaceOnceResult({ stdout: payload({ oldStart: 4, oldEnd: 4, delta: 1 }), stderr: "", exitCode: 0 }, "src/a.ts", counts);
+	assert.equal(wrongSpan.details.disposition, "outcome_unknown");
+	assert.match(wrongSpan.content[0]?.text ?? "", /editDeltas consistent with the request/);
 });
 
 test("replaceOnceResult requires exactly one applied edit", () => {

@@ -152,6 +152,8 @@ async function runFileChangesWithDiff(
 				rejectedToolResult(formatReadProofFailure(normalizedPath, proofSelection.failure), {
 					code: proofSelection.failure.code,
 					message: proofSelection.failure.message,
+					...(proofSelection.failure.renamedAnchors ? { renamedAnchors: proofSelection.failure.renamedAnchors } : {}),
+					...(proofSelection.failure.renamesRestoreProof ? { renamesRestoreProof: true as const } : {}),
 				}),
 				normalizedPath,
 				evidencePath,
@@ -225,7 +227,10 @@ async function runReplaceOnceWithDiff(
 
 		const request = buildReplaceOnceRequest(normalizedParams);
 		const run = await runHledit(request.args, request.stdin, ctx.cwd, signal);
-		const result = replaceOnceResult(run, normalizedPath);
+		const result = replaceOnceResult(run, normalizedPath, {
+			oldLineCount: normalizedParams.old_lines.length,
+			newLineCount: normalizedParams.new_lines.length,
+		});
 		if (result.details.disposition !== "succeeded") {
 			return attachEvidencePath(result, normalizedPath, evidencePath);
 		}
@@ -254,6 +259,8 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			"Use hledit_read_anchors with offset and limit for a known location; use grep and context to locate an edit in a known file. Only returned lines without source-line truncation establish local read proof. Range edits must cover every original line, and LN#HASH:text anchors must be copied verbatim into hledit_apply_file_changes.",
 		],
 		parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
+		// provider 侧按 schema 约束采样，从源头消除畸形参数；不支持的模型自动回落普通调用。
+		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		prepareArguments: prepareReadAnchorsArguments,
 		renderCall(args: unknown, theme: RenderTheme, context: ToolRenderContextLike) {
 			return renderHleditCall("read_anchors", args, theme, context);
@@ -284,11 +291,12 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		description: "Atomically apply one complete, non-overlapping batch of stale-safe edits to a text file.",
 		promptSnippet: "Atomically apply anchored edits to one file",
 		promptGuidelines: [
-			"For existing text files, use hledit_apply_file_changes; never overwrite the whole file with write. Submit one complete, non-overlapping batch per file. For multiline replacements or inserts, prefer a newline-delimited string for lines; arrays remain suitable for a few sparse lines.",
-			"For hledit_apply_file_changes, copy anchor, start_anchor, and end_anchor verbatim as LN#HASH:text from either the latest hledit_read_anchors result or a successful edit's returned updated-anchor local window. Use post-edit anchors only inside that returned window; do not alter, invent, or submit placeholder anchors.",
-			"If hledit_apply_file_changes returns stale, use returned current anchors only when their complete, untruncated local window covers the whole intended target and range; otherwise call hledit_read_anchors. After truncation, an incomplete snapshot, or insufficient proof, make the targeted read requested by the failure. Never repair anchors automatically, retry unchanged input, or overwrite concurrent changes.",
+			"For existing text files, use hledit_apply_file_changes with one complete, non-overlapping batch per file; never overwrite an existing readable file with write. Exceptions where write is the correct tool: empty files (no lines exist, so no anchors are possible) and files whose lines hledit_read_anchors reports as truncated. For multiline replacements or inserts, prefer a newline-delimited string for lines.",
+			"For hledit_apply_file_changes, copy anchor, start_anchor, and end_anchor verbatim as LN#HASH:text from either the latest hledit_read_anchors result or a successful edit's returned updated-anchor local window. After a successful edit, anchors read earlier stay valid for unchanged lines; if a line number shifted, a rejected call lists the verified renamed anchor to resubmit with. Do not alter, invent, or submit placeholder anchors.",
+			"If hledit_apply_file_changes returns stale, use returned current anchors only when their complete, untruncated local window covers the whole intended target and range; otherwise call hledit_read_anchors. After truncation, an incomplete snapshot, or insufficient proof, make the targeted read requested by the failure. Never repair anchors yourself beyond applying listed verified renames, retry unchanged input, or overwrite concurrent changes.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
+		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		prepareArguments: prepareFileChangeArguments,
 		renderCall(args: unknown, theme: RenderTheme, context: ToolRenderContextLike) {
 			return renderHleditCall("apply_file_changes", args, theme, context);
@@ -318,10 +326,11 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Replace one unique exact text block",
 		promptGuidelines: [
 			"Use hledit_replace_once only when old_lines is the complete, known old text and must occur exactly once in the current file. It uses current exact content as its precondition and does not require hledit_read_anchors first.",
-			"For hledit_replace_once multiline old_lines and new_lines, prefer newline-delimited strings. An empty string is one blank line, not deletion. Zero or multiple matches reject the write.",
+			"For hledit_replace_once multiline old_lines and new_lines, prefer newline-delimited strings. new_lines rejects an empty string: pass [\"\"] to replace the match with one blank line, and use hledit_apply_file_changes with delete_range to delete the block. Zero or multiple matches reject the write.",
 			"After hledit_replace_once is rejected, do not loosen the match or retry unchanged. Use the English candidate-range or reread guidance, then use hledit_read_anchors and an anchored edit when a target needs disambiguation.",
 		],
 		parameters: HLEDIT_REPLACE_ONCE_PARAMS_SCHEMA,
+		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		prepareArguments: prepareReplaceOnceArguments,
 		renderCall(args: unknown, theme: RenderTheme, context: ToolRenderContextLike) {
 			return renderHleditCall("replace_once", args, theme, context);

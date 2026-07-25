@@ -50,6 +50,15 @@ type AnchorContext struct {
 	Truncated    bool       `json:"truncated"`
 }
 
+// EditDelta 描述一项编辑在原始行坐标系中的消费区间与行数变化。
+// 空消费区间（OldEnd == OldStart-1，纯插入）与非空区间共用同一平移规则：
+// 原始行 L 落在 [OldStart, OldEnd] 内表示已被消费；L > OldEnd 时行号累加 Delta。
+type EditDelta struct {
+	OldStart int `json:"oldStart"`
+	OldEnd   int `json:"oldEnd"`
+	Delta    int `json:"delta"`
+}
+
 // BatchEditResult is written to stdout after a successful batch edit.
 // Checked is true when the batch was run with --check (validate-only, no write).
 type BatchEditResult struct {
@@ -61,6 +70,7 @@ type BatchEditResult struct {
 	EditsApplied     int            `json:"editsApplied"`
 	ContentChanged   bool           `json:"contentChanged"`
 	Revision         string         `json:"revision"`
+	EditDeltas       []EditDelta    `json:"editDeltas"`
 	Warnings         []string       `json:"warnings,omitempty"`
 	Checked          bool           `json:"checked,omitempty"`
 	UpdatedAnchors   *AnchorContext `json:"updatedAnchors,omitempty"`
@@ -90,6 +100,8 @@ type CLICapabilities struct {
 	BatchWireV3         bool   `json:"batchWireV3"`
 	BatchReadProof      bool   `json:"batchReadProof"`
 	ContentReplaceOnce  bool   `json:"contentReplaceOnce"`
+	BatchEditDeltas     bool   `json:"batchEditDeltas"`
+	ReadIgnoreCase      bool   `json:"readIgnoreCase"`
 }
 
 // ────────────────────────────────────────────────────────────────────────────

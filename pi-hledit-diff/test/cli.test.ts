@@ -9,7 +9,7 @@ import { parseHleditCapabilities, resolveHleditBin, runHledit } from "../src/cli
 import { parseBatchUpdatedAnchorContext } from "../src/post-edit-context.ts";
 
 const EXPECTED_CAPABILITIES = {
-	version: "2.1.0",
+	version: "2.2.1",
 	anchorProtocolV2: true,
 	readRangeMetadata: true,
 	batchInsertAfter: true,
@@ -19,6 +19,8 @@ const EXPECTED_CAPABILITIES = {
 	batchWireV3: true,
 	batchReadProof: true,
 	contentReplaceOnce: true,
+	batchEditDeltas: true,
+	readIgnoreCase: true,
 } as const;
 
 test("resolveHleditBin uses the fixed bundled CLI path", () => {

@@ -189,7 +189,7 @@ Validation:
 - `replace` and `delete` require `pos.Line <= end_pos.Line` when `end_pos` is provided.
 - `replace` and `delete` reject `after`; `delete` also rejects any present `lines` field.
 - `insert` requires non-empty `lines`, rejects `end_pos`, and inserts before `pos` unless `after:true` is set; a present `after` must be `true`.
-- Inserts that map to the same physical boundary (including `insert_after(N)` and `insert_before(N+1)`) and any insert/replace/delete boundary overlap return `error: "invalid"`.
+- Inserts that map to the same physical boundary (including `insert_after(N)` and `insert_before(N+1)`) return `error: "invalid"`. An insert whose boundary falls strictly inside a replace/delete range's consumed interior also returns `error: "invalid"`; inserts at a range's leading or trailing physical boundary are deterministic (the inserted lines stay attached to their anchor line, emitted before or after the range output) and are accepted.
 - Unknown operations or invalid anchors return `error: "invalid"`; stale anchors return `error: "stale"` with remaps.
 
 Application:
@@ -213,7 +213,7 @@ Reads one strict JSON object from stdin:
 - The decoder rejects unknown fields and trailing JSON values.
 - `old_lines` and `new_lines` must each contain at least one line. An empty string is a blank line; an empty `new_lines` array is rejected so deletion remains an explicit operation.
 - The CLI searches the current logical lines for exact, contiguous `old_lines` matches. Zero matches return `error:"content_not_found"`; multiple matches return `error:"content_ambiguous"`, `matchCount`, and up to 20 `{startLine,endLine}` candidates with `candidatesTruncated:true` when more exist. Both outcomes write nothing.
-- A unique match replaces exactly that range. Success uses the same `contentChanged`, raw-byte revision, bounded `updatedAnchors`, pre-commit revision recheck, and atomic write guarantees as batch. An identical replacement is a no-op but still returns fresh `updatedAnchors`.
+- A unique match replaces exactly that range. Success uses the same `contentChanged`, raw-byte revision, `editDeltas`, bounded `updatedAnchors`, pre-commit revision recheck, and atomic write guarantees as batch; its single delta covers the full matched range with `delta = len(new_lines) - len(old_lines)`. An identical replacement is a no-op but still returns fresh `updatedAnchors`.
 
 ## 3. Hash Algorithm
 
@@ -301,7 +301,7 @@ Single writes include `contentChanged`; successful writes may also include `last
 { "ok": true, "contentChanged": true, "firstChangedLine": 5, "lastChangedLine": 5 }
 ```
 
-Batch writes include the resulting raw-byte `revision`, `contentChanged`, changed-line statistics, `editsApplied`, and a bounded `updatedAnchors` object. `--check` returns the current revision with `checked:true`, does not write, and omits `updatedAnchors`. A no-op batch returns the unchanged revision and fresh `updatedAnchors`, but does not touch the target file.
+Batch writes include the resulting raw-byte `revision`, `contentChanged`, changed-line statistics, `editsApplied`, `editDeltas`, and a bounded `updatedAnchors` object. `editDeltas` lists, in physical output order (boundary ascending, insert before range at the same boundary), each edit's consumed original-line interval and line-count delta; a pure insert is the empty interval `oldEnd == oldStart-1`. `--check` returns the current revision with `checked:true`, does not write, and omits `updatedAnchors`. A no-op batch returns the unchanged revision and fresh `updatedAnchors`, but does not touch the target file.
 
 ```json
 {
@@ -311,6 +311,7 @@ Batch writes include the resulting raw-byte `revision`, `contentChanged`, change
   "firstChangedLine": 5,
   "lastChangedLine": 5,
   "editsApplied": 1,
+  "editDeltas": [{"oldStart":5,"oldEnd":5,"delta":0}],
   "updatedAnchors": {
     "lines": [{"line":5,"anchor":"5#aB3","text":"updated"}],
     "offset": 3,

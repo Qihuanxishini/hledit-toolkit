@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.2.1] — 2026-07-25
+
+### Fixed
+
+- Remove the pre-write sweep of stale `.hledit-*` files introduced in 2.2.0. A name prefix plus age cannot prove that this tool created a file, so the sweep could delete an unrelated `.hledit-*` file — or the edit target itself when its own name starts with `.hledit-` — and then report `source_changed_before_commit` as if nothing had been written. Abandoned temporary files from killed processes are now left in place.
+
+## [2.2.0] — 2026-07-25
+
+### Added
+
+- Return `editDeltas` in successful batch and replace-once responses: per-edit consumed line ranges and line-count deltas in original-file coordinates, enabling callers to remap read evidence for unchanged lines without rereading. Advertise `batchEditDeltas:true`.
+- Add `--ignore-case` to `read`, `read-range`, and `anchors` for case-insensitive grep matching. Advertise `readIgnoreCase:true`.
+- Sweep abandoned `.hledit-*` temporary files older than one hour from the write target's directory before each atomic write, cleaning up residue from killed or timed-out processes.
+
+### Changed
+
+- Allow deterministic inserts at the leading and trailing physical boundaries of a replace/delete range: an insert whose boundary equals the range's leading edge is emitted before the range output, and one at the trailing edge after it. Only inserts mapping to an interior boundary of a consumed range are still rejected as overlapping.
+- Unify rebuild, statistics, and delta ordering on physical boundaries with insert-before-range tie-breaking, so reported change windows always match the rebuilt output.
+
 ## [2.1.0] — 2026-07-24
 
 ### Added

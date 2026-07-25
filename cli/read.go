@@ -57,12 +57,18 @@ func readFileLines(path string) ([]string, bool) {
 
 // filterLines returns 1-indexed line numbers of lines matching the pattern.
 // If pattern is empty, nil is returned (meaning no filtering).
-func filterLines(lines []string, pattern string) []int {
+func filterLines(lines []string, pattern string, ignoreCase bool) []int {
 	if pattern == "" {
 		return nil
 	}
+	if ignoreCase {
+		pattern = strings.ToLower(pattern)
+	}
 	matches := make([]int, 0)
 	for i, line := range lines {
+		if ignoreCase {
+			line = strings.ToLower(line)
+		}
 		if strings.Contains(line, pattern) {
 			matches = append(matches, i+1) // 1-indexed
 		}
@@ -328,14 +334,14 @@ func emitMatchLines(buf *bytes.Buffer, lines []string, matchIdxs []int, offset, 
 	}
 }
 
-func cmdReadPretty(path, grep string, contextN int, jsonOut bool, pretty bool) error {
+func cmdReadPretty(path, grep string, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
 	file, errored := readCommandFile(path)
 	lines := file.Lines
 	if errored {
 		return nil
 	}
 
-	matchIdxs := filterLines(lines, grep)
+	matchIdxs := filterLines(lines, grep, ignoreCase)
 
 	if jsonOut {
 		var readLines []ReadLine
@@ -445,7 +451,7 @@ func emitAnchorMatchLines(buf *bytes.Buffer, lines []string, matchIdxs []int, of
 	}
 }
 
-func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int, jsonOut bool, pretty bool) error {
+func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
 	file, errored := readCommandFile(path)
 	lines := file.Lines
 	if errored {
@@ -464,7 +470,7 @@ func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int,
 		maxLines = 2000
 	}
 
-	matchIdxs := filterLines(lines, grep)
+	matchIdxs := filterLines(lines, grep, ignoreCase)
 
 	if jsonOut {
 		var readLines []ReadLine
@@ -491,7 +497,7 @@ func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int,
 	return nil
 }
 
-func cmdReadRangePretty(path string, offset, limit int, grep string, contextN int, jsonOut bool, pretty bool) error {
+func cmdReadRangePretty(path string, offset, limit int, grep string, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
 	file, errored := readCommandFile(path)
 	lines := file.Lines
 	if errored {
@@ -510,7 +516,7 @@ func cmdReadRangePretty(path string, offset, limit int, grep string, contextN in
 		maxLines = 2000
 	}
 
-	matchIdxs := filterLines(lines, grep)
+	matchIdxs := filterLines(lines, grep, ignoreCase)
 
 	if jsonOut {
 		var readLines []ReadLine

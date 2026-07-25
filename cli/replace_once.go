@@ -159,7 +159,12 @@ func cmdReplaceOnce(path string) error {
 		EditsApplied:     1,
 		ContentChanged:   contentChanged,
 		Revision:         revision,
-		UpdatedAnchors:   buildUpdatedAnchorContext(resultLines, firstChanged, lastChanged, len(request.NewLines)),
+		EditDeltas: []EditDelta{{
+			OldStart: firstChanged,
+			OldEnd:   lastChanged,
+			Delta:    len(request.NewLines) - len(request.OldLines),
+		}},
+		UpdatedAnchors: buildUpdatedAnchorContext(resultLines, firstChanged, lastChanged, len(request.NewLines)),
 	}
 	if !contentChanged {
 		return emitJSON(result)

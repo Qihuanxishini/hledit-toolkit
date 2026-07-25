@@ -28,7 +28,8 @@ type ParsedAnchoredOutput = {
     notices: string[];
 };
 
-const ANCHORED_SOURCE_LINE = /^(\d+#[A-Za-z0-9]+):(.*)$/;
+// hash 字符集必须与 CLI anchorHashAlphabet 一致（URL-safe Base64，含 - 和 _）。
+const ANCHORED_SOURCE_LINE = /^(\d+#[A-Za-z0-9_-]+):(.*)$/;
 const COLLAPSED_ANCHOR_LINES = 12;
 
 function expandHint(): string {

@@ -6,9 +6,10 @@ import {
 	HLEDIT_READ_ANCHORS_TOOL,
 	HLEDIT_REPLACE_ONCE_TOOL,
 } from "./active-tools.ts";
+import { computeAnchorTag } from "./anchor-hash.ts";
 import { lineFromAnchor, type HleditBatchReadProof } from "./file-changes.ts";
 import { parseAnchorContext, type BatchAnchorContext } from "./post-edit-context.ts";
-import type { HleditDetails, HleditReadMetadata } from "./result.ts";
+import { parseEditDeltas, type HleditDetails, type HleditEditDelta, type HleditReadMetadata } from "./result.ts";
 import { MAX_READ_LIMIT } from "./read-args.ts";
 import type { FileChangeParams } from "./schema.ts";
 
@@ -16,14 +17,22 @@ const RAW_REVISION_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 type EvidenceLine = {
 	anchor: string;
+	text: string;
 };
 
 type FileReadEvidence = {
 	revision: string;
 	lines: Map<number, EvidenceLine>;
+	// 上次成功编辑造成的锚点更名（旧锚点 -> 内容未变的新锚点），仅用于失败恢复提示。
+	renames: Map<string, string>;
 };
 
 type ReadProofLineRange = { start: number; end: number };
+
+export type RenamedAnchor = {
+	requested: string;
+	current: string;
+};
 
 export type ReadProofFailure = {
 	code: "insufficient_read_proof";
@@ -31,6 +40,10 @@ export type ReadProofFailure = {
 	requiredLines: number[];
 	missingLines: number[];
 	suggestedReadRange?: ReadProofLineRange;
+	renamedAnchors?: RenamedAnchor[];
+	// true 表示把列出的更名全部替换进请求即可恢复完整 proof；缺席时更名之外仍有
+	// 缺口，恢复正文必须同时给出定向重读指引。
+	renamesRestoreProof?: true;
 };
 
 export type ReadProofSelection =
@@ -172,7 +185,96 @@ export async function resolveReadEvidencePath(cwd: string, path: string): Promis
 	}
 }
 
+// 原始行 L 落在任一消费区间内则该行已被编辑（返回 undefined）；否则叠加所有
+// 位于其前方的编辑行数差得到新行号。空区间（oldEnd === oldStart-1）表示纯插入，
+// 统一规则 "L > oldEnd 时累加 delta" 对两类编辑同时成立。
+function remapLineNumber(line: number, deltas: HleditEditDelta[]): number | undefined {
+	let shift = 0;
+	for (const delta of deltas) {
+		if (line >= delta.oldStart && line <= delta.oldEnd) return undefined;
+		if (line > delta.oldEnd) shift += delta.delta;
+	}
+	const remapped = line + shift;
+	return remapped >= 1 ? remapped : undefined;
+}
+
+function renamedEndpointAnchors(renames: Map<string, string>, endpointAnchors: Map<number, string>): RenamedAnchor[] {
+	const renamed: RenamedAnchor[] = [];
+	for (const requestedAnchor of new Set(endpointAnchors.values())) {
+		const current = renames.get(requestedAnchor);
+		if (current) renamed.push({ requested: requestedAnchor, current });
+	}
+	return renamed;
+}
+
+function substituteRenamedAnchors(changes: FileChangeParams["changes"], renames: Map<string, string>): FileChangeParams["changes"] {
+	return changes.map((change) => {
+		if (change.operation === "insert_before" || change.operation === "insert_after") {
+			return { ...change, anchor: renames.get(change.anchor) ?? change.anchor };
+		}
+		return {
+			...change,
+			start_anchor: renames.get(change.start_anchor) ?? change.start_anchor,
+			end_anchor: renames.get(change.end_anchor) ?? change.end_anchor,
+		};
+	});
+}
+
+type EvidenceProofEvaluation =
+	| { anchors: string[] }
+	| { failure: { message: string; missingLines: number[]; suggestedReadRange?: ReadProofLineRange } };
+
+// 对同一份证据评估一次请求的逐行 coverage 与端点锚点匹配；selectProof 用它分别
+// 评估原始请求与"更名替换后"的 what-if 请求。
+function evaluateProofAgainstEvidence(
+	requested: RequestedChangeEvidence,
+	evidenceLines: Map<number, EvidenceLine>,
+	renames: Map<string, string>,
+): EvidenceProofEvaluation {
+	const coverage = collectProofCoverage(requested.ranges, evidenceLines);
+	if (coverage.missingLines.length > 0) {
+		return {
+			failure: {
+				message: `Read proof is missing lines ${coverage.missingLines.join(", ")}${coverage.missingLines.length === MAX_REPORTED_MISSING_LINES ? " (only the first 20 are listed)" : ""}.`,
+				missingLines: coverage.missingLines,
+				...(coverage.firstMissingRange ? { suggestedReadRange: coverage.firstMissingRange } : {}),
+			},
+		};
+	}
+	for (const [line, requestedAnchor] of requested.endpointAnchors) {
+		if (evidenceLines.get(line)?.anchor !== requestedAnchor) {
+			return {
+				failure: {
+					message: renames.has(requestedAnchor)
+						? `The submitted anchor ${requestedAnchor} predates this file's last edit; the same unchanged content now has a shifted line number.`
+						: `The submitted anchor for line ${line} does not match the most recently read anchor on this branch.`,
+					missingLines: [line],
+					suggestedReadRange: { start: line, end: line },
+				},
+			};
+		}
+	}
+	return { anchors: coverage.coveredLines.map((line) => evidenceLines.get(line)!.anchor) };
+}
+
 export function formatReadProofFailure(path: string, failure: ReadProofFailure): string {
+	const lines = [
+		"Valid read proof does not cover every source line required by this change. Batch was not started and no content was written.",
+		`Reason: ${failure.message}`,
+	];
+	const renames = failure.renamedAnchors ?? [];
+	if (renames.length > 0) {
+		lines.push(
+			"Verified anchor renames from this file's last edit (content unchanged, line numbers shifted):",
+			...renames.map((rename) => `- ${rename.requested} -> ${rename.current}`),
+		);
+		// 更名足以恢复 proof 时不给重读指引：并列的读取建议会诱导模型放弃廉价重提交。
+		if (failure.renamesRestoreProof) {
+			lines.push("Resubmit after replacing every renamed anchor with its current form, or reread the range if the intended target is unclear.");
+			return lines.join("\n");
+		}
+		lines.push("Replacing the renamed anchors is required but not sufficient; the remaining lines below also need the targeted read before resubmitting.");
+	}
 	const targetLines = failure.missingLines.length > 0 ? failure.missingLines : failure.requiredLines;
 	const firstLine = failure.suggestedReadRange?.start ?? targetLines[0] ?? 1;
 	const lastLine = failure.suggestedReadRange?.end ?? targetLines[targetLines.length - 1] ?? firstLine;
@@ -183,11 +285,8 @@ export function formatReadProofFailure(path: string, failure: ReadProofFailure):
 	const readInstruction = lastSuggestedLine < lastLine
 		? `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: ${limit} }) first, then continue with nextOffset until line ${lastLine} is covered before submitting the change.`
 		: `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: ${limit} }) first, confirm the complete target range, then submit the change.`;
-	return [
-		"Valid read proof does not cover every source line required by this change. Batch was not started and no content was written.",
-		`Reason: ${failure.message}`,
-		readInstruction,
-	].join("\n");
+	lines.push(readInstruction);
+	return lines.join("\n");
 }
 
 export class ReadEvidenceStore {
@@ -207,32 +306,86 @@ export class ReadEvidenceStore {
 		// 过滤读取可以贡献离散行；范围是否完整由 selectProof 统一判断。
 		const next = evidence?.revision === read.revision
 			? evidence
-			: { revision: read.revision, lines: new Map<number, EvidenceLine>() };
+			: { revision: read.revision, lines: new Map<number, EvidenceLine>(), renames: new Map<string, string>() };
 		for (const line of read.lines) {
-			if (!line.textTruncated) next.lines.set(line.line, { anchor: line.anchor });
+			if (!line.textTruncated) next.lines.set(line.line, { anchor: line.anchor, text: line.text });
 		}
 		if (next.lines.size > 0) this.files.set(path, next);
 		else this.files.delete(path);
 	}
 
 	recordUpdatedAnchors(path: string, revision: string, context: BatchAnchorContext): void {
-		this.files.delete(path);
-		if (!validRevision(revision) || context.lines.length === 0) return;
-		const lines = new Map<number, EvidenceLine>();
-		for (const line of context.lines) {
-			if (!line.textTruncated) lines.set(line.line, { anchor: line.anchor });
+		if (!validRevision(revision) || context.lines.length === 0) {
+			this.files.delete(path);
+			return;
 		}
-		if (lines.size > 0) this.files.set(path, { revision, lines });
+		const existing = this.files.get(path);
+		// revision 未变时（no-op 提交、重映射后的同版合并、连续 stale 的同快照窗口）
+		// 旧证据字节级精确有效，合并窗口而不是把整份证据收缩成 ≤20 行窗口。
+		const sameRevision = existing?.revision === revision;
+		const lines = sameRevision ? existing.lines : new Map<number, EvidenceLine>();
+		const renames = sameRevision ? existing.renames : new Map<string, string>();
+		for (const line of context.lines) {
+			if (!line.textTruncated) lines.set(line.line, { anchor: line.anchor, text: line.text });
+		}
+		if (lines.size > 0) this.files.set(path, { revision, lines, renames });
+		else this.files.delete(path);
+	}
+
+	// 成功编辑后把变更区间之外的证据行平移到新行号：内容未变，行号由 editDeltas
+	// 唯一确定；锚点用本地 hash 复刻重算，且必须先重现旧锚点（自校验）才可信。
+	// 同时维护旧锚点 -> 新锚点的更名表，供 selectProof 的失败恢复提示使用。
+	private remapEvidenceForApply(path: string, newRevision: string, deltas: HleditEditDelta[] | undefined): void {
+		const evidence = this.files.get(path);
+		if (!evidence || evidence.revision === newRevision) return;
+		if (!deltas) {
+			this.files.delete(path);
+			return;
+		}
+		const lines = new Map<number, EvidenceLine>();
+		const renames = new Map<string, string>();
+		for (const [line, info] of evidence.lines) {
+			const newLine = remapLineNumber(line, deltas);
+			if (newLine === undefined) continue;
+			if (newLine === line) {
+				lines.set(newLine, info);
+				continue;
+			}
+			if (computeAnchorTag(line, info.text) !== info.anchor) continue;
+			const anchor = computeAnchorTag(newLine, info.text);
+			lines.set(newLine, { anchor, text: info.text });
+			if (anchor !== info.anchor) renames.set(info.anchor, anchor);
+		}
+		// 别名链：更早的名字指向最新名字；目标行消失则丢弃对应别名。
+		const survivingAnchors = new Set([...lines.values()].map((line) => line.anchor));
+		for (const [older, previous] of evidence.renames) {
+			const latest = renames.get(previous) ?? (survivingAnchors.has(previous) ? previous : undefined);
+			if (latest && latest !== older) renames.set(older, latest);
+		}
+		if (lines.size === 0) {
+			this.files.delete(path);
+			return;
+		}
+		this.files.set(path, { revision: newRevision, lines, renames });
 	}
 
 	private recordApplyResult(path: string, details: HleditDetails): void {
 		if (details.disposition === "succeeded" && validRevision(details.revision)) {
 			const updatedAnchors = parseAnchorContext(details.updatedAnchors);
-			if (updatedAnchors) this.recordUpdatedAnchors(path, details.revision, updatedAnchors);
-			else this.invalidate(path);
+			if (!updatedAnchors) {
+				this.invalidate(path);
+				return;
+			}
+			this.remapEvidenceForApply(path, details.revision, parseEditDeltas(details.editDeltas));
+			this.recordUpdatedAnchors(path, details.revision, updatedAnchors);
 			return;
 		}
 
+		// unavailable = CLI 未启动、前置读取失败或 ok:false 的不兼容拒绝，目标从未被本次调用写入；
+		// 即使证据碰巧过期，提交时的 revision 校验也会兜底，保留证据可省一轮重读。
+		if (details.disposition === "unavailable") {
+			return;
+		}
 		const code = details.error?.code;
 		if (details.disposition === "rejected" && code !== "stale" && code !== "source_changed_before_commit") {
 			return;
@@ -274,39 +427,48 @@ export class ReadEvidenceStore {
 			};
 		}
 
-		const coverage = collectProofCoverage(requested.ranges, evidence.lines);
-		if (coverage.missingLines.length > 0) {
+		const direct = evaluateProofAgainstEvidence(requested, evidence.lines, evidence.renames);
+		if ("anchors" in direct) {
+			return { proof: { revision: evidence.revision, anchors: direct.anchors } };
+		}
+
+		const renamedAnchors = renamedEndpointAnchors(evidence.renames, requested.endpointAnchors);
+		const failure: ReadProofFailure = {
+			code: "insufficient_read_proof",
+			message: direct.failure.message,
+			requiredLines,
+			missingLines: direct.failure.missingLines,
+			...(direct.failure.suggestedReadRange ? { suggestedReadRange: direct.failure.suggestedReadRange } : {}),
+		};
+		if (renamedAnchors.length === 0) {
+			return { failure };
+		}
+
+		// what-if：把已验证更名替换进请求后重评。全部恢复 → 纯更名指引（一次重提交
+		// 即可）；仍有缺口 → 复合指引，且定向重读指向替换后的剩余缺口，而不是已被
+		// 更名解释的旧区间。
+		const substituted = requestedChangeEvidence(substituteRenamedAnchors(changes, evidence.renames));
+		const substitutedEvaluation = substituted && substituted.ranges.length > 0
+			? evaluateProofAgainstEvidence(substituted, evidence.lines, evidence.renames)
+			: undefined;
+		if (substitutedEvaluation && "anchors" in substitutedEvaluation) {
+			return { failure: { ...failure, renamedAnchors, renamesRestoreProof: true } };
+		}
+		if (substitutedEvaluation) {
 			return {
 				failure: {
 					code: "insufficient_read_proof",
-					message: `Read proof is missing lines ${coverage.missingLines.join(", ")}${coverage.missingLines.length === MAX_REPORTED_MISSING_LINES ? " (only the first 20 are listed)" : ""}.`,
+					message: direct.failure.message,
 					requiredLines,
-					missingLines: coverage.missingLines,
-					...(coverage.firstMissingRange ? { suggestedReadRange: coverage.firstMissingRange } : {}),
+					missingLines: substitutedEvaluation.failure.missingLines,
+					...(substitutedEvaluation.failure.suggestedReadRange
+						? { suggestedReadRange: substitutedEvaluation.failure.suggestedReadRange }
+						: {}),
+					renamedAnchors,
 				},
 			};
 		}
-
-		for (const [line, requestedAnchor] of requested.endpointAnchors) {
-			if (evidence.lines.get(line)?.anchor !== requestedAnchor) {
-				return {
-					failure: {
-						code: "insufficient_read_proof",
-						message: `The submitted anchor for line ${line} does not match the most recently read anchor on this branch.`,
-						requiredLines,
-						missingLines: [line],
-						suggestedReadRange: { start: line, end: line },
-					},
-				};
-			}
-		}
-
-		return {
-			proof: {
-				revision: evidence.revision,
-				anchors: coverage.coveredLines.map((line) => evidence.lines.get(line)!.anchor),
-			},
-		};
+		return { failure: { ...failure, renamedAnchors } };
 	}
 
 	restoreFromBranch(ctx: ExtensionContext): void {

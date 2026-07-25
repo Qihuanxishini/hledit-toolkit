@@ -16,12 +16,21 @@
 - 使用 v2 `LN#HASH`（三位 URL-safe Base64 hash）锚点检测读取后发生的文件变化，拒绝 stale 修改。
 - 一次 batch 原子提交同一文件中的多个非冲突修改；`replace-once` 仅在旧内容块在当前文件中唯一时原子替换它。
 - 单次重建文件，避免多 edit 场景下反复复制整份内容。
-- batch 或 replace-once 成功后直接返回 `updatedAnchors`，无需再次启动 `read-range`。
+- batch 或 replace-once 成功后直接返回 `updatedAnchors` 与 `editDeltas`，无需再次启动 `read-range`；插件用 `editDeltas` 把未受影响行的读取证据平移到新行号，顺序多次编辑同一文件通常不再需要中间重读。
+- 模型提交编辑前的旧锚点时，插件在拒绝正文中直接列出经验证的更名锚点（内容未变、仅行号平移），一次廉价重提交即可恢复；更名不足以覆盖全部缺口时，同时给出剩余范围的定向重读指引。
 - JSON 读取返回基于原始字节的 SHA-256 revision；插件维护连续或 grep 离散的完整已读行集合，并将隐藏 proof 注入 anchored batch。
 - batch 与 replace-once 都在原子替换前复检 revision，检测规划期间的大部分外部修改；复检与 rename 之间仍保留极短竞争窗口。
 - CLI 健康时，三个编辑工具始终替代内置 `edit`；apply 仍独立检查当前 branch 的读取证据，replace-once 以唯一精确内容为前置条件。
-- 插件工具参数采用严格 schema，并将 logical failure 转换为真正的 Pi 工具错误。
+- 插件工具参数采用严格 schema 并启用 provider 侧 constrained sampling（`strict: prefer`，不支持的模型自动回落），将 logical failure 转换为真正的 Pi 工具错误。
+- `read` / `read-range` / `anchors` 支持 `--ignore-case` 子串过滤；插件 `hledit_read_anchors` 暴露 `ignore_case` 参数。
+- replace/delete 范围的前后物理边界上允许位置确定的 insert（内容依附其锚点行）；落入范围内部边界的 insert 仍整批拒绝。
 - 插件内置主题自适应的锚点预览与统一/双栏 diff 渲染，不依赖其他显示插件。
+
+### 行尾与编码行为
+
+- revision 基于原始字节，BOM、CRLF/LF 与末尾换行差异都会改变 revision。
+- 写入时整份文件使用统一行尾：只要原文件包含至少一个 CRLF，重建后所有行都使用 CRLF，否则使用 LF。混合行尾文件在任何内容变更时会被整体规范化——这是当前明确接受的行为，如需保留混合行尾请勿使用本工具编辑该文件。
+- 孤立 `\r`（无 `\n`）不被视为行分隔符；UTF-8 BOM 与末尾换行的有无在写入时保持原状。
 
 ## 开发验证
 
@@ -55,11 +64,13 @@ npm run check
   "batchStaleContext": true,
   "batchWireV3": true,
   "batchReadProof": true,
-  "contentReplaceOnce": true
+  "contentReplaceOnce": true,
+  "batchEditDeltas": true,
+  "readIgnoreCase": true
 }
 ```
 
-读取结果必须携带 `revision`、`totalLines` 和严格截断元数据。连续范围或完整返回的 grep 行都可形成局部写入证据；revision 与已读 anchors 保持在内部，不加入模型工具 schema。batch wire v3 中 `delete` 必须省略 `lines`，旧 `delete.lines:[]` 形状直接拒绝。成功 batch 与 replace-once 响应必须携带新 `revision` 与合法的 `updatedAnchors`；batch 失败可按需返回 `currentRevision` 和同一快照的 `currentAnchors`，replace-once 的未命中或歧义匹配均零写入。插件不保留旧 CLI、旧 wire、无 proof batch 写入或自动 stale 重试路径。
+读取结果必须携带 `revision`、`totalLines` 和严格截断元数据。连续范围或完整返回的 grep 行都可形成局部写入证据；revision 与已读 anchors 保持在内部，不加入模型工具 schema。batch wire v3 中 `delete` 必须省略 `lines`，旧 `delete.lines:[]` 形状直接拒绝。成功 batch 与 replace-once 响应必须携带新 `revision`、合法的 `updatedAnchors` 与非空且与请求一致的 `editDeltas`（插件逐项互核，内部矛盾按结果未知处理）；batch 失败可按需返回 `currentRevision` 和同一快照的 `currentAnchors`，replace-once 的未命中或歧义匹配均零写入。插件不保留旧 CLI、旧 wire、无 proof batch 写入或自动 stale 重试路径。
 
 ## 开发仓库与运行目录
 

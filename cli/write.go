@@ -84,6 +84,9 @@ func (replacement *preparedAtomicReplacement) commit() (warning string, err erro
 }
 
 // prepareAtomicReplacement 在真实目标旁完成临时文件写入与同步，但不替换目标。
+// [喵喵喵]: 不清理目录中滞留的 .hledit-* 文件——前缀+mtime 无法证明文件归属，
+// 曾导致名为 .hledit-* 的真实目标在编辑前被误删（数据丢失）；孤儿临时文件残留是
+// 可接受的代价，任何恢复清理的方案都必须能证明文件确由本工具创建。(2026-07-25)
 func prepareAtomicReplacement(path string, content []byte) (*preparedAtomicReplacement, error) {
 	targetPath, err := resolveAtomicWriteTarget(path)
 	if err != nil {

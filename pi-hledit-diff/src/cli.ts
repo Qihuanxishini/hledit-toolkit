@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const EXTENSION_ROOT = fileURLToPath(new URL("../", import.meta.url));
 
-export const HLEDIT_INSTALL_HINT = `This extension requires the bundled Windows x64 hledit CLI with v2 anchors, structured range reads, strict batch wire v3, read proof, batch validation, insert-after support, updated-anchor contexts, and content replace-once support.
+export const HLEDIT_INSTALL_HINT = `This extension requires the bundled Windows x64 hledit CLI with v2 anchors, structured range reads, strict batch wire v3, read proof, batch validation, insert-after support, updated-anchor contexts, edit deltas, case-insensitive grep, and content replace-once support.
 Resync or reinstall pi-hledit-diff, then confirm that bin/hledit.exe exists.`;
 
 export const HLEDIT_RUN_TIMEOUT_MS = 30_000;
@@ -28,6 +28,8 @@ export type HleditCapabilities = {
 	batchWireV3: true;
 	batchReadProof: true;
 	contentReplaceOnce: true;
+	batchEditDeltas: true;
+	readIgnoreCase: true;
 };
 
 export function parseHleditCapabilities(run: HleditRun): HleditCapabilities | undefined {
@@ -52,6 +54,8 @@ export function parseHleditCapabilities(run: HleditRun): HleditCapabilities | un
 			record.batchReadProof !== true ||
 			record.batchWireV3 !== true ||
 			record.contentReplaceOnce !== true ||
+			record.batchEditDeltas !== true ||
+			record.readIgnoreCase !== true ||
 			record.anchorProtocolV2 !== true
 		) {
 			return undefined;
@@ -67,6 +71,8 @@ export function parseHleditCapabilities(run: HleditRun): HleditCapabilities | un
 			batchWireV3: true,
 			batchReadProof: true,
 			contentReplaceOnce: true,
+			batchEditDeltas: true,
+			readIgnoreCase: true,
 		};
 	} catch {
 		return undefined;

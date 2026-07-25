@@ -6,9 +6,33 @@ import { prepareFileChangeArguments, prepareReadAnchorsArguments } from "../src/
 import { HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, HLEDIT_READ_ANCHORS_PARAMS_SCHEMA } from "../src/schema.ts";
 
 test("prepareReadAnchorsArguments converts quoted read integers", () => {
-  const prepared = prepareReadAnchorsArguments({ path: "src/a.ts", offset: "3", limit: "20", context: "0" });
-  assert.deepEqual(prepared, { path: "src/a.ts", offset: 3, limit: 20, context: 0 });
+  const prepared = prepareReadAnchorsArguments({ path: "src/a.ts", offset: "3", limit: "20", context: "0", ignore_case: "true" });
+  assert.deepEqual(prepared, { path: "src/a.ts", offset: 3, limit: 20, context: 0, ignore_case: true });
   assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, prepared), true);
+});
+
+test("prepareReadAnchorsArguments clamps out-of-range integers into the schema domain", () => {
+  const prepared = prepareReadAnchorsArguments({ path: "src/a.ts", offset: 0, limit: 5000, context: -2 });
+  assert.equal(prepared.offset, 1);
+  assert.equal(prepared.limit, 2000);
+  assert.equal(prepared.context, 0);
+  assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, prepared), true);
+});
+
+test("prepareReadAnchorsArguments drops a meaningless limit and clamps quoted overflow", () => {
+  const dropped = prepareReadAnchorsArguments({ path: "src/a.ts", limit: 0 });
+  assert.equal(dropped.limit, undefined);
+  assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, dropped), true);
+
+  const quoted = prepareReadAnchorsArguments({ path: "src/a.ts", offset: "0", limit: "9999" });
+  assert.equal(quoted.offset, 1);
+  assert.equal(quoted.limit, 2000);
+  assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, quoted), true);
+
+  // 非整数形状不做钳制，仍交给严格 schema 拒绝。
+  const fractional = prepareReadAnchorsArguments({ path: "src/a.ts", offset: 1.5 });
+  assert.equal(fractional.offset, 1.5);
+  assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, fractional), false);
 });
 
 test("prepareFileChangeArguments parses JSON changes and wraps a single change", () => {

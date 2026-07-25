@@ -1,3 +1,4 @@
+import { MAX_READ_LIMIT } from "./read-args.ts";
 import type { FileChangeParams, ReadAnchorsParams, ReplaceOnceParams } from "./schema.ts";
 
 type JsonRecord = Record<string, unknown>;
@@ -34,20 +35,34 @@ function parseJsonStructure(value: unknown, isExpectedStructure: (value: unknown
 	return current;
 }
 
-function normalizePositiveInteger(value: unknown): unknown {
-	if (typeof value !== "string" || !/^\d+$/.test(value)) {
-		return value;
+// 读取参数越界不改变读取语义，就地钳制到 schema 合法域，避免可自愈的调用直接失败；
+// 非整数形状仍交给严格 schema 拒绝。
+function parseIntegerLike(value: unknown): unknown {
+	if (typeof value === "string" && /^-?\d+$/.test(value)) {
+		const parsed = Number(value);
+		if (Number.isSafeInteger(parsed)) return parsed;
 	}
-	const parsed = Number(value);
-	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : value;
+	return value;
 }
 
-function normalizeNonNegativeInteger(value: unknown): unknown {
-	if (typeof value !== "string" || !/^\d+$/.test(value)) {
-		return value;
-	}
-	const parsed = Number(value);
-	return Number.isSafeInteger(parsed) ? parsed : value;
+function clampReadOffset(value: unknown): unknown {
+	const parsed = parseIntegerLike(value);
+	if (typeof parsed !== "number" || !Number.isSafeInteger(parsed)) return parsed;
+	return Math.max(1, parsed);
+}
+
+function clampReadLimit(value: unknown): unknown {
+	const parsed = parseIntegerLike(value);
+	if (typeof parsed !== "number" || !Number.isSafeInteger(parsed)) return parsed;
+	// 无意义的 limit 回退到默认窗口，而不是放大成一次失败调用。
+	if (parsed < 1) return undefined;
+	return Math.min(parsed, MAX_READ_LIMIT);
+}
+
+function clampReadContext(value: unknown): unknown {
+	const parsed = parseIntegerLike(value);
+	if (typeof parsed !== "number" || !Number.isSafeInteger(parsed)) return parsed;
+	return Math.max(0, parsed);
 }
 
 function normalizeAnchor(value: unknown): unknown {
@@ -100,6 +115,13 @@ function normalizeChanges(value: unknown): unknown {
 	return parsed;
 }
 
+// 布尔参数的字符串形状（"true"/"false"）宽容转换；其余形状交给 schema 拒绝。
+function normalizeBooleanLike(value: unknown): unknown {
+	if (value === "true") return true;
+	if (value === "false") return false;
+	return value;
+}
+
 export function prepareReadAnchorsArguments(args: unknown): ReadAnchorsParams {
 	const parsed = parseJsonStructure(args, isRecord);
 	if (!isRecord(parsed)) {
@@ -107,9 +129,10 @@ export function prepareReadAnchorsArguments(args: unknown): ReadAnchorsParams {
 	}
 	return {
 		...parsed,
-		offset: normalizePositiveInteger(parsed.offset),
-		limit: normalizePositiveInteger(parsed.limit),
-		context: normalizeNonNegativeInteger(parsed.context),
+		offset: clampReadOffset(parsed.offset),
+		limit: clampReadLimit(parsed.limit),
+		context: clampReadContext(parsed.context),
+		ignore_case: normalizeBooleanLike(parsed.ignore_case),
 	} as ReadAnchorsParams;
 }
 
@@ -132,6 +155,8 @@ export function prepareReplaceOnceArguments(args: unknown): ReplaceOnceParams {
 	return {
 		...parsed,
 		old_lines: normalizeReplacementLines(parsed.old_lines),
-		new_lines: normalizeReplacementLines(parsed.new_lines),
+		// 空字符串 new_lines 保持原样交给 schema 拒绝：它通常表达"删除"意图，
+		// 归一化成 [""] 会静默变成"替换为一个空行"。
+		new_lines: parsed.new_lines === "" ? parsed.new_lines : normalizeReplacementLines(parsed.new_lines),
 	} as ReplaceOnceParams;
 }

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -681,7 +682,7 @@ func TestCmdReadPrettyStylesAnchor(t *testing.T) {
 	path := readTestWriteFile(t, dir, "pretty.txt", "alpha\n")
 
 	output := readTestCaptureStdout(t, func() {
-		if err := cmdReadPretty(path, "", 0, false, true); err != nil {
+		if err := cmdReadPretty(path, "", 0, false, false, true); err != nil {
 			t.Fatalf("cmdReadPretty returned error: %v", err)
 		}
 	})
@@ -703,7 +704,7 @@ func TestCmdReadPrettyHighlightsContent(t *testing.T) {
 	path := readTestWriteFile(t, dir, "pretty-content.txt", "config := map[string]string{\"name\": \"hledit \\\"tool\\\"\"}\n")
 
 	output := readTestCaptureStdout(t, func() {
-		if err := cmdReadPretty(path, "", 0, false, true); err != nil {
+		if err := cmdReadPretty(path, "", 0, false, false, true); err != nil {
 			t.Fatalf("cmdReadPretty returned error: %v", err)
 		}
 	})
@@ -725,7 +726,7 @@ func TestCmdReadPrettyRespectsNoColor(t *testing.T) {
 	path := readTestWriteFile(t, dir, "pretty-no-color.txt", "alpha\n")
 
 	output := readTestCaptureStdout(t, func() {
-		if err := cmdReadPretty(path, "", 0, false, true); err != nil {
+		if err := cmdReadPretty(path, "", 0, false, false, true); err != nil {
 			t.Fatalf("cmdReadPretty returned error: %v", err)
 		}
 	})
@@ -742,7 +743,7 @@ func TestCmdReadPrettyIgnoredForJSON(t *testing.T) {
 	path := readTestWriteFile(t, dir, "pretty-json.txt", "alpha\n")
 
 	output := readTestCaptureStdout(t, func() {
-		if err := cmdReadPretty(path, "", 0, true, true); err != nil {
+		if err := cmdReadPretty(path, "", 0, false, true, true); err != nil {
 			t.Fatalf("cmdReadPretty json returned error: %v", err)
 		}
 	})
@@ -837,5 +838,15 @@ func TestCmdReadJSONLongLineTextTruncated(t *testing.T) {
 	}
 	if !utf8.ValidString(got.Lines[0].Text) {
 		t.Fatalf("truncated text is not valid utf8")
+	}
+}
+
+func TestFilterLinesIgnoreCase(t *testing.T) {
+	lines := []string{"TODO: first", "todo: second", "done"}
+	if got := filterLines(lines, "todo", false); !slices.Equal(got, []int{2}) {
+		t.Fatalf("case-sensitive matches = %v, want [2]", got)
+	}
+	if got := filterLines(lines, "TODO", true); !slices.Equal(got, []int{1, 2}) {
+		t.Fatalf("case-insensitive matches = %v, want [1 2]", got)
 	}
 }

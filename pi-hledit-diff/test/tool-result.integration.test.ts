@@ -76,12 +76,13 @@ test("registered tool metadata gives accurate English safeguards", () => {
 	assert.match(readTool.description, /LN#HASH anchors/);
 	assert.ok(readTool.promptGuidelines.some((guideline) => guideline.includes("first read") && guideline.includes("ordinary read")));
 	assert.ok(readTool.promptGuidelines.some((guideline) => guideline.includes("grep") && guideline.includes("local read proof")));
-	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("never overwrite the whole file with write")));
+	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("never overwrite an existing readable file with write")));
+	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("empty files")));
 	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("newline-delimited string")));
 	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("updated-anchor local window")));
 	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("complete, untruncated local window")));
 	assert.ok(replaceOnceTool.promptGuidelines.some((guideline) => guideline.includes("exactly once") && guideline.includes("old_lines")));
-	assert.ok(replaceOnceTool.promptGuidelines.some((guideline) => guideline.includes("empty string") && guideline.includes("not deletion")));
+	assert.ok(replaceOnceTool.promptGuidelines.some((guideline) => guideline.includes("new_lines rejects an empty string") && guideline.includes("delete_range")));
 });
 
 test("apply tool exposes JSON-string argument preparation to Pi", () => {
@@ -143,7 +144,7 @@ test("read tool returns structured ranges and actionable EOF errors", async (t) 
 	assert.equal(readResult.details.disposition, "succeeded");
 	assert.deepEqual(readResult.details.read?.actual, { firstLine: 2, lastLine: 2, lineCount: 1, totalLines: 3 });
 	assert.equal(readResult.details.read?.nextOffset, 3);
-	assert.match(readResult.content[0]?.text ?? "", /已显示第 2-2 行（文件共 3 行）；继续读取请使用 offset 3/);
+	assert.match(readResult.content[0]?.text ?? "", /Showing lines 2-2 of 3; continue with offset 3/);
 
 	const grepContextResult = await readTool.execute(
 		"read",
@@ -154,6 +155,21 @@ test("read tool returns structured ranges and actionable EOF errors", async (t) 
 	);
 	assert.equal(grepContextResult.details.disposition, "succeeded");
 	assert.deepEqual(grepContextResult.details.read?.lines.map((line) => line.text), ["one", "two", "three"]);
+
+	const caseMissResult = await readTool.execute("read", { path: "target.txt", grep: "TWO" } as never, undefined, undefined, context);
+	assert.equal(caseMissResult.details.disposition, "succeeded");
+	assert.equal(caseMissResult.details.read?.actual.lineCount, 0);
+
+	const ignoreCaseResult = await readTool.execute(
+		"read",
+		{ path: "target.txt", grep: "TWO", ignore_case: true } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(ignoreCaseResult.details.disposition, "succeeded");
+	assert.deepEqual(ignoreCaseResult.details.read?.lines.map((line) => line.text), ["two"]);
+	assert.equal(ignoreCaseResult.details.read?.requested.ignoreCase, true);
 
 	const rangeError = await readTool.execute("read", { path: "target.txt", offset: 4, limit: 1 } as never, undefined, undefined, context);
 	assert.equal(rangeError.details.disposition, "rejected");
@@ -211,7 +227,7 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 	);
 
 	assert.equal(applyResult.details.disposition, "succeeded");
-	assert.match(applyResult.content[0]?.text ?? "", /更新后的锚点（仅第/);
+	assert.match(applyResult.content[0]?.text ?? "", /Updated anchors \(only the affected window/);
 	assert.match(applyResult.content[0]?.text ?? "", /TWO/);
 	assert.equal(await readFile(join(directory, "target.txt"), "utf8"), "one\nTWO\nthree\n");
 });
@@ -245,7 +261,7 @@ test("apply tool reports a no-op without touching the target", async (t) => {
 	const after = await stat(target);
 	assert.equal(applyResult.details.disposition, "succeeded");
 	assert.equal(applyResult.details.contentChanged, false);
-	assert.match(applyResult.content[0]?.text ?? "", /无需修改/);
+	assert.match(applyResult.content[0]?.text ?? "", /No changes were needed/);
 	assert.equal(after.mtimeMs, before.mtimeMs);
 });
 
@@ -274,7 +290,7 @@ test("apply tool accepts byte-truncated updated anchor contexts", async (t) => {
 	);
 
 	assert.equal(applyResult.details.disposition, "succeeded");
-	assert.match(applyResult.content[0]?.text ?? "", /锚点上下文已截断/);
+	assert.match(applyResult.content[0]?.text ?? "", /The anchor context was truncated/);
 	assert.equal((await readFile(target, "utf8")).split(/\r?\n/)[4], "CHANGED");
 });
 
@@ -302,7 +318,7 @@ test("apply tool deleting the only line leaves an empty file", async (t) => {
 	);
 
 	assert.equal(applyResult.details.disposition, "succeeded");
-	assert.match(applyResult.content[0]?.text ?? "", /（文件为空）/);
+	assert.match(applyResult.content[0]?.text ?? "", /\(the file is empty\)/);
 	assert.equal(await readFile(target, "utf8"), "");
 });
 

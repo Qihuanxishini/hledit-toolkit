@@ -17,6 +17,7 @@ type BatchPlan struct {
 	LinesAdded     int
 	LinesDeleted   int
 	ContentChanged bool
+	EditDeltas     []EditDelta
 }
 
 // PlannedBatchEdit 保留协议中的原始锚点，供冲突诊断准确指向调用参数。
@@ -208,12 +209,14 @@ func batchPhysicalConflict(edits []PlannedBatchEdit) *BatchPlanFailure {
 func batchInsertRangeConflict(insert PlannedBatchEdit, lineRange PlannedBatchEdit, failedEdit int) *BatchPlanFailure {
 	consumedBoundaryStart := lineRange.position.Line - 1
 	consumedBoundaryEnd := plannedEditEndLine(lineRange)
-	if insert.insertBoundary < consumedBoundaryStart || insert.insertBoundary > consumedBoundaryEnd {
+	// 只有落在消费区间内部的 boundary 才真正歧义；range 的前后边界上，
+	// insert 内容依附其锚点行，输出位置是确定的（前边界在 range 输出之前，后边界在其之后）。
+	if insert.insertBoundary <= consumedBoundaryStart || insert.insertBoundary >= consumedBoundaryEnd {
 		return nil
 	}
 	return invalidBatchPlanFailure(
 		fmt.Sprintf(
-			"edit %d overlaps edit %d: insert anchor %q maps to physical boundary %d consumed by range %q-%q",
+			"edit %d overlaps edit %d: insert anchor %q maps to interior physical boundary %d consumed by range %q-%q",
 			insert.requestIndex,
 			lineRange.requestIndex,
 			insert.requestedPos,
@@ -225,11 +228,29 @@ func batchInsertRangeConflict(insert PlannedBatchEdit, lineRange PlannedBatchEdi
 	)
 }
 
-func batchPlanStatistics(edits []PlannedBatchEdit) (firstChanged, lastChanged, linesAdded, linesDeleted int) {
+// sortEditsForRebuild 返回按物理输出顺序排列的编辑副本：先按 insertBoundary 升序；
+// 同一 boundary 上 insert 先于 range——insert 内容依附其锚点行，必须出现在从该
+// boundary 起消费的 range 输出之前。两个 insert 或两个 range 不会共享 boundary
+// （分别被 insert-insert 冲突与范围重叠检测拒绝），因此该顺序是全序且确定的。
+func sortEditsForRebuild(edits []PlannedBatchEdit) []PlannedBatchEdit {
 	ordered := append([]PlannedBatchEdit(nil), edits...)
 	sort.SliceStable(ordered, func(i, j int) bool {
-		return ordered[i].position.Line < ordered[j].position.Line
+		if ordered[i].insertBoundary != ordered[j].insertBoundary {
+			return ordered[i].insertBoundary < ordered[j].insertBoundary
+		}
+		firstIsInsert := ordered[i].operation == "insert"
+		secondIsInsert := ordered[j].operation == "insert"
+		if firstIsInsert != secondIsInsert {
+			return firstIsInsert
+		}
+		return ordered[i].requestIndex < ordered[j].requestIndex
 	})
+	return ordered
+}
+
+func batchPlanStatistics(edits []PlannedBatchEdit) (firstChanged, lastChanged, linesAdded, linesDeleted int) {
+	// 统计必须与 rebuildBatchLines 的输出顺序一致，lineShift 才能反映真实的新文件坐标。
+	ordered := sortEditsForRebuild(edits)
 
 	lineShift := 0
 	for _, edit := range ordered {
@@ -261,14 +282,34 @@ func batchPlanStatistics(edits []PlannedBatchEdit) (firstChanged, lastChanged, l
 	return firstChanged, lastChanged, linesAdded, linesDeleted
 }
 
-func rebuildBatchLines(originalLines []string, edits []PlannedBatchEdit, finalLineCount int) []string {
-	ordered := append([]PlannedBatchEdit(nil), edits...)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		if ordered[i].insertBoundary != ordered[j].insertBoundary {
-			return ordered[i].insertBoundary < ordered[j].insertBoundary
+// batchEditDeltas 把每项编辑映射为原始行坐标系中的 EditDelta，按物理边界排序。
+// insert_before N 的空消费区间是 [N, N-1]，insert_after N 是 [N+1, N]，
+// 使统一规则"L > OldEnd 时累加 Delta"对插入与范围编辑同时成立。
+func batchEditDeltas(edits []PlannedBatchEdit) []EditDelta {
+	ordered := sortEditsForRebuild(edits)
+
+	deltas := make([]EditDelta, 0, len(ordered))
+	for _, edit := range ordered {
+		if edit.operation == "insert" {
+			first := edit.position.Line
+			if edit.insertAfter {
+				first = edit.position.Line + 1
+			}
+			deltas = append(deltas, EditDelta{OldStart: first, OldEnd: first - 1, Delta: len(edit.replacement)})
+			continue
 		}
-		return ordered[i].requestIndex < ordered[j].requestIndex
-	})
+		end := plannedEditEndLine(edit)
+		deltas = append(deltas, EditDelta{
+			OldStart: edit.position.Line,
+			OldEnd:   end,
+			Delta:    len(edit.replacement) - (end - edit.position.Line + 1),
+		})
+	}
+	return deltas
+}
+
+func rebuildBatchLines(originalLines []string, edits []PlannedBatchEdit, finalLineCount int) []string {
+	ordered := sortEditsForRebuild(edits)
 
 	rebuilt := make([]string, 0, finalLineCount)
 	cursor := 0
@@ -428,5 +469,6 @@ func planBatchEdits(request BatchEditRequest, originalLines []string, currentRev
 		LinesAdded:     linesAdded,
 		LinesDeleted:   linesDeleted,
 		ContentChanged: !slices.Equal(originalLines, rebuilt),
+		EditDeltas:     batchEditDeltas(edits),
 	}, nil
 }

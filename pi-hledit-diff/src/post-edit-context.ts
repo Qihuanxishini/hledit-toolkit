@@ -76,15 +76,17 @@ export function formatBatchUpdatedAnchorContext(context: BatchAnchorContext): Po
 	const truncated = context.truncated || context.lines.some((line) => line.textTruncated);
 	const lastLine = context.limit === 0 ? undefined : context.offset + context.limit - 1;
 	const scope = lastLine === undefined
-		? "更新后的锚点（局部窗口；文件现为空）："
-		: `更新后的锚点（仅第 ${context.offset}-${lastLine} 行的受影响窗口，不是完整文件）：`;
+		? "Updated anchors (local window; the file is now empty):"
+		: `Updated anchors (only the affected window, lines ${context.offset}-${lastLine}; not the whole file):`;
 	const output = [
 		scope,
-		context.lines.map((line) => `${line.anchor}:${line.text}`).join("\n") || "（文件为空）",
-		"后续修改只能使用此窗口内的新锚点；目标不在窗口内时请重新调用 hledit_read_anchors。不要继续使用本次修改前读取的锚点。",
+		context.lines.map((line) => `${line.anchor}:${line.text}`).join("\n") || "(the file is empty)",
+		// 与证据重映射协议一致：窗口外未变更行的旧锚点仍有效；行号平移由拒绝响应给出
+		// 经验证更名。不得再让模型在窗口外无条件重读。
+		"Later changes inside this window must use these new anchors. Anchors read earlier stay valid for unchanged lines outside the window; if an edit shifted a line number, a rejected call lists the verified renamed anchor to resubmit with. Call hledit_read_anchors only for ranges that were never read or when a failure requests a targeted read.",
 	];
 	if (truncated) {
-		output.push(`锚点上下文已截断；请调用 hledit_read_anchors，并使用 offset:${context.offset}、limit:${context.desiredLimit}。`);
+		output.push(`The anchor context was truncated; call hledit_read_anchors with offset:${context.offset} and limit:${context.desiredLimit}.`);
 	}
 
 	return {

@@ -1,7 +1,7 @@
 import { generateDiffString, generateUnifiedPatch } from "@earendil-works/pi-coding-agent";
 import { readFile } from "node:fs/promises";
 import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
-import { ANCHOR_HASH_PATTERN } from "./file-changes.ts";
+import { ANCHOR_HASH_PATTERN, lineFromAnchor } from "./file-changes.ts";
 import { parseAnchorContext, parseBatchUpdatedAnchorContext, type BatchAnchorContext } from "./post-edit-context.ts";
 import type { NormalizedReadRequest } from "./read-args.ts";
 import type { FileChangeParams } from "./schema.ts";
@@ -24,6 +24,7 @@ export type HleditReadMetadata = {
 		limit: number;
 		grep?: string;
 		context?: number;
+		ignoreCase?: boolean;
 	};
 	actual: {
 		firstLine?: number;
@@ -54,6 +55,41 @@ export type ContentMatchCandidate = {
 	endLine: number;
 };
 
+// 与 CLI EditDelta 对应：oldStart/oldEnd 是原始行坐标中被消费的区间（纯插入时
+// oldEnd === oldStart-1 的空区间），delta 是该编辑造成的行数变化。
+export type HleditEditDelta = {
+	oldStart: number;
+	oldEnd: number;
+	delta: number;
+};
+
+export function parseEditDeltas(value: unknown): HleditEditDelta[] | undefined {
+	if (!Array.isArray(value) || value.length === 0) {
+		return undefined;
+	}
+	const deltas: HleditEditDelta[] = [];
+	for (const item of value) {
+		if (!isRecord(item)) return undefined;
+		const { oldStart, oldEnd, delta } = item;
+		if (
+			typeof oldStart !== "number" || !Number.isSafeInteger(oldStart) || oldStart < 1 ||
+			typeof oldEnd !== "number" || !Number.isSafeInteger(oldEnd) || oldEnd < oldStart - 1 ||
+			typeof delta !== "number" || !Number.isSafeInteger(delta)
+		) {
+			return undefined;
+		}
+		// 空消费区间只能是纯插入；非空区间的净变化不能低于整段删除。
+		if (oldEnd === oldStart - 1 && delta <= 0) return undefined;
+		if (oldEnd >= oldStart && delta < -(oldEnd - oldStart + 1)) return undefined;
+		// CLI 按物理边界升序输出，消费区间互不重叠；乱序或重叠说明响应不可信，
+		// 直接用于证据重映射会平移出错误行号。
+		const previous = deltas.at(-1);
+		if (previous && oldStart <= previous.oldEnd) return undefined;
+		deltas.push({ oldStart, oldEnd, delta });
+	}
+	return deltas;
+}
+
 export type HleditErrorMetadata = {
 	code: string;
 	message: string;
@@ -73,12 +109,16 @@ export type HleditErrorMetadata = {
 	matchCount?: number;
 	candidates?: ContentMatchCandidate[];
 	candidatesTruncated?: true;
+	renamedAnchors?: Array<{ requested: string; current: string }>;
+	renamesRestoreProof?: true;
 };
 
 type ApplyResultContext = {
 	path?: string;
 	changes?: FileChangeParams["changes"];
 	operation?: "anchored_batch" | "content_replace_once";
+	// replace-once 的请求行数，用于核对 CLI 返回的 editDeltas 与请求一致。
+	replaceOnce?: { oldLineCount: number; newLineCount: number };
 };
 
 export type HleditDetails = Record<string, unknown> & {
@@ -186,6 +226,7 @@ function parseReadMetadata(parsed: Record<string, unknown>, request: NormalizedR
 			limit: request.limit,
 			...(request.grep ? { grep: request.grep } : {}),
 			...(request.context !== undefined ? { context: request.context } : {}),
+			...(request.ignoreCase ? { ignoreCase: true } : {}),
 		},
 		actual: {
 			...(firstLine !== undefined ? { firstLine } : {}),
@@ -230,7 +271,7 @@ function parseReadErrorMetadata(parsed: Record<string, unknown>): HleditErrorMet
 	let hint: string | undefined;
 	if (parsed.error === "range" && totalLines !== undefined) {
 		hint = totalLines === 0
-			? "The file is empty, so no positive line number can be read."
+			? "The file is empty, so no anchors exist. To add content to an empty file, use write."
 			: `Set offset to an integer from 1 through ${totalLines}.`;
 	}
 	return {
@@ -250,19 +291,19 @@ function formatReadMetadata(read: HleditReadMetadata): string {
 	let notice: string;
 
 	if (read.textTruncated) {
-		notice = `-- 源文件内容已截断${lastLine !== undefined ? `，最后返回第 ${lastLine} 行` : ""}（文件共 ${totalLines} 行）；按行续读无法恢复被省略的行内文本 --`;
+		notice = `-- Source line text was truncated${lastLine !== undefined ? `; the last returned line is ${lastLine}` : ""} (${totalLines} lines total); rereading line ranges cannot recover the omitted in-line text. Truncated lines cannot establish edit proof; if the edit target includes such a line, rewrite the file with write instead --`;
 	} else if (filter) {
 		if (lineCount === 0) {
-			notice = `-- 文件共 ${totalLines} 行，未找到包含 ${JSON.stringify(filter)} 的内容 --`;
+			notice = `-- No lines containing ${JSON.stringify(filter)} were found (${totalLines} lines total) --`;
 		} else if (read.nextOffset !== undefined) {
-			notice = `-- 已返回 ${lineCount} 行匹配结果及上下文，最后到第 ${lastLine} 行（文件共 ${totalLines} 行）；继续读取请使用 offset ${read.nextOffset} --`;
+			notice = `-- Returned ${lineCount} matching lines with context, ending at line ${lastLine} (${totalLines} lines total); continue with offset ${read.nextOffset} --`;
 		} else {
-			notice = `-- 已返回全部 ${lineCount} 行匹配结果及上下文（文件共 ${totalLines} 行） --`;
+			notice = `-- Returned all ${lineCount} matching lines with context (${totalLines} lines total) --`;
 		}
 	} else if (read.nextOffset !== undefined) {
-		notice = `-- 已显示第 ${firstLine}-${lastLine} 行（文件共 ${totalLines} 行）；继续读取请使用 offset ${read.nextOffset} --`;
+		notice = `-- Showing lines ${firstLine}-${lastLine} of ${totalLines}; continue with offset ${read.nextOffset} --`;
 	} else {
-		notice = `-- 已显示第 ${firstLine}-${lastLine} 行（文件共 ${totalLines} 行）；已到文件末尾 --`;
+		notice = `-- Showing lines ${firstLine}-${lastLine} of ${totalLines}; end of file --`;
 	}
 
 	return [...anchoredLines, notice].join("\n");
@@ -339,7 +380,7 @@ function lineDeltaSummary(parsed: Record<string, unknown>): string | undefined {
 	}
 	const added = typeof linesAdded === "number" ? linesAdded : 0;
 	const deleted = typeof linesDeleted === "number" ? linesDeleted : 0;
-	return `行数变化：+${added} -${deleted}`;
+	return `Line delta: +${added} -${deleted}`;
 }
 
 function appendRemaps(
@@ -605,11 +646,12 @@ function parseApplyErrorMetadata(result: Record<string, unknown>, context: Apply
 	};
 }
 
+// 模型可见正文统一英文；details 中保留 rawWarnings 原文供诊断。
 function localizeApplyWarning(warning: string): string {
 	if (warning.startsWith("file was replaced, but directory metadata could not be synchronized:")) {
-		return "文件内容已成功替换，但目录元数据未能同步；断电等极端场景下，持久性保证可能降低。";
+		return "The file content was replaced, but directory metadata could not be synchronized; durability may be reduced in extreme scenarios such as power loss.";
 	}
-	return "文件已成功修改，但写入持久性存在警告；详细技术信息已保留在工具结果中。";
+	return "The file was modified successfully, but the write carries a durability warning; technical details are preserved in the tool result.";
 }
 
 function appendContentMatchRecovery(lines: string[], error: HleditErrorMetadata, path: string | undefined): void {
@@ -673,25 +715,27 @@ function appendApplyWarnings(lines: string[], result: Record<string, unknown>): 
 	if (warnings.length === 0) {
 		return;
 	}
-	lines.push("警告：", ...warnings.map((warning) => `- ${localizeApplyWarning(warning)}`));
+	lines.push("Warnings:", ...warnings.map((warning) => `- ${localizeApplyWarning(warning)}`));
 }
 
 function formatApplyResult(result: Record<string, unknown>, context: ApplyResultContext): string {
 	if (result.contentChanged === false) {
-		const lines = [context.operation === "content_replace_once" ? "无需修改；精确内容前置条件仍成立。" : "无需修改；原锚点仍有效。"];
+		const lines = [context.operation === "content_replace_once"
+			? "No changes were needed; the exact content precondition still holds."
+			: "No changes were needed; the original anchors are still valid."];
 		appendApplyWarnings(lines, result);
 		return lines.join("\n");
 	}
-	const lines = ["修改已应用。"];
+	const lines = ["Changes were applied."];
 	if (typeof result.editsApplied === "number") {
-		lines.push(`已应用操作：${result.editsApplied} 项`);
+		lines.push(`Operations applied: ${result.editsApplied}`);
 	}
 	const changed = formatLineRange(
 		typeof result.firstChangedLine === "number" ? result.firstChangedLine : undefined,
 		typeof result.lastChangedLine === "number" ? result.lastChangedLine : undefined,
 	);
 	if (changed) {
-		lines.push(`影响行：${changed}`);
+		lines.push(`Affected lines: ${changed}`);
 	}
 	const lineDelta = lineDeltaSummary(result);
 	if (lineDelta) {
@@ -701,17 +745,66 @@ function formatApplyResult(result: Record<string, unknown>, context: ApplyResult
 	return lines.join("\n");
 }
 
-function isValidApplySuccess(parsed: Record<string, unknown> | null, context: ApplyResultContext): boolean {
-	return (
-		parsed?.ok === true &&
-		typeof parsed.editsApplied === "number" &&
-		Number.isInteger(parsed.editsApplied) &&
-		(context.operation === "content_replace_once" ? parsed.editsApplied === 1 : parsed.editsApplied >= 0) &&
-		(parsed.contentChanged === undefined || typeof parsed.contentChanged === "boolean") &&
-		(parsed.warnings === undefined || (Array.isArray(parsed.warnings) && parsed.warnings.every((warning) => typeof warning === "string"))) &&
-		isRawRevision(parsed.revision) &&
-		parseBatchUpdatedAnchorContext(parsed) !== undefined
+// 从公开 changes 复算 CLI 必须返回的 editDeltas。物理输出顺序 = boundary（恒等于
+// oldStart-1）升序；同一 boundary 上 insert 的空区间 oldEnd 更小，因此 (oldStart, oldEnd)
+// 双键升序即可精确复现 CLI sortEditsForRebuild 的顺序。改动 CLI 排序或 delta 语义
+// 属于协议升级，必须两侧同步。
+function expectedBatchEditDeltas(changes: FileChangeParams["changes"]): HleditEditDelta[] | undefined {
+	const deltas: HleditEditDelta[] = [];
+	for (const change of changes) {
+		if (change.operation === "insert_before" || change.operation === "insert_after") {
+			const line = lineFromAnchor(change.anchor);
+			if (line === undefined) return undefined;
+			const oldStart = change.operation === "insert_before" ? line : line + 1;
+			deltas.push({ oldStart, oldEnd: oldStart - 1, delta: change.lines.length });
+			continue;
+		}
+		const start = lineFromAnchor(change.start_anchor);
+		const end = lineFromAnchor(change.end_anchor);
+		if (start === undefined || end === undefined || end < start) return undefined;
+		const replacementCount = change.operation === "replace_range" ? change.lines.length : 0;
+		deltas.push({ oldStart: start, oldEnd: end, delta: replacementCount - (end - start + 1) });
+	}
+	return deltas.sort((left, right) => left.oldStart - right.oldStart || left.oldEnd - right.oldEnd);
+}
+
+// editDeltas 驱动证据重映射与锚点更名，必须与请求可精确互推；对不上时按不兼容
+// 成功响应处理（outcome_unknown），宁可多一轮重读也不用可疑数据平移证据。
+function editDeltasMatchRequest(deltas: HleditEditDelta[], context: ApplyResultContext): boolean {
+	if (context.operation === "content_replace_once") {
+		if (!context.replaceOnce) return true;
+		if (deltas.length !== 1) return false;
+		const [only] = deltas;
+		return (
+			only!.oldEnd - only!.oldStart + 1 === context.replaceOnce.oldLineCount &&
+			only!.delta === context.replaceOnce.newLineCount - context.replaceOnce.oldLineCount
+		);
+	}
+	if (!context.changes) return true;
+	const expected = expectedBatchEditDeltas(context.changes);
+	if (!expected || expected.length !== deltas.length) return false;
+	return expected.every((delta, index) =>
+		deltas[index]!.oldStart === delta.oldStart &&
+		deltas[index]!.oldEnd === delta.oldEnd &&
+		deltas[index]!.delta === delta.delta,
 	);
+}
+
+function isValidApplySuccess(parsed: Record<string, unknown> | null, context: ApplyResultContext): boolean {
+	if (parsed?.ok !== true || !isRawRevision(parsed.revision)) return false;
+	if (typeof parsed.editsApplied !== "number" || !Number.isSafeInteger(parsed.editsApplied) || parsed.editsApplied < 0) return false;
+	if (context.operation === "content_replace_once" && parsed.editsApplied !== 1) return false;
+	if (context.changes && parsed.editsApplied !== context.changes.length) return false;
+	if (parsed.contentChanged !== undefined && typeof parsed.contentChanged !== "boolean") return false;
+	if (parsed.warnings !== undefined && (!Array.isArray(parsed.warnings) || !parsed.warnings.every((warning) => typeof warning === "string"))) return false;
+	// bundled CLI 恒输出 linesAdded/linesDeleted（无 omitempty）；delta 总和是同一份
+	// 统计的另一投影，二者不一致即内部矛盾。
+	if (!isIntegerAtLeast(parsed.linesAdded, 0) || !isIntegerAtLeast(parsed.linesDeleted, 0)) return false;
+	const editDeltas = parseEditDeltas(parsed.editDeltas);
+	if (!editDeltas || editDeltas.length !== parsed.editsApplied) return false;
+	if (editDeltas.reduce((sum, delta) => sum + delta.delta, 0) !== parsed.linesAdded - parsed.linesDeleted) return false;
+	if (!editDeltasMatchRequest(editDeltas, context)) return false;
+	return parseBatchUpdatedAnchorContext(parsed) !== undefined;
 }
 
 function isValidFileChangeCheckSuccess(parsed: Record<string, unknown> | null): boolean {
@@ -731,7 +824,7 @@ function invalidFileChangeCheckText(): string {
 }
 
 function invalidApplySuccessText(): string {
-	return `The bundled hledit returned an incompatible success response. The file may have changed; call hledit_read_anchors before retrying. Expected ok:true, a valid revision, non-negative editsApplied, and valid updatedAnchors.\n\n${HLEDIT_INSTALL_HINT}`;
+	return `The bundled hledit returned an incompatible success response. The file may have changed; call hledit_read_anchors before retrying. Expected ok:true, a valid revision, editsApplied and editDeltas consistent with the request, line-count statistics, and valid updatedAnchors.\n\n${HLEDIT_INSTALL_HINT}`;
 }
 
 function outcomeUnknownText(run: HleditRun): string {
@@ -782,6 +875,8 @@ export function extractCliSummary(parsed: Record<string, unknown> | null): Recor
 		summary.warnings = parsed.warnings.map(localizeApplyWarning);
 		summary.rawWarnings = parsed.warnings;
 	}
+	const editDeltas = parseEditDeltas(parsed.editDeltas);
+	if (editDeltas) summary.editDeltas = editDeltas;
 	if (isRawRevision(parsed.revision)) summary.revision = parsed.revision;
 	if (isRawRevision(parsed.currentRevision)) summary.currentRevision = parsed.currentRevision;
 	return summary;
@@ -814,8 +909,16 @@ export function applyFileChangesResult(run: HleditRun, context: ApplyResultConte
 	};
 }
 
-export function replaceOnceResult(run: HleditRun, path: string | undefined): TextResult {
-	return applyFileChangesResult(run, { path, operation: "content_replace_once" });
+export function replaceOnceResult(
+	run: HleditRun,
+	path: string | undefined,
+	counts?: { oldLineCount: number; newLineCount: number },
+): TextResult {
+	return applyFileChangesResult(run, {
+		path,
+		operation: "content_replace_once",
+		...(counts ? { replaceOnce: counts } : {}),
+	});
 }
 
 export function fileChangeCheckFailure(run: HleditRun, context: ApplyResultContext = {}): TextResult | undefined {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func atomicWriteMustSucceed(t *testing.T, path string, content []byte) {
@@ -155,4 +156,42 @@ func TestAtomicWriteErrors(t *testing.T) {
 		t.Fatal("expected error when target is a directory")
 	}
 	assertNoAtomicTempFiles(t, dir)
+}
+
+// 回归测试：写入路径不得按名字清理目录中已存在的 .hledit-* 文件。仅凭前缀与
+// mtime 无法证明文件由本工具创建，曾经的孤儿清理会在编辑前删除名为 .hledit-*
+// 的真实目标与同目录无关文件（数据丢失）。
+func TestAtomicWriteNeverDeletesExistingDotHleditFiles(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, ".hledit-important")
+	bystander := filepath.Join(dir, ".hledit-notes")
+	if err := os.WriteFile(target, []byte("old"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bystander, []byte("keep"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	staleTime := time.Now().Add(-2 * time.Hour)
+	for _, path := range []string{target, bystander} {
+		if err := os.Chtimes(path, staleTime, staleTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	atomicWriteMustSucceed(t, target, []byte("new"))
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("target named like a temp file was deleted: %v", err)
+	}
+	if string(got) != "new" {
+		t.Fatalf("target content = %q; want %q", got, "new")
+	}
+	bystanderContent, err := os.ReadFile(bystander)
+	if err != nil {
+		t.Fatalf("unrelated .hledit-* sibling was deleted: %v", err)
+	}
+	if string(bystanderContent) != "keep" {
+		t.Fatalf("bystander content = %q; want unchanged", bystanderContent)
+	}
 }

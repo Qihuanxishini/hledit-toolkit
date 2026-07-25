@@ -81,6 +81,7 @@ export const HLEDIT_READ_ANCHORS_PARAMS_SCHEMA = Type.Object(
 		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_READ_LIMIT, description: `Maximum number of lines to return (no more than ${MAX_READ_LIMIT}).` })),
 		grep: Type.Optional(Type.String({ description: "Substring filter." })),
 		context: Type.Optional(Type.Integer({ minimum: 0, description: "Context lines before and after each grep match." })),
+		ignore_case: Type.Optional(Type.Boolean({ description: "Match the grep substring case-insensitively." })),
 	},
 	STRICT_OBJECT,
 );
@@ -100,11 +101,28 @@ export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 	STRICT_OBJECT,
 );
 
+// replace_once 的 new_lines 拒绝空字符串：模型沿用其他编辑工具的习惯，用空字符串表达"删除"，
+// 而这里它只会静默留下一个空行。删除必须显式走 delete_range；显式空行用 [""] 表达。
+const REPLACE_ONCE_NEW_LINES_SCHEMA = Type.Union(
+	[
+		Type.String({
+			minLength: 1,
+			description:
+				"Replacement text; newline-delimited for multiline. An empty string is rejected: to delete the matched block use hledit_apply_file_changes with delete_range; to replace it with one blank line pass [\"\"].",
+		}),
+		Type.Array(REPLACEMENT_LINE_SCHEMA, {
+			minItems: 1,
+			description: "Compatibility form: every array item is one raw line with no CR/LF.",
+		}),
+	],
+	{ description: "Exact replacement lines. Deletion cannot be expressed here; use an anchored delete_range instead." },
+);
+
 export const HLEDIT_REPLACE_ONCE_PARAMS_SCHEMA = Type.Object(
 	{
 		path: PATH_SCHEMA,
 		old_lines: REPLACEMENT_LINES_SCHEMA,
-		new_lines: REPLACEMENT_LINES_SCHEMA,
+		new_lines: REPLACE_ONCE_NEW_LINES_SCHEMA,
 	},
 	{
 		...STRICT_OBJECT,

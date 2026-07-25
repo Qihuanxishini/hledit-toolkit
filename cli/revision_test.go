@@ -13,7 +13,7 @@ func TestReadRangeJSONIncludesRawRevision(t *testing.T) {
 	writeTestFile(t, target, string(content))
 
 	output := readTestCaptureStdout(t, func() {
-		if err := cmdReadRangePretty(target, 1, 10, "", 0, true, false); err != nil {
+		if err := cmdReadRangePretty(target, 1, 10, "", 0, false, true, false); err != nil {
 			t.Fatal(err)
 		}
 	})

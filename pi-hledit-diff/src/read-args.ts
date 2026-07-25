@@ -7,6 +7,7 @@ export type ReadArgsParams = {
 	limit?: number;
 	grep?: string;
 	context?: number;
+	ignore_case?: boolean;
 };
 
 export type NormalizedReadRequest = {
@@ -15,6 +16,7 @@ export type NormalizedReadRequest = {
 	limit: number;
 	grep?: string;
 	context?: number;
+	ignoreCase?: boolean;
 };
 
 export function normalizeToolPath(path: string): string {
@@ -42,17 +44,22 @@ function toReadLimit(v: number | undefined): number | undefined {
 export function normalizeReadRequest(params: ReadArgsParams): NormalizedReadRequest {
 	const grep = params.grep || undefined;
 	const context = toNonNegativeInteger(params.context);
+	// ignore_case 只在 grep 生效时有意义。
+	const ignoreCase = grep !== undefined && params.ignore_case === true;
 	return {
 		path: normalizeToolPath(params.path),
 		offset: toPositiveInteger(params.offset) ?? 1,
 		limit: toReadLimit(params.limit) ?? DEFAULT_READ_LIMIT,
 		...(grep ? { grep } : {}),
 		...(context !== undefined ? { context } : {}),
+		...(ignoreCase ? { ignoreCase: true } : {}),
 	};
 }
 
-export function buildReadArgs(params: ReadArgsParams): string[] {
-	const request = normalizeReadRequest(params);
+// 只接受 normalizeReadRequest 的输出：入参已在边界完成归一化，这里不得再次归一化。
+// [喵喵喵]: 曾因入参误标为原始 shape 并二次归一化，丢失 ignore_case → ignoreCase
+// 的改名字段，导致生产路径的大小写开关从未到达 CLI。(2026-07-25)
+export function buildReadArgs(request: NormalizedReadRequest): string[] {
 	const args = [
 		"read-range",
 		request.path,
@@ -68,6 +75,9 @@ export function buildReadArgs(params: ReadArgsParams): string[] {
 	}
 	if (request.context !== undefined) {
 		args.push("--context", String(request.context));
+	}
+	if (request.ignoreCase) {
+		args.push("--ignore-case");
 	}
 
 	return args;

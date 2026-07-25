@@ -277,6 +277,17 @@ test("renderFileChangesResult caches expanded anchors without mutating the diff 
 	assert.deepEqual(refreshed, first);
 });
 
+test("renderFileChangesResult keeps updated anchors whose hash contains URL-safe symbols", () => {
+	const result: TextResult = {
+		content: [{ type: "text", text: "修改已应用。\n\n更新后的锚点：\n7#a-_:gamma\n8#_x-:delta" }],
+		details: { disposition: "succeeded", diff: "-7 old\n+7 gamma", editsApplied: 1 },
+	};
+	const output = render(renderFileChangesResult(result, options(true), theme, { args: { path: "notes.txt" } }), 72);
+
+	assert.ok(output.includes("7#a-_ │ gamma"));
+	assert.ok(output.includes("8#_x- │ delta"));
+});
+
 test("renderFileChangesResult folds failures unless expanded", () => {
 	const result: TextResult = {
 		content: [{ type: "text", text: "原子批次已拒绝，未写入任何内容。\n原因：目标文件存在 2 个 hardlink。为同时保证原子性和链接身份，本次写入已拒绝。\n错误代码：io" }],

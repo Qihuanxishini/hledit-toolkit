@@ -19,7 +19,7 @@
 - 成功锚点读取会在插件内部记录原始字节 SHA-256 revision 与完整返回行：普通范围读取贡献连续行，grep 读取可贡献离散行；同一 revision 的证据按行合并，revision 改变时清除旧证据。范围修改必须覆盖每个原始行，insert 必须覆盖依附行；revision 与 proof 不进入公开工具 schema。
 - grep 的全局 `truncated` 只表示仍有匹配结果未返回，已完整返回的行仍可建立局部 proof；发生 `textTruncated` 的行不建立新 proof。离散结果不会自动覆盖中间行，证据不足时 apply 在启动 CLI batch 前直接拒绝并返回定向读取建议；建议范围依据完整的首个缺口区间，不受最多 20 个展示行限制，超过单次读取上限时明确要求按 `nextOffset` 续读。
 - 若单行 `replace_range` 输出多行且首行与原锚点行完全相同，插件会判定为高风险范围扩展；返回恢复指导前先以 `batch --check` 验证本批次全部锚点，stale、冲突或非法请求优先返回 CLI 原始错误。
-- 高风险范围扩展错误会列出实际参数并禁止原样重试：存在唯一、从下一行之后开始的相邻 `delete_range` 时给出已验证的完整合并模板；没有安全结束锚点时要求重新读取，而不输出非法占位 anchor；`insert_after` 模板直接复用原 lines 去除重复首行后的内容。紧接下一行开始的 `delete_range` 已显式覆盖后续旧代码，不触发该护栏。
+- 高风险范围扩展错误会列出实际参数并禁止原样重试，但不再回显完整源码 payload：存在唯一、从下一行之后开始的相邻 `delete_range` 时，给出修改 `end_anchor`、移除 delete、保持原 lines 的字段级指令；没有安全结束锚点时要求重新读取；append 意图则要求改为 `insert_after` 并移除重复首行。紧接下一行开始的 `delete_range` 已显式覆盖后续旧代码，不触发该护栏。
 - batch 是原子的：任一 change 非法、冲突或 stale 时均为零写入。
 - CLI 能构建完整同快照窗口的 stale 拒绝会返回 `currentRevision` / `currentAnchors`，并在 `details.error.staleAnchors` 与正文中列出失败项和当前同号行。窗口缺失、截断或未覆盖完整目标范围时必须重新读取；插件不会自动修正锚点、重试或覆盖并发修改。
 - 已验证但内容相同的 batch 返回 no-op，不触碰目标文件；模型正文和 TUI 不再误报为已修改。
@@ -27,7 +27,7 @@
 - CLI 在临时文件完成同步后、原子替换前复检源文件 revision；变化时返回 `source_changed_before_commit` 并保留外部内容。该复检显著缩小竞争窗口，但不宣称 recheck 与 rename 之间不存在极短竞态。
 - 成功 apply 返回的 `editDeltas` 把变更区间之外的旧证据行平移到新行号（新锚点由插件内 hash 复刻重算并自校验），再合并新 revision 的 `updatedAnchors` 窗口，顺序多次编辑同一文件通常无需中间重读。模型提交编辑前旧锚点时，拒绝正文直接列出经验证的更名锚点；更名不足以恢复完整 proof 时，同时给出剩余缺口的定向重读指引。stale、结果未知或不兼容成功响应仍使旧证据失效；CLI 未启动的 `unavailable` 保留证据，由提交时 revision 复检兜底。
 - 仅接受有效 UTF-8 文本，并在修改时保留已有 UTF-8 BOM。
-- 工具名称和协议字段保持稳定；工具 description、prompt snippet、prompt guidelines 与 JSON Schema 参数说明使用英文，调用摘要和成功/警告结果保持简体中文，失败正文及恢复指引使用英文。
+- 工具名称和协议字段保持稳定；工具 description、prompt guidelines 与 JSON Schema 参数说明使用英文，不注册与它们重复的 prompt snippet。调用摘要和成功/警告结果保持简体中文，失败正文及恢复指引使用英文。
 
 CLI capability 健康时，插件始终用 `hledit_read_anchors`、`hledit_apply_file_changes` 与 `hledit_replace_once` 替换 Pi 的普通 `edit`。apply 仍会独立校验当前 session branch 的读取证据；replace-once 以唯一精确内容而不是 anchor proof 为前置条件。分支切换只重建证据，不隐藏修改工具。若 bundled CLI 缺失或不兼容，则恢复内置 `edit`。
 

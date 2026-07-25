@@ -128,14 +128,18 @@ func editOp(
 	contentChanged := !slices.Equal(lines, result)
 	var warnings []string
 	if contentChanged {
-		joined := file.JoinLines(result)
-		writeWarning, werr := atomicWrite(path, []byte(joined))
+		// 单项 verb 的消费区间可由原始坐标 firstChanged 与 linesDeleted 唯一确定
+		// （insert 是 OldEnd == OldStart-1 的空区间），与 batch editDeltas 同构。
+		editDeltas := []EditDelta{{
+			OldStart: firstChanged,
+			OldEnd:   firstChanged + linesDeleted - 1,
+			Delta:    linesAdded - linesDeleted,
+		}}
+		encoded := file.EncodeContent(result, rebuiltLineEndings(file, editDeltas, len(result)))
+		writeWarning, werr := atomicWrite(path, encoded)
 		if werr != nil {
 			emitError("io", werr.Error())
 			return nil
-		}
-		if file.HasMixedLineEndings {
-			warnings = append(warnings, mixedLineEndingWarning)
 		}
 		if writeWarning != "" {
 			warnings = append(warnings, writeWarning)

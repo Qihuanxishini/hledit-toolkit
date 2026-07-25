@@ -2,9 +2,10 @@ import { getLanguageFromPath, highlightCode, keyHint, type ToolRenderResultOptio
 import { getCapabilities, hyperlink, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { changePreviewDiffText, parseChangePreview } from "./change-preview.ts";
 import { renderStandaloneDiff, type HleditRenderComponent, type HleditRenderTheme } from "./diff-renderer.ts";
 import { fileChangeLineRanges } from "./file-changes.ts";
-import { MAX_READ_LIMIT, normalizeToolPath } from "./read-args.ts";
+import { DEFAULT_READ_LIMIT, normalizeToolPath } from "./read-args.ts";
 import type { HleditReadMetadata, HleditToolKind, TextResult } from "./result.ts";
 
 export type RenderComponent = HleditRenderComponent;
@@ -235,7 +236,8 @@ export function renderHleditCall(
     const limit = typeof input.limit === "number" && input.limit > 0 ? input.limit : undefined;
     const grep = kind === "read_anchors" && typeof input.grep === "string" ? input.grep : undefined;
     const range = kind === "read_anchors"
-		? grep ? undefined : formatLineRange(offset ?? 1, (offset ?? 1) + (limit ?? MAX_READ_LIMIT) - 1)
+		// 未提供 limit 时插件实际按 DEFAULT_READ_LIMIT 发起 CLI 请求，标题不得显示 2000。
+		? grep ? undefined : formatLineRange(offset ?? 1, (offset ?? 1) + (limit ?? DEFAULT_READ_LIMIT) - 1)
 		: kind === "apply_file_changes" ? fileChangeLineRanges(input.changes) : undefined;
     const operationCount = kind === "apply_file_changes" && Array.isArray(input.changes) ? input.changes.length : undefined;
     const grepContext = kind === "read_anchors" && typeof input.context === "number" && Number.isInteger(input.context) && input.context > 0 ? input.context : undefined;
@@ -354,8 +356,14 @@ export function renderFileChangesResult(
     }
 
     const path = pathFromContext(context);
-    const diffWarning = typeof result.details.diffError === "string" ? result.details.diffError : undefined;
-    const diff = typeof result.details.diff === "string" ? result.details.diff : "";
+    const diffWarning = typeof result.details.diffError === "string"
+		? result.details.diffError
+		: typeof result.details.previewError === "string" ? result.details.previewError : undefined;
+    // 新结果优先渲染提交绑定的结构化 changePreview；历史结果回退到存量 details.diff。
+    const changePreview = parseChangePreview(result.details.changePreview);
+    const diff = changePreview
+		? changePreviewDiffText(changePreview)
+		: typeof result.details.diff === "string" ? result.details.diff : "";
     const writeWarnings = Array.isArray(result.details.warnings)
         ? result.details.warnings.filter((warning): warning is string => typeof warning === "string")
         : [];

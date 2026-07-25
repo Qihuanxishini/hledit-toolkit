@@ -74,19 +74,12 @@ export function parseBatchUpdatedAnchorContext(parsed: Record<string, unknown> |
 
 export function formatBatchUpdatedAnchorContext(context: BatchAnchorContext): PostEditContextResult {
 	const truncated = context.truncated || context.lines.some((line) => line.textTruncated);
-	const lastLine = context.limit === 0 ? undefined : context.offset + context.limit - 1;
-	const scope = lastLine === undefined
-		? "Updated anchors (local window; the file is now empty):"
-		: `Updated anchors (only the affected window, lines ${context.offset}-${lastLine}; not the whole file):`;
 	const output = [
-		scope,
+		"Updated anchors:",
 		context.lines.map((line) => `${line.anchor}:${line.text}`).join("\n") || "(the file is empty)",
-		// 与证据重映射协议一致：窗口外未变更行的旧锚点仍有效；行号平移由拒绝响应给出
-		// 经验证更名。不得再让模型在窗口外无条件重读。
-		"Later changes inside this window must use these new anchors. Anchors read earlier stay valid for unchanged lines outside the window; if an edit shifted a line number, a rejected call lists the verified renamed anchor to resubmit with. Call hledit_read_anchors only for ranges that were never read or when a failure requests a targeted read.",
 	];
 	if (truncated) {
-		output.push(`The anchor context was truncated; call hledit_read_anchors with offset:${context.offset} and limit:${context.desiredLimit}.`);
+		output.push(`Anchor window truncated; call hledit_read_anchors with offset:${context.offset} and limit:${context.desiredLimit}.`);
 	}
 
 	return {

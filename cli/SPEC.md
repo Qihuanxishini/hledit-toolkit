@@ -256,7 +256,17 @@ Single-edit verbs apply one operation. `batch` sorts non-overlapping edits by or
 
 After rebuilding a validated edit, compare its logical lines with the loaded lines. If they are identical, return `contentChanged:false` and do not create, sync, rename, or otherwise touch a filesystem entry. Operation counts and attempted line metadata remain available for diagnostics.
 
-### 4.4 Atomic writes
+### 4.4 Line terminators
+
+Files are parsed into per-line terminators (`LF`, `CRLF`, or none for an unterminated last line). A lone `\r` not followed by `\n` is line text, not a terminator. Rebuild rules:
+
+- Untouched source lines keep their own terminator bytes; mixed CRLF/LF files are never normalized as a whole.
+- New lines from an edit use the local terminator style near the consumed interval (first real terminator scanning backward from the interval end, then forward); the last replacement line inherits the terminator of the last replaced line. Pure inserts use the local style for every inserted line.
+- When content is added after an unterminated last line, that line receives the local terminator and the new last line stays unterminated.
+- The presence or absence of the original trailing newline is preserved; deleting every logical line produces a truly empty file (plus BOM if the original had one).
+- The UTF-8 BOM is preserved.
+
+### 4.5 Atomic writes
 
 1. Resolve an existing symlink to its real target so replacement preserves the symlink entry.
 2. Reject non-regular targets and files with more than one hard link. Preserving hard-link identity would require a non-atomic in-place write.

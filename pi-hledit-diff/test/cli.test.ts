@@ -5,11 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { parseHleditCapabilities, resolveHleditBin, runHledit } from "../src/cli.ts";
+import { HLEDIT_MAX_OUTPUT_BYTES, parseHleditCapabilities, resolveHleditBin, runHledit } from "../src/cli.ts";
 import { parseBatchUpdatedAnchorContext } from "../src/post-edit-context.ts";
+import { applyFileChangesResult } from "../src/result.ts";
 
 const EXPECTED_CAPABILITIES = {
-	version: "2.2.2",
+	version: "2.3.1",
 	anchorProtocolV2: true,
 	readRangeMetadata: true,
 	batchInsertAfter: true,
@@ -156,4 +157,58 @@ test("bundled batch is atomic when a later anchor is stale", async (t) => {
 	assert.equal(parsed.ok, false);
 	assert.equal(parsed.error, "stale");
 	assert.equal(await readFile(target, "utf8"), original);
+});
+
+// [喵喵喵]: Phase 1.4 协议余量回归——CLI 侧 50 KiB 上限按转义前原始字节计数，控制字符
+// 经 JSON 转义可膨胀 6 倍（0x01 → \u0001 六字节），wrapper 上限收敛前必须证明合法最坏输出不被终止 (2026-07-25)
+test("wrapper output limit passes through worst-case legal JSON escape expansion", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-diff-escape-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	// 0x01 是合法 UTF-8 文本（二进制检测只拦 NUL），是每原始字节转义开销最大的内容。
+	const line = "\u0001".repeat(128);
+	const lineCount = 600;
+	await writeFile(target, `${Array.from({ length: lineCount }, () => line).join("\n")}\n`, "utf8");
+
+	const run = await runHledit(["read-range", target, "--json"], undefined, directory, undefined);
+
+	assert.equal(run.exitCode, 0);
+	assert.notEqual(run.started, false);
+	const parsed = JSON.parse(run.stdout) as Record<string, unknown>;
+	assert.equal(parsed.ok, true);
+	// CLI 自身的 50 KiB 原始字节截断必须先生效：本输出即合法读取的最坏体量。
+	assert.equal(parsed.truncated, true);
+	assert.equal(parsed.totalLines, lineCount);
+	const outputBytes = Buffer.byteLength(run.stdout, "utf8");
+	assert.ok(outputBytes > 4 * 50 * 1024, `escaped output ${outputBytes} bytes should exceed 4x the raw CLI cap`);
+	assert.ok(outputBytes < HLEDIT_MAX_OUTPUT_BYTES, `escaped output ${outputBytes} bytes must stay under the wrapper limit`);
+});
+
+// [喵喵喵]: Phase 1.4 回归——输出超限终止发生在 CLI 已写入之后时，必须保持
+// outcome_unknown，不得把已落盘的写入误报为零写入 (2026-07-25)
+test("output overflow after a started write keeps outcome unknown", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-diff-overflow-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "one\ntwo\nthree\n", "utf8");
+
+	const read = await runHledit(["read-range", target, "--offset", "2", "--limit", "1"], undefined, directory, undefined);
+	const anchor = read.stdout.trim().split(/\r?\n/, 1)[0]!.split(":", 1)[0]!;
+	const request = JSON.stringify({ edits: [{ op: "replace", pos: anchor, lines: ["TWO"] }] });
+
+	// 64 字节上限保证成功 JSON 响应必然触发 overflow 终止，但 CLI 在输出前已完成原子写入。
+	const applied = await runHledit(["batch", target], request, directory, undefined, 64);
+
+	assert.equal(applied.exitCode, 1);
+	assert.equal(applied.started, true);
+	assert.match(applied.stdout, /output exceeded 64 bytes/);
+	assert.equal(await readFile(target, "utf8"), "one\nTWO\nthree\n");
+
+	const result = applyFileChangesResult(applied, { path: target });
+	assert.equal(result.details.disposition, "outcome_unknown");
+	const text = result.content[0]?.text ?? "";
+	assert.match(text, /write outcome is unknown/);
+	assert.match(text, /Do not retry/);
+	assert.match(text, /hledit_read_anchors/);
+	assert.doesNotMatch(text, /No content was written|no write was attempted|was not started/i);
 });

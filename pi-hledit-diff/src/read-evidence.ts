@@ -46,8 +46,16 @@ export type ReadProofFailure = {
 	renamesRestoreProof?: true;
 };
 
+// 本次修改实际消费或依附的、同 revision 完整读取行；只用于插件内部的护栏与
+// change preview，不进入公开工具 schema。
+export type ConsumedEvidenceLine = {
+	line: number;
+	anchor: string;
+	text: string;
+};
+
 export type ReadProofSelection =
-	| { proof: HleditBatchReadProof }
+	| { proof: HleditBatchReadProof; consumedLines: Map<number, ConsumedEvidenceLine> }
 	| { failure: ReadProofFailure };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -221,7 +229,7 @@ function substituteRenamedAnchors(changes: FileChangeParams["changes"], renames:
 }
 
 type EvidenceProofEvaluation =
-	| { anchors: string[] }
+	| { anchors: string[]; coveredLines: number[] }
 	| { failure: { message: string; missingLines: number[]; suggestedReadRange?: ReadProofLineRange } };
 
 // 对同一份证据评估一次请求的逐行 coverage 与端点锚点匹配；selectProof 用它分别
@@ -254,7 +262,7 @@ function evaluateProofAgainstEvidence(
 			};
 		}
 	}
-	return { anchors: coverage.coveredLines.map((line) => evidenceLines.get(line)!.anchor) };
+	return { anchors: coverage.coveredLines.map((line) => evidenceLines.get(line)!.anchor), coveredLines: coverage.coveredLines };
 }
 
 export function formatReadProofFailure(path: string, failure: ReadProofFailure): string {
@@ -429,7 +437,12 @@ export class ReadEvidenceStore {
 
 		const direct = evaluateProofAgainstEvidence(requested, evidence.lines, evidence.renames);
 		if ("anchors" in direct) {
-			return { proof: { revision: evidence.revision, anchors: direct.anchors } };
+			const consumedLines = new Map<number, ConsumedEvidenceLine>();
+			for (const line of direct.coveredLines) {
+				const info = evidence.lines.get(line)!;
+				consumedLines.set(line, { line, anchor: info.anchor, text: info.text });
+			}
+			return { proof: { revision: evidence.revision, anchors: direct.anchors }, consumedLines };
 		}
 
 		const renamedAnchors = renamedEndpointAnchors(evidence.renames, requested.endpointAnchors);

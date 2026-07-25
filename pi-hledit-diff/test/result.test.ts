@@ -4,7 +4,6 @@ import test from "node:test";
 import { HLEDIT_INSTALL_HINT } from "../src/cli.ts";
 import {
     applyFileChangesResult,
-    buildDiffDetails,
     fileChangeCheckFailure,
     isFailedHleditResult,
     parseRunObject,
@@ -143,7 +142,7 @@ test("applyFileChangesResult summarizes successful file changes", () => {
         exitCode: 0,
     });
 
-    assert.equal(result.content[0]?.text, "Changes were applied.\nOperations applied: 2\nAffected lines: 3-5\nLine delta: +4 -1");
+    assert.equal(result.content[0]?.text, "Applied 2 changes; line delta: +4 -1.");
     assert.deepEqual(result.details, {
         disposition: "succeeded",
         revision: REVISION,
@@ -177,13 +176,13 @@ test("applyFileChangesResult preserves post-write durability warnings", () => {
         exitCode: 0,
     });
 
-    assert.equal(result.content[0]?.text, "Changes were applied.\nOperations applied: 1\nLine delta: +1 -1\nWarnings:\n- The file content was replaced, but directory metadata could not be synchronized; durability may be reduced in extreme scenarios such as power loss.");
+    assert.equal(result.content[0]?.text, "Applied 1 change; line delta: +1 -1.\nWarnings:\n- The file content was replaced, but directory metadata could not be synchronized; durability may be reduced in extreme scenarios such as power loss.");
     assert.deepEqual(result.details.warnings, ["The file content was replaced, but directory metadata could not be synchronized; durability may be reduced in extreme scenarios such as power loss."]);
     assert.deepEqual(result.details.rawWarnings, ["file was replaced, but directory metadata could not be synchronized: access denied"]);
 });
 
-test("applyFileChangesResult localizes the mixed line ending warning", () => {
-	const rawWarning = "file mixed CRLF and LF line endings; the rewritten file uses CRLF throughout";
+test("applyFileChangesResult localizes unknown warnings with a generic durability note", () => {
+	const rawWarning = "some future write warning";
 	const result = applyFileChangesResult({
 		stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 1, contentChanged: true, linesAdded: 1, linesDeleted: 1, warnings: [rawWarning], editDeltas: [{ oldStart: 1, oldEnd: 1, delta: 0 }], updatedAnchors: { lines: [{ line: 1, anchor: "1#BHJ", text: "changed" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false } }),
 		stderr: "",
@@ -191,7 +190,7 @@ test("applyFileChangesResult localizes the mixed line ending warning", () => {
 	});
 
 	assert.equal(result.details.disposition, "succeeded");
-	assert.match(result.content[0]?.text ?? "", /normalized the whole file to CRLF/);
+	assert.match(result.content[0]?.text ?? "", /durability warning/);
 	assert.deepEqual(result.details.rawWarnings, [rawWarning]);
 });
 
@@ -465,6 +464,82 @@ test("applyFileChangesResult exposes validated stale snapshot context", () => {
 	});
 });
 
+// [喵喵喵]: Phase 0 正文 snapshot——精确锁定 stale/proof/outcome-unknown 三类恢复正文，
+// 后续正文压缩必须显式更新这些基线并说明删除的重复 (2026-07-25)
+test("model body snapshot: CLI insufficient_read_proof rejection", () => {
+	const result = applyFileChangesResult({
+		stdout: JSON.stringify({ ok: false, error: "insufficient_read_proof", message: "edit 0 requires read proof for line 3", currentRevision: REVISION }),
+		stderr: "",
+		exitCode: 0,
+	}, { path: "src/a.ts" });
+
+	assert.equal(
+		result.content[0]?.text,
+		"The atomic batch was rejected; no content was written.\n" +
+		"Reason: Read proof does not cover every original source line required by this change.\n" +
+		"Error code: insufficient_read_proof",
+	);
+	assert.equal(result.details.disposition, "rejected");
+});
+
+test("model body snapshot: stale rejection with snapshot context and field-level recovery", () => {
+	const currentAnchors = {
+		lines: [
+			{ line: 1, anchor: "1#BHJ", text: "one" },
+			{ line: 2, anchor: "2#BBK", text: "modified" },
+			{ line: 3, anchor: "3#BJL", text: "three" },
+		],
+		offset: 1,
+		limit: 3,
+		desiredLimit: 5,
+		truncated: false,
+	};
+	const result = applyFileChangesResult(
+		{
+			stdout: JSON.stringify({ ok: false, error: "stale", message: "edit 0: anchor stale", failed: 0, remaps: [{ requested: "2#BHJ", current: "2#BBK" }], currentAnchors }),
+			stderr: "",
+			exitCode: 0,
+		},
+		{ path: "src/a.ts", changes: [{ operation: "replace_range", start_anchor: "2#BHJ", end_anchor: "2#BHJ", lines: ["next"] }] },
+	);
+
+	assert.equal(
+		result.content[0]?.text,
+		"The atomic batch was rejected; no content was written.\n" +
+		"Reason: Change 1 uses a stale anchor.\n" +
+		"Error code: stale\n" +
+		"Failed change: 1\n" +
+		"Anchor verification for change 1:\n" +
+		"- Field: start_anchor/end_anchor\n" +
+		"  Submitted anchor: 2#BHJ\n" +
+		"  Current line at the same number: 2#BBK:modified\n" +
+		"  After verifying the intended target, explicitly replace start_anchor/end_anchor with 2#BBK in a new request.\n" +
+		"This information is for verification only. The tool never repairs anchors or retries a batch automatically.\n" +
+		"Current anchor snapshot at submission time (local window: lines 1-3):\n" +
+		"1#BHJ:one\n" +
+		"2#BBK:modified\n" +
+		"3#BJL:three\n" +
+		"This snapshot never retries or overwrites concurrent changes. Reuse its anchors only after confirming that this complete window still covers the intended target and range; otherwise reread the affected range.\n" +
+		"Only reuse these anchors after confirming that the window still covers the intended target and complete range; otherwise call hledit_read_anchors again.",
+	);
+	assert.equal(result.details.disposition, "rejected");
+});
+
+test("model body snapshot: output overflow keeps the outcome-unknown recovery body", () => {
+	const result = applyFileChangesResult(
+		{ stdout: "hledit output exceeded 1048576 bytes, so the process was terminated.", stderr: "", exitCode: 1, started: true },
+		{ path: "src/a.ts" },
+	);
+
+	assert.equal(
+		result.content[0]?.text,
+		"The hledit write outcome is unknown; the file may already have changed. Do not retry the original request.\n" +
+		"Call hledit_read_anchors to reread the target file first.\n" +
+		"Diagnostic: hledit output exceeded 1048576 bytes, so the process was terminated.",
+	);
+	assert.equal(result.details.disposition, "outcome_unknown");
+});
+
 test("applyFileChangesResult surfaces the hardlink rejection reason", () => {
 	const rawMessage = 'refusing atomic write to "target.txt": file has 2 hard links; preserving link identity would require a non-atomic in-place write';
 	const result = applyFileChangesResult({
@@ -531,13 +606,4 @@ test("failure result constructors preserve disposition and structured errors", (
 	});
 	assert.equal(isFailedHleditResult(rejected.details), true);
 	assert.deepEqual(unavailableToolResult("CLI 不可用").details, { disposition: "unavailable" });
-});
-
-test("buildDiffDetails prefers CLI firstChangedLine over generated diff", () => {
-    const details = buildDiffDetails("a.txt", "one\ntwo\n", "one\nTWO\n", { firstChangedLine: 10, linesAdded: 1 });
-
-    assert.equal(details.firstChangedLine, 10);
-    assert.equal(details.linesAdded, 1);
-    assert.equal(typeof details.diff, "string");
-    assert.equal(typeof details.patch, "string");
 });

@@ -5,39 +5,36 @@ import { MAX_READ_LIMIT } from "./read-args.ts";
 
 const STRICT_OBJECT = { additionalProperties: false };
 
-const PATH_SCHEMA = Type.String({ minLength: 1, description: "Path to the text file." });
+const PATH_SCHEMA = Type.String({ minLength: 1, description: "Text file path." });
 const ANCHOR_SCHEMA = Type.String({
 	pattern: ANCHOR_PATTERN,
-	description: "Copy verbatim from the latest hledit_read_anchors result or a successful edit's returned updated-anchor local window. Supply LN#HASH or full LN#HASH:text; prepareArguments removes source text. Use post-edit anchors only inside that window; do not invent placeholders.",
+	description: "Current LN#HASH anchor copied verbatim; LN#HASH:text is accepted and normalized. Never invent anchors.",
 });
 const RANGE_START_ANCHOR_SCHEMA = Type.String({
 	pattern: ANCHOR_PATTERN,
-	description: "Start anchor included in the edit range. Copy LN#HASH:text verbatim; for a single-line range it must equal end_anchor.",
+	description: "First included line; for one line, use the same anchor as end_anchor.",
 });
 const RANGE_END_ANCHOR_SCHEMA = Type.String({
 	pattern: ANCHOR_PATTERN,
-	description: "End anchor included in the edit range. Copy LN#HASH:text verbatim; for a single-line range it must equal start_anchor.",
+	description: "Last included line; for one line, use the same anchor as start_anchor.",
 });
 const REPLACEMENT_LINE_SCHEMA = Type.String({ pattern: "^[^\\r\\n]*$" });
 const REPLACEMENT_LINES_SCHEMA = Type.Union(
 	[
 		Type.String({
-			description:
-			"Preferred form for multiline edits: raw file text separated by newlines. Strings split on CRLF, CR, or LF; one terminal newline ends the final line without adding a blank line; an empty string is one blank line.",
+			description: "Newline-delimited raw text. One final newline terminates the last line; an empty string means one blank line.",
 		}),
 		Type.Array(REPLACEMENT_LINE_SCHEMA, {
 			minItems: 1,
-			description: "Compatibility form: every array item is one raw line with no CR/LF. Pass a real JSON array, not a JSON-encoded array string. Supply raw content rather than anchor-prefixed or diff-marked text.",
+			description: "One raw line per item, without CR/LF. Use a real JSON array.",
 		}),
 	],
-	{ description: "Exact raw line content used as a content precondition or replacement. For multiline content, prefer a newline-delimited string." },
+	{ description: "Raw lines; prefer a newline-delimited string for multiline text." },
 );
 
 const REPLACE_RANGE_CHANGE_SCHEMA = Type.Object(
 	{
-		operation: StringEnum(["replace_range"] as const, {
-			description: "Replace the complete anchor range, including both endpoints. For a single-line replacement, start_anchor and end_anchor must be identical.",
-		}),
+		operation: StringEnum(["replace_range"] as const, { description: "Replace the inclusive anchor range." }),
 		start_anchor: RANGE_START_ANCHOR_SCHEMA,
 		end_anchor: RANGE_END_ANCHOR_SCHEMA,
 		lines: REPLACEMENT_LINES_SCHEMA,
@@ -47,9 +44,7 @@ const REPLACE_RANGE_CHANGE_SCHEMA = Type.Object(
 
 const DELETE_RANGE_CHANGE_SCHEMA = Type.Object(
 	{
-		operation: StringEnum(["delete_range"] as const, {
-			description: "Delete the complete anchor range, including both endpoints. For a single-line deletion, start_anchor and end_anchor must be identical.",
-		}),
+		operation: StringEnum(["delete_range"] as const, { description: "Delete the inclusive anchor range." }),
 		start_anchor: RANGE_START_ANCHOR_SCHEMA,
 		end_anchor: RANGE_END_ANCHOR_SCHEMA,
 	},
@@ -58,7 +53,7 @@ const DELETE_RANGE_CHANGE_SCHEMA = Type.Object(
 
 const INSERT_BEFORE_CHANGE_SCHEMA = Type.Object(
 	{
-		operation: StringEnum(["insert_before"] as const, { description: "Insert raw file lines before the anchor line." }),
+		operation: StringEnum(["insert_before"] as const, { description: "Insert lines before the anchor." }),
 		anchor: ANCHOR_SCHEMA,
 		lines: REPLACEMENT_LINES_SCHEMA,
 	},
@@ -67,7 +62,7 @@ const INSERT_BEFORE_CHANGE_SCHEMA = Type.Object(
 
 const INSERT_AFTER_CHANGE_SCHEMA = Type.Object(
 	{
-		operation: StringEnum(["insert_after"] as const, { description: "Insert raw file lines after the anchor line." }),
+		operation: StringEnum(["insert_after"] as const, { description: "Insert lines after the anchor." }),
 		anchor: ANCHOR_SCHEMA,
 		lines: REPLACEMENT_LINES_SCHEMA,
 	},
@@ -77,11 +72,11 @@ const INSERT_AFTER_CHANGE_SCHEMA = Type.Object(
 export const HLEDIT_READ_ANCHORS_PARAMS_SCHEMA = Type.Object(
 	{
 		path: PATH_SCHEMA,
-		offset: Type.Optional(Type.Integer({ minimum: 1, description: "First line to return (1-based)." })),
-		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_READ_LIMIT, description: `Maximum number of lines to return (no more than ${MAX_READ_LIMIT}).` })),
+		offset: Type.Optional(Type.Integer({ minimum: 1, description: "First line (1-based)." })),
+		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_READ_LIMIT, description: `Maximum lines (${MAX_READ_LIMIT} max).` })),
 		grep: Type.Optional(Type.String({ description: "Substring filter." })),
-		context: Type.Optional(Type.Integer({ minimum: 0, description: "Context lines before and after each grep match." })),
-		ignore_case: Type.Optional(Type.Boolean({ description: "Match the grep substring case-insensitively." })),
+		context: Type.Optional(Type.Integer({ minimum: 0, description: "Lines around each grep match." })),
+		ignore_case: Type.Optional(Type.Boolean({ description: "Case-insensitive grep." })),
 	},
 	STRICT_OBJECT,
 );
@@ -93,8 +88,7 @@ export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 			Type.Union([REPLACE_RANGE_CHANGE_SCHEMA, DELETE_RANGE_CHANGE_SCHEMA, INSERT_BEFORE_CHANGE_SCHEMA, INSERT_AFTER_CHANGE_SCHEMA]),
 			{
 				minItems: 1,
-				description:
-					"One complete, non-overlapping atomic batch for one file. Submit an object array; do not JSON.stringify the whole changes array. The plugin tolerates rare upstream serialization artifacts. Range operations require both start_anchor and end_anchor. Any invalid operation or stale anchor rejects the entire batch without writing.",
+				description: "One complete non-overlapping atomic batch. Use an object array, not JSON text; any invalid or stale change rejects the whole batch.",
 			},
 		),
 	},
@@ -107,15 +101,14 @@ const REPLACE_ONCE_NEW_LINES_SCHEMA = Type.Union(
 	[
 		Type.String({
 			minLength: 1,
-			description:
-				"Replacement text; newline-delimited for multiline. An empty string is rejected: to delete the matched block use hledit_apply_file_changes with delete_range; to replace it with one blank line pass [\"\"].",
+			description: "Newline-delimited replacement. Empty is invalid; use [\"\"] for one blank line or delete_range for deletion.",
 		}),
 		Type.Array(REPLACEMENT_LINE_SCHEMA, {
 			minItems: 1,
-			description: "Compatibility form: every array item is one raw line with no CR/LF. Pass a real JSON array, not a JSON-encoded array string.",
+			description: "One raw line per item, without CR/LF. Use a real JSON array.",
 		}),
 	],
-	{ description: "Exact replacement lines. Deletion cannot be expressed here; use an anchored delete_range instead." },
+	{ description: "Replacement lines; deletion requires delete_range." },
 );
 
 export const HLEDIT_REPLACE_ONCE_PARAMS_SCHEMA = Type.Object(
@@ -126,8 +119,7 @@ export const HLEDIT_REPLACE_ONCE_PARAMS_SCHEMA = Type.Object(
 	},
 	{
 		...STRICT_OBJECT,
-		description:
-			"Atomically replace the one unique contiguous occurrence of old lines in the current file. Use only when old_lines is known and must be unique; zero or multiple matches reject the write. This shortcut does not require a prior anchor read.",
+		description: "Replace one unique exact old_lines block; zero or multiple matches reject without writing. No anchor read required.",
 	},
 );
 

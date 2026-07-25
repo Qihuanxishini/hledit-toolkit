@@ -17,6 +17,11 @@ function verifiedIssue(issue: ReturnType<typeof findSingleLineRangeExpansionIssu
   return { ...issue, anchorsVerified: true as const };
 }
 
+// 护栏自 Phase 4 起消费同 revision 的消费行证据，而不是完整文件字符串。
+function consumedTestLines(content: string): Map<number, { text: string }> {
+  return new Map(content.split(/\r\n|\r|\n/).map((text, index) => [index + 1, { text }]));
+}
+
 test("buildFileChangeRequest translates every supported change", () => {
   const params: FileChangeParams = {
     path: "src/a.ts",
@@ -72,7 +77,7 @@ test("findSingleLineRangeExpansionIssue returns actionable structured guidance",
       path: "src/a.ts",
       changes: [{ operation: "replace_range", start_anchor: "2#BHJ", end_anchor: "2#BHJ", lines: ["two", "inserted"] }],
     },
-    "one\ntwo\nthree\n",
+    consumedTestLines("one\ntwo\nthree\n"),
   );
 
   assert.deepEqual(issue, {
@@ -80,15 +85,23 @@ test("findSingleLineRangeExpansionIssue returns actionable structured guidance",
     changeNumber: 1,
     anchor: "2#BHJ",
     outputLineCount: 2,
-    replacementLines: ["two", "inserted"],
-    insertLines: ["inserted"],
   });
   const text = formatSingleLineRangeExpansionIssue(verifiedIssue(issue));
-  assert.match(text, /Received:[\s\S]*end_anchor: 2#BHJ \(same as start_anchor\)/);
-  assert.match(text, /Do not retry with the same parameters/);
-  assert.match(text, /No safe placeholder end anchor is available/);
-  assert.doesNotMatch(text, /<from the latest hledit_read_anchors/);
-  assert.match(text, /"operation": "insert_after"[\s\S]*"lines": [\s\S]*"inserted"/);
+  assert.equal(text, [
+    "Change 1 was rejected.",
+    "Received: replace_range 2#BHJ through 2#BHJ; 2 output lines.",
+    "This range covers one source line and repeats it as the first output line, which could leave old code behind.",
+    "Do not retry with the same parameters.",
+    "To replace a larger block:",
+    "- call hledit_read_anchors for the true block-end anchor",
+    "- set change 1 end_anchor to that verified anchor",
+    "- keep change 1 lines unchanged",
+    "No safe placeholder end anchor is available.",
+    "To keep 2#BHJ and append the remaining 1 line:",
+    "- change operation to insert_after",
+    "- replace start_anchor/end_anchor with anchor: 2#BHJ",
+    "- remove the first line from lines; keep the remaining 1 line unchanged",
+  ].join("\n"));
 });
 
 test("findSingleLineRangeExpansionIssue points out a nearby delete range", () => {
@@ -100,7 +113,7 @@ test("findSingleLineRangeExpansionIssue points out a nearby delete range", () =>
         { operation: "delete_range", start_anchor: "4#JKL", end_anchor: "6#MNP" },
       ],
     },
-    "one\ntwo\nthree\nfour\nfive\nsix\n",
+    consumedTestLines("one\ntwo\nthree\nfour\nfive\nsix\n"),
   );
 
   assert.deepEqual(issue?.nearbyDeleteRange, {
@@ -110,8 +123,27 @@ test("findSingleLineRangeExpansionIssue points out a nearby delete range", () =>
   });
   const text = formatSingleLineRangeExpansionIssue(verifiedIssue(issue));
   assert.match(text, /Change 2 is a delete_range from 4#JKL through 6#MNP/);
-  assert.match(text, /"end_anchor": "6#MNP"/);
-  assert.match(text, /remove the delete_range/);
+  assert.match(text, /set change 1 end_anchor to 6#MNP/);
+  assert.match(text, /remove change 2/);
+  assert.match(text, /keep change 1 lines unchanged/);
+  assert.doesNotMatch(text, /"lines"/);
+});
+
+test("single-line range guidance does not echo a large replacement payload", () => {
+  const payloadLines = ["two", ...Array.from({ length: 200 }, (_, index) => `payload-${index}-${"x".repeat(80)}`)];
+  const issue = findSingleLineRangeExpansionIssue(
+    {
+      path: "src/a.ts",
+      changes: [{ operation: "replace_range", start_anchor: "2#BHJ", end_anchor: "2#BHJ", lines: payloadLines }],
+    },
+    consumedTestLines("one\ntwo\nthree\n"),
+  );
+
+  const text = formatSingleLineRangeExpansionIssue(verifiedIssue(issue));
+  assert.ok(text.length < 1000);
+  assert.doesNotMatch(text, /payload-199/);
+  assert.match(text, /keep change 1 lines unchanged/);
+  assert.match(text, /keep the remaining 200 lines unchanged/);
 });
 
 test("findSingleLineRangeExpansionIssue does not guess between multiple nearby delete ranges", () => {
@@ -124,7 +156,7 @@ test("findSingleLineRangeExpansionIssue does not guess between multiple nearby d
         { operation: "delete_range", start_anchor: "4#JKL", end_anchor: "5#KMN" },
       ],
     },
-    "one\ntwo\nthree\nfour\nfive\n",
+    consumedTestLines("one\ntwo\nthree\nfour\nfive\n"),
   );
 
   assert.equal(issue?.nearbyDeleteRange, undefined);
@@ -138,7 +170,7 @@ test("findSingleLineRangeExpansionIssue allows explicit ranges, rewrites, and ad
         path: "src/a.ts",
         changes: [{ operation: "replace_range", start_anchor: "2#BHJ", end_anchor: "3#BBK", lines: ["two", "inserted"] }],
       },
-      "one\ntwo\nthree\n",
+      consumedTestLines("one\ntwo\nthree\n"),
     ),
     undefined,
   );
@@ -148,7 +180,7 @@ test("findSingleLineRangeExpansionIssue allows explicit ranges, rewrites, and ad
         path: "src/a.ts",
         changes: [{ operation: "replace_range", start_anchor: "2#BHJ", end_anchor: "2#BHJ", lines: ["TWO", "inserted"] }],
       },
-      "one\ntwo\nthree\n",
+      consumedTestLines("one\ntwo\nthree\n"),
     ),
     undefined,
   );
@@ -161,7 +193,7 @@ test("findSingleLineRangeExpansionIssue allows explicit ranges, rewrites, and ad
           { operation: "delete_range", start_anchor: "3#BBK", end_anchor: "3#BBK" },
         ],
       },
-      "one\ntwo\nthree\n",
+      consumedTestLines("one\ntwo\nthree\n"),
     ),
     undefined,
   );

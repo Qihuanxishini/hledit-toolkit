@@ -97,8 +97,6 @@ export type SingleLineRangeExpansionIssue = {
 	changeNumber: number;
 	anchor: string;
 	outputLineCount: number;
-	replacementLines: string[];
-	insertLines: string[];
 	nearbyDeleteRange?: NearbyDeleteRangeHint;
 };
 
@@ -135,11 +133,12 @@ function findNearbyDeleteRangeHint(
 	return candidates.length === 1 ? candidates[0] : undefined;
 }
 
+// 锚点行文本来自同 revision 的消费行证据（selectProof 已保证覆盖每个消费行），
+// 不再读取完整文件——这与 CLI 实际校验的快照一致，也移除了对 Node 前置读取的依赖。
 export function findSingleLineRangeExpansionIssue(
 	params: FileChangeParams,
-	content: string,
+	consumedLineText: ReadonlyMap<number, { text: string }>,
 ): SingleLineRangeExpansionIssue | undefined {
-	const sourceLines = content.split(/\r\n|\r|\n/);
 	for (const [index, change] of params.changes.entries()) {
 		if (change.operation !== "replace_range" || change.lines.length <= 1) {
 			continue;
@@ -151,7 +150,7 @@ export function findSingleLineRangeExpansionIssue(
 			continue;
 		}
 
-		const anchoredText = sourceLines[startLine - 1];
+		const anchoredText = consumedLineText.get(startLine)?.text;
 		if (anchoredText === undefined || change.lines[0] !== anchoredText) {
 			continue;
 		}
@@ -165,8 +164,6 @@ export function findSingleLineRangeExpansionIssue(
 			changeNumber: index + 1,
 			anchor: change.start_anchor,
 			outputLineCount: change.lines.length,
-			replacementLines: [...change.lines],
-			insertLines: change.lines.slice(1),
 			...(nearbyDeleteRange ? { nearbyDeleteRange } : {}),
 		};
 	}
@@ -174,53 +171,40 @@ export function findSingleLineRangeExpansionIssue(
 }
 
 export function formatSingleLineRangeExpansionIssue(issue: VerifiedSingleLineRangeExpansionIssue): string {
-	const insertTemplate = JSON.stringify(
-		{
-			operation: "insert_after",
-			anchor: issue.anchor,
-			lines: issue.insertLines,
-		},
-		null,
-		2,
-	);
+	const remainingLineCount = issue.outputLineCount - 1;
+	const remainingLineLabel = remainingLineCount === 1 ? "line" : "lines";
 	const lines = [
 		`Change ${issue.changeNumber} was rejected.`,
-		"Received:",
-		"- operation: replace_range",
-		`- start_anchor: ${issue.anchor}`,
-		`- end_anchor: ${issue.anchor} (same as start_anchor)`,
-		`- lines: ${issue.outputLineCount}`,
-		"This replace_range covers one source line, while its first replacement line repeats that source line. Applying it could retain old code that should have been replaced.",
+		`Received: replace_range ${issue.anchor} through ${issue.anchor}; ${issue.outputLineCount} output lines.`,
+		"This range covers one source line and repeats it as the first output line, which could leave old code behind.",
 		"Do not retry with the same parameters.",
 	];
 
 	if (issue.nearbyDeleteRange) {
 		const hint = issue.nearbyDeleteRange;
-		const mergedTemplate = JSON.stringify(
-			{
-				operation: "replace_range",
-				start_anchor: issue.anchor,
-				end_anchor: hint.endAnchor,
-				lines: issue.replacementLines,
-			},
-			null,
-			2,
-		);
 		lines.push(
-			`Change ${hint.changeNumber} is a delete_range from ${hint.startAnchor} through ${hint.endAnchor}, and this batch's anchors passed --check.`,
-			"If that delete_range belongs to the same old code block, merge both changes into this replace_range and remove the delete_range:",
-			mergedTemplate,
-			"Otherwise, call hledit_read_anchors to read the correct block-end anchor.",
+			`Change ${hint.changeNumber} is a delete_range from ${hint.startAnchor} through ${hint.endAnchor}; the batch anchors passed --check.`,
+			"If it belongs to the same old block:",
+			`- set change ${issue.changeNumber} end_anchor to ${hint.endAnchor}`,
+			`- remove change ${hint.changeNumber}`,
+			`- keep change ${issue.changeNumber} lines unchanged`,
+			"Otherwise, call hledit_read_anchors for the correct block-end anchor.",
 		);
 	} else {
 		lines.push(
-			"To replace an existing code block, call hledit_read_anchors to read its true end, then use that end anchor in this replace_range. No safe placeholder end anchor is available.",
+			"To replace a larger block:",
+			"- call hledit_read_anchors for the true block-end anchor",
+			`- set change ${issue.changeNumber} end_anchor to that verified anchor`,
+			`- keep change ${issue.changeNumber} lines unchanged`,
+			"No safe placeholder end anchor is available.",
 		);
 	}
 
 	lines.push(
-		"If the intent is to keep the anchored line and append content after it, use this insert_after instead. Its lines omit the repeated anchored line:",
-		insertTemplate,
+		`To keep ${issue.anchor} and append the remaining ${remainingLineCount} ${remainingLineLabel}:`,
+		"- change operation to insert_after",
+		`- replace start_anchor/end_anchor with anchor: ${issue.anchor}`,
+		`- remove the first line from lines; keep the remaining ${remainingLineCount} ${remainingLineLabel} unchanged`,
 	);
 	return lines.join("\n");
 }

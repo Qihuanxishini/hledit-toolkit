@@ -17,6 +17,13 @@ import {
 } from "./src/active-tools.ts";
 import { HLEDIT_INSTALL_HINT, parseHleditCapabilities, resolveHleditBin, runHledit } from "./src/cli.ts";
 import {
+	buildAnchoredChangePreview,
+	buildReplaceOncePreview,
+	emptyChangePreview,
+	type VerifiedChangePreview,
+} from "./src/change-preview.ts";
+import { recordAnchoredFileOperations } from "./src/compaction-files.ts";
+import {
 	buildFileChangeCheckRequest,
 	buildFileChangeRequest,
 	buildReplaceOnceRequest,
@@ -29,16 +36,14 @@ import { formatReadProofFailure, ReadEvidenceStore, resolveReadEvidencePath } fr
 import { buildReadArgs, normalizeReadRequest, normalizeToolPath } from "./src/read-args.ts";
 import {
 	applyFileChangesResult,
-	buildDiffDetails,
 	fileChangeCheckFailure,
 	isFailedHleditResult,
 	parseRunObject,
 	readAnchorsResult,
-	readUtf8File,
 	rejectedToolResult,
 	replaceOnceResult,
+	type HleditEditDelta,
 	type TextResult,
-	unavailableToolResult,
 } from "./src/result.ts";
 import {
 	HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
@@ -78,59 +83,51 @@ function attachEvidencePath(result: TextResult, normalizedPath: string, evidence
 	};
 }
 
-// 成功响应已由 result.ts 验证；这里统一追加局部锚点上下文和写后 diff。
-async function finalizeSuccessfulEditResult(
+// 成功响应已由 result.ts 验证；这里统一追加局部锚点上下文与提交绑定的 change preview。
+// 不再前后读取完整文件：preview 只由已验证输入构成，外部并发修改不可能混入
+//（详见 change-preview.ts 与 D4）。preview 构建失败只降级为 previewError，
+// 不得改变已确认成功的 disposition。
+function finalizeSuccessfulEditResult(
 	result: TextResult,
 	run: ReturnType<typeof runHledit> extends Promise<infer Value> ? Value : never,
-	beforeContent: string,
 	normalizedPath: string,
-	absolutePath: string,
 	evidencePath: string,
-): Promise<TextResult> {
+	changePreview: VerifiedChangePreview | undefined,
+): TextResult {
 	const parsed = parseRunObject(run)!;
 	const updatedAnchorContext = parsed.updatedAnchors as BatchAnchorContext;
 	const postEditContext = formatBatchUpdatedAnchorContext(updatedAnchorContext);
-	const postEditDetails = {
-		path: normalizedPath,
-		evidencePath,
-		revision: result.details.revision as string,
-		updatedAnchors: updatedAnchorContext,
-		postEditContext: {
-			offset: postEditContext.offset,
-			limit: postEditContext.limit,
-			truncated: postEditContext.truncated,
-		},
-	};
 	const modelPostEditContext = result.details.contentChanged === false ? undefined : postEditContext.text;
 
-	const after = await readUtf8File(absolutePath);
-	if ("error" in after) {
-		return attachEvidencePath({
-			...result,
-			content: appendResultText(
-				result,
-				modelPostEditContext
-					? `${modelPostEditContext}\n\nThe edit was applied, but rereading the file to generate a diff failed.`
-					: "The edit was verified as a no-op, but rereading the file to generate a diff failed.",
-			),
-			details: {
-				...result.details,
-				...postEditDetails,
-				diffError: `The edit was applied, but ${normalizedPath} could not be reread to generate a diff.`,
-				diffErrorRaw: after.error,
-			},
-		}, normalizedPath, evidencePath);
-	}
-
-	return attachEvidencePath({
+	return {
 		...result,
 		content: modelPostEditContext ? appendResultText(result, modelPostEditContext) : result.content,
 		details: {
 			...result.details,
-			...buildDiffDetails(normalizedPath, beforeContent, after.content, parsed),
-			...postEditDetails,
+			path: normalizedPath,
+			evidencePath,
+			revision: result.details.revision as string,
+			updatedAnchors: updatedAnchorContext,
+			postEditContext: {
+				offset: postEditContext.offset,
+				limit: postEditContext.limit,
+				truncated: postEditContext.truncated,
+			},
+			...(changePreview
+				? { changePreview }
+				: { previewError: "A verified change preview could not be built for this edit; the write itself succeeded." }),
 		},
-	}, normalizedPath, evidencePath);
+	};
+}
+
+// 已确认成功的提交绑定 preview；任何构建异常都只降级，不影响 disposition。
+function tryBuildChangePreview(result: TextResult, build: () => VerifiedChangePreview | undefined): VerifiedChangePreview | undefined {
+	try {
+		if (result.details.contentChanged === false) return emptyChangePreview();
+		return build();
+	} catch {
+		return undefined;
+	}
 }
 
 async function runFileChangesWithDiff(
@@ -145,7 +142,7 @@ async function runFileChangesWithDiff(
 	const normalizedParams = { ...params, path: normalizedPath };
 	const applyContext = { path: normalizedPath, changes: normalizedParams.changes, operation: "anchored_batch" as const };
 
-	return withFileMutationQueue(absolutePath, async () => {
+	const applyWithinQueue = async (): Promise<TextResult> => {
 		const proofSelection = evidence.selectProof(evidencePath, normalizedParams.changes);
 		if ("failure" in proofSelection) {
 			return attachEvidencePath(
@@ -160,12 +157,8 @@ async function runFileChangesWithDiff(
 			);
 		}
 		const request = buildFileChangeRequest(normalizedParams, proofSelection.proof);
-		const before = await readUtf8File(absolutePath);
-		if ("error" in before) {
-			return attachEvidencePath(unavailableToolResult(`The target could not be read before editing, so no change was started. Check ${normalizedPath}, its permissions, and its text encoding.`), normalizedPath, evidencePath);
-		}
 
-		const singleLineRangeExpansionIssue = findSingleLineRangeExpansionIssue(params, before.content);
+		const singleLineRangeExpansionIssue = findSingleLineRangeExpansionIssue(params, proofSelection.consumedLines);
 		if (singleLineRangeExpansionIssue) {
 			const checkRequest = buildFileChangeCheckRequest(normalizedParams, proofSelection.proof);
 			const checkRun = await runHledit(checkRequest.args, checkRequest.stdin, ctx.cwd, signal);
@@ -205,7 +198,17 @@ async function runFileChangesWithDiff(
 		if (result.details.disposition !== "succeeded") {
 			return attachEvidencePath(result, normalizedPath, evidencePath);
 		}
-		return finalizeSuccessfulEditResult(result, run, before.content, normalizedPath, absolutePath, evidencePath);
+		const changePreview = tryBuildChangePreview(result, () =>
+			buildAnchoredChangePreview(normalizedParams.changes, proofSelection.consumedLines));
+		return finalizeSuccessfulEditResult(result, run, normalizedPath, evidencePath, changePreview);
+	};
+
+	// D6：evidence 重映射/失效/记录属于同文件 mutation 的完整操作，必须在队列放行前
+	// 完成，保证同文件下一项排队调用的 selectProof 立即看到本次结果。
+	return withFileMutationQueue(absolutePath, async () => {
+		const result = await applyWithinQueue();
+		evidence.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, result.details, ctx.cwd);
+		return result;
 	});
 }
 
@@ -234,6 +237,7 @@ async function runReplaceOnceWithDiff(
 	params: ReplaceOnceParams,
 	ctx: ExtensionContext,
 	signal: AbortSignal | undefined,
+	evidence: ReadEvidenceStore,
 ): Promise<TextResult> {
 	const normalizedPath = normalizeToolPath(params.path);
 	const absolutePath = resolve(ctx.cwd, normalizedPath);
@@ -244,12 +248,7 @@ async function runReplaceOnceWithDiff(
 		return attachEvidencePath(contractRejection, normalizedPath, evidencePath);
 	}
 
-	return withFileMutationQueue(absolutePath, async () => {
-		const before = await readUtf8File(absolutePath);
-		if ("error" in before) {
-			return attachEvidencePath(unavailableToolResult(`The target could not be read before editing, so no change was started. Check ${normalizedPath}, its permissions, and its text encoding.`), normalizedPath, evidencePath);
-		}
-
+	const replaceOnceWithinQueue = async (): Promise<TextResult> => {
 		const request = buildReplaceOnceRequest(normalizedParams);
 		const run = await runHledit(request.args, request.stdin, ctx.cwd, signal);
 		const result = replaceOnceResult(run, normalizedPath, {
@@ -259,7 +258,19 @@ async function runReplaceOnceWithDiff(
 		if (result.details.disposition !== "succeeded") {
 			return attachEvidencePath(result, normalizedPath, evidencePath);
 		}
-		return finalizeSuccessfulEditResult(result, run, before.content, normalizedPath, absolutePath, evidencePath);
+		const changePreview = tryBuildChangePreview(result, () => {
+			// oldStart 取 CLI 已验证的唯一消费区间起点，不使用未经验证的字段。
+			const oldStart = (result.details.editDeltas as HleditEditDelta[] | undefined)?.[0]?.oldStart;
+			return oldStart === undefined ? undefined : buildReplaceOncePreview(normalizedParams, oldStart);
+		});
+		return finalizeSuccessfulEditResult(result, run, normalizedPath, evidencePath, changePreview);
+	};
+
+	// D6：与 anchored batch 相同，evidence 更新在队列放行前完成。
+	return withFileMutationQueue(absolutePath, async () => {
+		const result = await replaceOnceWithinQueue();
+		evidence.updateFromToolResult(HLEDIT_REPLACE_ONCE_TOOL, result.details, ctx.cwd);
+		return result;
 	});
 }
 
@@ -277,11 +288,9 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 	pi.registerTool(({
 		name: HLEDIT_READ_ANCHORS_TOOL,
 		label: "Read for Edit",
-		description: "Read a text file and return LN#HASH anchors for subsequent stale-safe edits.",
-		promptSnippet: "Read fresh anchors before editing text",
+		description: "Read a text file and return LN#HASH anchors for stale-safe edits.",
 		promptGuidelines: [
-			"When a task explicitly requires editing an existing text file, make the first read of the intended target with hledit_read_anchors. Use ordinary read only for reference files or exploration before the edit target is known.",
-			"Use hledit_read_anchors with offset and limit for a known location; use grep and context to locate an edit in a known file. Only returned lines without source-line truncation establish local read proof. Range edits must cover every original line, and LN#HASH:text anchors must be copied verbatim into hledit_apply_file_changes.",
+			"When editing an existing text file, first read the target with hledit_read_anchors; use ordinary read only for references or before the target is known. Use a small offset/limit for known locations or grep/context to locate code. Only complete returned lines are local read proof; ranges require every source line. Copy LN#HASH:text anchors verbatim into hledit_apply_file_changes.",
 		],
 		parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 		// provider 侧按 schema 约束采样，从源头消除畸形参数；不支持的模型自动回落普通调用。
@@ -313,12 +322,10 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 	pi.registerTool(({
 		name: HLEDIT_APPLY_FILE_CHANGES_TOOL,
 		label: "Apply File Changes",
-		description: "Atomically apply one complete, non-overlapping batch of stale-safe edits to a text file.",
-		promptSnippet: "Atomically apply anchored edits to one file",
+		description: "Atomically apply one complete non-overlapping batch of anchored edits to a text file.",
 		promptGuidelines: [
-			"For existing text files, use hledit_apply_file_changes with one complete, non-overlapping batch per file; never overwrite an existing readable file with write. Exceptions where write is the correct tool: empty files (no lines exist, so no anchors are possible) and files whose lines hledit_read_anchors reports as truncated. For multiline replacements or inserts, prefer a newline-delimited string for lines.",
-			"For hledit_apply_file_changes, copy anchor, start_anchor, and end_anchor verbatim as LN#HASH:text from either the latest hledit_read_anchors result or a successful edit's returned updated-anchor local window. After a successful edit, anchors read earlier stay valid for unchanged lines; if a line number shifted, a rejected call lists the verified renamed anchor to resubmit with. Do not alter, invent, or submit placeholder anchors.",
-			"If hledit_apply_file_changes returns stale, use returned current anchors only when their complete, untruncated local window covers the whole intended target and range; otherwise call hledit_read_anchors. After truncation, an incomplete snapshot, or insufficient proof, make the targeted read requested by the failure. Never repair anchors yourself beyond applying listed verified renames, retry unchanged input, or overwrite concurrent changes.",
+			"For a nonempty readable file, use hledit_apply_file_changes once with its complete non-overlapping batch; never overwrite it with write. Use write only for an empty file or when hledit_read_anchors reports source-line truncation. Prefer newline-delimited strings for multiline content.",
+			"Copy current LN#HASH:text anchors verbatim. After success, use updated anchors only inside the returned complete, untruncated local window; unchanged anchors outside it remain valid unless shifted. Apply listed verified renames explicitly. On stale, truncation, incomplete context, or insufficient proof, follow the targeted reread guidance; never invent anchors, retry unchanged, or overwrite concurrent changes.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
@@ -336,8 +343,8 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			_onUpdate: AgentToolUpdateCallback<unknown> | undefined,
 			ctx: ExtensionContext,
 		): Promise<TextResult> {
+			// evidence 由 runFileChangesWithDiff 在 mutation queue 内更新（单一实时 owner）。
 			const result = await runFileChangesWithDiff(params, ctx, signal, readEvidence);
-			readEvidence.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, result.details, ctx.cwd);
 			synchronizeAnchoredTools();
 			return result;
 		},
@@ -347,12 +354,9 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 	pi.registerTool(({
 		name: HLEDIT_REPLACE_ONCE_TOOL,
 		label: "Replace Once",
-		description: "Atomically replace one unique, exact contiguous block of text without a prior anchor read.",
-		promptSnippet: "Replace one unique exact text block",
+		description: "Atomically replace one unique exact text block without a prior anchor read.",
 		promptGuidelines: [
-			"Use hledit_replace_once only when old_lines is the complete, known old text and must occur exactly once in the current file. It uses current exact content as its precondition and does not require hledit_read_anchors first.",
-			"For hledit_replace_once multiline old_lines and new_lines, prefer newline-delimited strings. new_lines rejects an empty string: pass [\"\"] to replace the match with one blank line, and use hledit_apply_file_changes with delete_range to delete the block. Zero or multiple matches reject the write.",
-			"After hledit_replace_once is rejected, do not loosen the match or retry unchanged. Use the English candidate-range or reread guidance, then use hledit_read_anchors and an anchored edit when a target needs disambiguation.",
+			"Use hledit_replace_once only when complete old_lines must occur exactly once; no anchor read is required. Prefer newline-delimited strings. new_lines rejects an empty string: use [\"\"] for one blank line or hledit_apply_file_changes delete_range for deletion. On rejection, follow candidate/reread guidance; never loosen or retry the same match.",
 		],
 		parameters: HLEDIT_REPLACE_ONCE_PARAMS_SCHEMA,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
@@ -370,21 +374,28 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			_onUpdate: AgentToolUpdateCallback<unknown> | undefined,
 			ctx: ExtensionContext,
 		): Promise<TextResult> {
-			const result = await runReplaceOnceWithDiff(params, ctx, signal);
-			readEvidence.updateFromToolResult(HLEDIT_REPLACE_ONCE_TOOL, result.details, ctx.cwd);
+			// evidence 由 runReplaceOnceWithDiff 在 mutation queue 内更新（单一实时 owner）。
+			const result = await runReplaceOnceWithDiff(params, ctx, signal, readEvidence);
 			synchronizeAnchoredTools();
 			return result;
 		},
 	}) as never);
 
-	pi.on("tool_result", (event, ctx) => {
-		if (isAnchoredEditingTool(event.toolName)) {
-			readEvidence.updateFromToolResult(event.toolName, event.details, ctx.cwd);
-			synchronizeAnchoredTools();
-		}
+	pi.on("tool_result", (event) => {
+		// D6/2.2：实时结果的 evidence 只由 execute 路径在 mutation queue 内应用一次；
+		// branch/session 重放由 restoreFromBranch 负责。此处仅保留失败升级。
 		if (isAnchoredEditingTool(event.toolName) && isFailedHleditResult(event.details)) {
 			return { isError: true };
 		}
+	});
+
+	// D7：内置 compaction 文件提取只识别 read/write/edit 工具；被压缩消息中的
+	// hledit 工具操作在这里以结构化 details 补充进 fileOps。
+	pi.on("session_before_compact", (event) => {
+		recordAnchoredFileOperations(
+			[...event.preparation.messagesToSummarize, ...event.preparation.turnPrefixMessages],
+			event.preparation.fileOps,
+		);
 	});
 
 	pi.on("session_start", async (_event, ctx) => {

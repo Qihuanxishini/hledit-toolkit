@@ -164,11 +164,10 @@ func atomicWriteIfRevision(path string, content []byte, expectedRevision string)
 	defer replacement.discard()
 
 	beforeAtomicRevisionCheck(replacement.targetPath)
-	currentContent, readErr := os.ReadFile(replacement.targetPath)
-	if readErr != nil {
-		return "", &sourceChangedBeforeCommitError{ExpectedRevision: expectedRevision, err: readErr}
+	currentRevision, revisionErr := rawFileRevisionFromPath(replacement.targetPath)
+	if revisionErr != nil {
+		return "", &sourceChangedBeforeCommitError{ExpectedRevision: expectedRevision, err: revisionErr}
 	}
-	currentRevision := rawFileRevision(currentContent)
 	if currentRevision != expectedRevision {
 		return "", &sourceChangedBeforeCommitError{ExpectedRevision: expectedRevision, CurrentRevision: currentRevision}
 	}

@@ -9,34 +9,39 @@ import { HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_READ_ANCHORS_TOOL, HLEDIT_REPLAC
 import type { TextResult } from "../src/result.ts";
 
 type ToolResultListener = (event: { toolName: string; details: unknown }, context: { cwd: string }) => unknown;
+type ExtensionEventListener = (event: never, context: never) => unknown;
 type RegisteredTool = {
 	name: string;
 	label?: string;
 	description?: string;
 	promptSnippet?: string;
 	promptGuidelines?: string[];
+	parameters?: unknown;
 	prepareArguments?: (args: unknown) => unknown;
 	execute: (toolCallId: string, params: never, signal: AbortSignal | undefined, onUpdate: undefined, context: { cwd: string }) => Promise<TextResult>;
 };
 
-function registerExtensionForTest(): { registeredTools: Map<string, RegisteredTool>; toolResultListener: ToolResultListener } {
+function registerExtensionForTest(): {
+	registeredTools: Map<string, RegisteredTool>;
+	toolResultListener: ToolResultListener;
+	eventListeners: Map<string, ExtensionEventListener>;
+} {
 	const registeredTools = new Map<string, RegisteredTool>();
-	let toolResultListener: ToolResultListener | undefined;
+	const eventListeners = new Map<string, ExtensionEventListener>();
 	const pi = {
 		registerTool(tool: RegisteredTool) {
 			registeredTools.set(tool.name, tool);
 		},
 		registerCommand() {},
-		on(eventName: string, listener: ToolResultListener) {
-			if (eventName === "tool_result") {
-				toolResultListener = listener;
-			}
+		on(eventName: string, listener: ExtensionEventListener) {
+			eventListeners.set(eventName, listener);
 		},
 	};
 
 	piHleditDiffExtension(pi as never);
+	const toolResultListener = eventListeners.get("tool_result") as ToolResultListener | undefined;
 	assert.ok(toolResultListener, "extension must register a tool_result listener");
-	return { registeredTools, toolResultListener };
+	return { registeredTools, toolResultListener, eventListeners };
 }
 
 test("extension registers all editing tools and escalates logical hledit failures", () => {
@@ -51,38 +56,50 @@ test("extension registers all editing tools and escalates logical hledit failure
 	assert.equal(toolResultListener({ toolName: "bash", details: { disposition: "rejected" } }, context), undefined);
 });
 
-test("registered tool metadata gives accurate English safeguards", () => {
+test("registered tool metadata stays concise without losing English safeguards", () => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	const replaceOnceTool = registeredTools.get(HLEDIT_REPLACE_ONCE_TOOL);
-	assert.ok(readTool?.description && readTool.promptSnippet && readTool.promptGuidelines);
-	assert.ok(applyTool?.description && applyTool.promptSnippet && applyTool.promptGuidelines);
-	assert.ok(replaceOnceTool?.description && replaceOnceTool.promptSnippet && replaceOnceTool.promptGuidelines);
+	assert.ok(readTool?.description && readTool.promptGuidelines);
+	assert.ok(applyTool?.description && applyTool.promptGuidelines);
+	assert.ok(replaceOnceTool?.description && replaceOnceTool.promptGuidelines);
 
 	assert.equal(readTool.label, "Read for Edit");
-	assert.equal(readTool.promptGuidelines.length, 2);
-	assert.equal(applyTool.promptGuidelines.length, 3);
-	assert.equal(replaceOnceTool.promptGuidelines.length, 3);
+	assert.equal(readTool.promptGuidelines.length, 1);
+	assert.equal(applyTool.promptGuidelines.length, 2);
+	assert.equal(replaceOnceTool.promptGuidelines.length, 1);
 	for (const tool of [readTool, applyTool, replaceOnceTool]) {
-		assert.ok(tool.description && tool.promptSnippet && tool.promptGuidelines);
+		assert.ok(tool.description);
+		assert.ok(tool.promptGuidelines);
+		assert.equal(tool.promptSnippet, undefined);
 		assert.doesNotMatch(tool.description, /[\u4E00-\u9FFF]/u);
-		assert.doesNotMatch(tool.promptSnippet, /[\u4E00-\u9FFF]/u);
 		assert.ok(tool.promptGuidelines.every((guideline) => !/[\u4E00-\u9FFF]/u.test(guideline)));
 	}
-	assert.ok(readTool.promptGuidelines.every((guideline) => guideline.includes(HLEDIT_READ_ANCHORS_TOOL)));
-	assert.ok(applyTool.promptGuidelines.every((guideline) => guideline.includes(HLEDIT_APPLY_FILE_CHANGES_TOOL)));
-	assert.ok(replaceOnceTool.promptGuidelines.every((guideline) => guideline.includes(HLEDIT_REPLACE_ONCE_TOOL)));
+
+	const readGuidelines = readTool.promptGuidelines.join(" ");
+	const applyGuidelines = applyTool.promptGuidelines.join(" ");
+	const replaceOnceGuidelines = replaceOnceTool.promptGuidelines.join(" ");
 	assert.match(readTool.description, /LN#HASH anchors/);
-	assert.ok(readTool.promptGuidelines.some((guideline) => guideline.includes("first read") && guideline.includes("ordinary read")));
-	assert.ok(readTool.promptGuidelines.some((guideline) => guideline.includes("grep") && guideline.includes("local read proof")));
-	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("never overwrite an existing readable file with write")));
-	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("empty files")));
-	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("newline-delimited string")));
-	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("updated-anchor local window")));
-	assert.ok(applyTool.promptGuidelines.some((guideline) => guideline.includes("complete, untruncated local window")));
-	assert.ok(replaceOnceTool.promptGuidelines.some((guideline) => guideline.includes("exactly once") && guideline.includes("old_lines")));
-	assert.ok(replaceOnceTool.promptGuidelines.some((guideline) => guideline.includes("new_lines rejects an empty string") && guideline.includes("delete_range")));
+	assert.match(readGuidelines, /first read[\s\S]*ordinary read/);
+	assert.match(readGuidelines, /grep\/context[\s\S]*local read proof/);
+	assert.match(applyGuidelines, /never overwrite[\s\S]*with write/);
+	assert.match(applyGuidelines, /empty file/);
+	assert.match(applyGuidelines, /newline-delimited strings/);
+	assert.match(applyGuidelines, /complete, untruncated local window/);
+	assert.match(applyGuidelines, /verified renames/);
+	assert.match(applyGuidelines, /stale[\s\S]*targeted reread/);
+	assert.match(replaceOnceGuidelines, /old_lines[\s\S]*exactly once/);
+	assert.match(replaceOnceGuidelines, /new_lines rejects an empty string[\s\S]*delete_range/);
+
+	const protocolCharacters = [readTool, applyTool, replaceOnceTool].reduce(
+		(total, tool) => total
+			+ JSON.stringify(tool.parameters).length
+			+ (tool.description?.length ?? 0)
+			+ (tool.promptGuidelines ?? []).join("").length,
+		0,
+	);
+	assert.ok(protocolCharacters <= 8000, `registered hledit protocol uses ${protocolCharacters} characters; expected at most 8000`);
 });
 
 test("apply tool exposes JSON-string argument preparation to Pi", () => {
@@ -227,8 +244,12 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 	);
 
 	assert.equal(applyResult.details.disposition, "succeeded");
-	assert.match(applyResult.content[0]?.text ?? "", /Updated anchors \(only the affected window/);
-	assert.match(applyResult.content[0]?.text ?? "", /TWO/);
+	const resultText = applyResult.content[0]?.text ?? "";
+	assert.match(resultText, /^Applied 1 change; line delta: \+1 -1\.\n\nUpdated anchors:\n/);
+	assert.match(resultText, /TWO/);
+	assert.equal(resultText.match(/^Updated anchors:$/gm)?.length, 1);
+	assert.ok(resultText.length < 250);
+	assert.doesNotMatch(resultText, /Later changes inside this window/);
 	assert.equal(await readFile(join(directory, "target.txt"), "utf8"), "one\nTWO\nthree\n");
 });
 
@@ -290,7 +311,7 @@ test("apply tool accepts byte-truncated updated anchor contexts", async (t) => {
 	);
 
 	assert.equal(applyResult.details.disposition, "succeeded");
-	assert.match(applyResult.content[0]?.text ?? "", /The anchor context was truncated/);
+	assert.match(applyResult.content[0]?.text ?? "", /Anchor window truncated/);
 	assert.equal((await readFile(target, "utf8")).split(/\r?\n/)[4], "CHANGED");
 });
 
@@ -357,11 +378,12 @@ test("apply tool rejects accidental single-line range expansion with actionable 
 	});
 	const text = applyResult.content[0]?.text ?? "";
 	assert.match(text, /The atomic batch was rejected; no content was written/);
-	assert.match(text, /Received:[\s\S]*end_anchor: .*same as start_anchor/);
+	assert.match(text, /Received: replace_range .* through .*; 2 output lines/);
 	assert.match(text, /Do not retry with the same parameters/);
 	assert.match(text, /No safe placeholder end anchor is available/);
-	assert.doesNotMatch(text, /<from the latest hledit_read_anchors/);
-	assert.match(text, /"operation": "insert_after"[\s\S]*"lines": \[[\s\S]*"inserted"/);
+	assert.match(text, /change operation to insert_after/);
+	assert.match(text, /remove the first line from lines/);
+	assert.doesNotMatch(text, /"lines"/);
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
 });
 
@@ -436,7 +458,9 @@ test("apply tool suggests merging a nearby delete range without writing", async 
 	assert.equal(applyResult.details.error?.relatedChangeNumber, 2);
 	assert.equal(applyResult.details.error?.candidateEndAnchor, deleteEndAnchor);
 	assert.match(applyResult.content[0]?.text ?? "", /Change 2 is a delete_range from/);
-	assert.match(applyResult.content[0]?.text ?? "", /remove the delete_range/);
+	assert.match(applyResult.content[0]?.text ?? "", new RegExp(`set change 1 end_anchor to ${deleteEndAnchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+	assert.match(applyResult.content[0]?.text ?? "", /remove change 2/);
+	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /"lines"/);
 	assert.equal(await readFile(target, "utf8"), original);
 });
 
@@ -486,7 +510,9 @@ test("replace-once tool enforces the empty lines contract even without host sche
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\n");
 });
 
-test("apply tool surfaces the mixed line ending normalization warning", async (t) => {
+// [喵喵喵]: Phase 3 起 CLI 逐行保留 terminator：混合行尾文件只改目标行，
+// 未触及行的行尾字节保持原样，不再整文件归一化，也不再返回 mixed warning (2026-07-25)
+test("apply tool preserves untouched terminators in a mixed line ending file", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
@@ -511,6 +537,207 @@ test("apply tool surfaces the mixed line ending normalization warning", async (t
 		context,
 	);
 	assert.equal(result.details.disposition, "succeeded");
-	assert.match(result.content[0]?.text ?? "", /normalized the whole file to CRLF/);
-	assert.equal(await readFile(target, "utf8"), "a\r\nB\r\nc\r\nd\r\n");
+	assert.doesNotMatch(result.content[0]?.text ?? "", /line endings|Warnings:/);
+	assert.equal(result.details.warnings, undefined);
+	assert.equal(await readFile(target, "utf8"), "a\r\nB\nc\r\nd\n");
+});
+
+// [喵喵喵]: Phase 2.1/2.2 回归——evidence 更新在 mutation queue 内完成且只应用一次；
+// 排队的同文件后续调用必须立即看到前一项的重映射结果 (2026-07-25)
+test("queued same-file apply sees the previous apply's remapped evidence", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-queue-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "one\ntwo\nthree\nfour\n", "utf8");
+	const context = { cwd: directory };
+
+	const read = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	assert.equal(read.details.disposition, "succeeded");
+	const anchorAt = (line: number) => {
+		const anchor = read.details.read?.lines.find((entry) => entry.line === line)?.anchor;
+		assert.ok(anchor);
+		return anchor;
+	};
+
+	// 先发起 insert（会把第 3 行平移到第 4 行），随后在其 CLI 仍在运行时排队第二个 apply。
+	const insertPromise = applyTool.execute(
+		"apply-insert",
+		{ path: "target.txt", changes: [{ operation: "insert_after", anchor: anchorAt(1), lines: ["inserted"] }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	// 两个 macrotask 保证 insert 先注册进 mutation queue，但远不足以让其 CLI 进程完成。
+	await new Promise((resolveTick) => setImmediate(resolveTick));
+	await new Promise((resolveTick) => setImmediate(resolveTick));
+	const staleAnchor = anchorAt(3);
+	const replacePromise = applyTool.execute(
+		"apply-replace",
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: staleAnchor, end_anchor: staleAnchor, lines: ["THREE"] }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	const [insertResult, replaceResult] = await Promise.all([insertPromise, replacePromise]);
+
+	assert.equal(insertResult.details.disposition, "succeeded");
+	// 第二项必须在插件侧拿到基于新 evidence 的更名指引，而不是把旧 proof 发给 CLI 换回 stale。
+	assert.equal(replaceResult.details.disposition, "rejected");
+	assert.equal(replaceResult.details.error?.code, "insufficient_read_proof");
+	assert.equal(replaceResult.details.error?.renamesRestoreProof, true);
+	const renames = replaceResult.details.error?.renamedAnchors as Array<{ requested: string; current: string }>;
+	assert.equal(renames?.length, 1);
+	assert.equal(renames[0]?.requested, staleAnchor);
+	assert.match(renames[0]?.current ?? "", /^4#/);
+	assert.match(replaceResult.content[0]?.text ?? "", /Resubmit after replacing every renamed anchor/);
+	assert.equal(await readFile(target, "utf8"), "one\ninserted\ntwo\nthree\nfour\n");
+});
+
+// [喵喵喵]: Phase 2.3 回归——session_before_compact 从结构化 tool result 补充
+// readFiles/modifiedFiles；零写入拒绝不得记为已修改 (2026-07-25)
+test("session_before_compact records anchored file operations from structured results", () => {
+	const { eventListeners } = registerExtensionForTest();
+	const compactListener = eventListeners.get("session_before_compact");
+	assert.ok(compactListener, "extension must register a session_before_compact listener");
+
+	const fileOps = { read: new Set<string>(), written: new Set<string>(), edited: new Set<string>() };
+	const toolResult = (toolName: string, details: Record<string, unknown>) => ({
+		role: "toolResult",
+		toolCallId: "call",
+		toolName,
+		content: [],
+		details,
+		isError: false,
+		timestamp: 0,
+	});
+	compactListener(
+		{
+			type: "session_before_compact",
+			preparation: {
+				messagesToSummarize: [
+					toolResult(HLEDIT_READ_ANCHORS_TOOL, { disposition: "succeeded", path: "src/read-only.ts" }),
+					toolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, { disposition: "succeeded", contentChanged: true, path: "src/edited.ts" }),
+					toolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, { disposition: "succeeded", contentChanged: false, path: "src/noop.ts" }),
+					toolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, { disposition: "rejected", path: "src/rejected.ts" }),
+					toolResult(HLEDIT_REPLACE_ONCE_TOOL, { disposition: "unavailable", path: "src/unavailable.ts" }),
+					{ role: "assistant", content: [] },
+				],
+				turnPrefixMessages: [
+					toolResult(HLEDIT_REPLACE_ONCE_TOOL, { disposition: "outcome_unknown", path: "src/maybe-modified.ts" }),
+				],
+				fileOps,
+			},
+		} as never,
+		{ cwd: process.cwd() } as never,
+	);
+
+	assert.deepEqual([...fileOps.read].sort(), ["src/noop.ts", "src/read-only.ts"]);
+	assert.deepEqual([...fileOps.edited].sort(), ["src/edited.ts", "src/maybe-modified.ts"]);
+	assert.deepEqual([...fileOps.written], []);
+});
+
+// [喵喵喵]: Phase 4 回归——成功结果携带提交绑定的结构化 changePreview，
+// 不再保存等价的全文件 diff/patch，也不再前后读取完整文件 (2026-07-25)
+test("apply tool attaches a commit-bound change preview instead of a full-file diff", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-preview-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "one\ntwo\nthree\nfour\nfive\nsix\n", "utf8");
+	const context = { cwd: directory };
+
+	const read = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	assert.equal(read.details.disposition, "succeeded");
+	const anchorAt = (line: number) => {
+		const anchor = read.details.read?.lines.find((entry) => entry.line === line)?.anchor;
+		assert.ok(anchor);
+		return anchor;
+	};
+
+	const result = await applyTool.execute(
+		"apply",
+		{
+			path: "target.txt",
+			changes: [
+				{ operation: "replace_range", start_anchor: anchorAt(2), end_anchor: anchorAt(2), lines: ["TWO", "TWO2"] },
+				{ operation: "insert_after", anchor: anchorAt(4), lines: ["N"] },
+				{ operation: "delete_range", start_anchor: anchorAt(5), end_anchor: anchorAt(5) },
+			],
+		} as never,
+		undefined,
+		undefined,
+		context,
+	);
+
+	assert.equal(result.details.disposition, "succeeded");
+	assert.deepEqual(result.details.changePreview, {
+		truncated: false,
+		lines: [
+			{ kind: "remove", oldLine: 2, text: "two" },
+			{ kind: "add", newLine: 2, text: "TWO" },
+			{ kind: "add", newLine: 3, text: "TWO2" },
+			{ kind: "add", newLine: 6, text: "N" },
+			{ kind: "remove", oldLine: 5, text: "five" },
+		],
+	});
+	assert.equal("diff" in result.details, false);
+	assert.equal("patch" in result.details, false);
+	assert.equal("previewError" in result.details, false);
+	assert.equal(await readFile(target, "utf8"), "one\nTWO\nTWO2\nthree\nfour\nN\nsix\n");
+});
+
+test("no-op apply and replace-once carry commit-bound previews", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	const replaceOnceTool = registeredTools.get(HLEDIT_REPLACE_ONCE_TOOL);
+	assert.ok(readTool && applyTool && replaceOnceTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-preview-noop-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "one\ntwo\nthree\n", "utf8");
+	const context = { cwd: directory };
+
+	const read = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const anchor = read.details.read?.lines.find((entry) => entry.line === 2)?.anchor;
+	assert.ok(anchor);
+
+	const noop = await applyTool.execute(
+		"apply",
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: ["two"] }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(noop.details.disposition, "succeeded");
+	assert.equal(noop.details.contentChanged, false);
+	assert.deepEqual(noop.details.changePreview, { lines: [], truncated: false });
+
+	const replaced = await replaceOnceTool.execute(
+		"replace-once",
+		{ path: "target.txt", old_lines: ["two"], new_lines: ["TWO"] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(replaced.details.disposition, "succeeded");
+	assert.deepEqual(replaced.details.changePreview, {
+		truncated: false,
+		lines: [
+			{ kind: "remove", oldLine: 2, text: "two" },
+			{ kind: "add", newLine: 2, text: "TWO" },
+		],
+	});
+	assert.equal("diff" in replaced.details, false);
+	assert.equal("patch" in replaced.details, false);
 });

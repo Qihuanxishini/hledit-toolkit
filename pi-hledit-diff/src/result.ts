@@ -1,5 +1,3 @@
-import { generateDiffString, generateUnifiedPatch } from "@earendil-works/pi-coding-agent";
-import { readFile } from "node:fs/promises";
 import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
 import { ANCHOR_HASH_PATTERN, lineFromAnchor } from "./file-changes.ts";
 import { parseAnchorContext, parseBatchUpdatedAnchorContext, type BatchAnchorContext } from "./post-edit-context.ts";
@@ -363,24 +361,8 @@ export function readAnchorsResult(run: HleditRun, request: NormalizedReadRequest
 	};
 }
 
-function formatLineRange(first: number | undefined, last: number | undefined): string | undefined {
-	if (first === undefined && last === undefined) {
-		return undefined;
-	}
-	const start = first ?? last;
-	const end = last ?? first;
-	return start === end ? String(start) : `${start}-${end}`;
-}
-
-function lineDeltaSummary(parsed: Record<string, unknown>): string | undefined {
-	const linesAdded = parsed.linesAdded;
-	const linesDeleted = parsed.linesDeleted;
-	if (typeof linesAdded !== "number" && typeof linesDeleted !== "number") {
-		return undefined;
-	}
-	const added = typeof linesAdded === "number" ? linesAdded : 0;
-	const deleted = typeof linesDeleted === "number" ? linesDeleted : 0;
-	return `Line delta: +${added} -${deleted}`;
+function lineDeltaSummary(parsed: Record<string, unknown>): string {
+	return `+${parsed.linesAdded as number} -${parsed.linesDeleted as number}`;
 }
 
 function appendRemaps(
@@ -651,9 +633,6 @@ function localizeApplyWarning(warning: string): string {
 	if (warning.startsWith("file was replaced, but directory metadata could not be synchronized:")) {
 		return "The file content was replaced, but directory metadata could not be synchronized; durability may be reduced in extreme scenarios such as power loss.";
 	}
-	if (warning.startsWith("file mixed CRLF and LF line endings")) {
-		return "The file mixed CRLF and LF line endings; this edit normalized the whole file to CRLF, so unchanged lines may appear modified in line-ending-aware diffs.";
-	}
 	return "The file was modified successfully, but the write carries a durability warning; technical details are preserved in the tool result.";
 }
 
@@ -729,21 +708,9 @@ function formatApplyResult(result: Record<string, unknown>, context: ApplyResult
 		appendApplyWarnings(lines, result);
 		return lines.join("\n");
 	}
-	const lines = ["Changes were applied."];
-	if (typeof result.editsApplied === "number") {
-		lines.push(`Operations applied: ${result.editsApplied}`);
-	}
-	const changed = formatLineRange(
-		typeof result.firstChangedLine === "number" ? result.firstChangedLine : undefined,
-		typeof result.lastChangedLine === "number" ? result.lastChangedLine : undefined,
-	);
-	if (changed) {
-		lines.push(`Affected lines: ${changed}`);
-	}
-	const lineDelta = lineDeltaSummary(result);
-	if (lineDelta) {
-		lines.push(lineDelta);
-	}
+	const editsApplied = result.editsApplied as number;
+	const changeLabel = editsApplied === 1 ? "change" : "changes";
+	const lines = [`Applied ${editsApplied} ${changeLabel}; line delta: ${lineDeltaSummary(result)}.`];
 	appendApplyWarnings(lines, result);
 	return lines.join("\n");
 }
@@ -955,32 +922,4 @@ export function rejectedToolResult(text: string, error: HleditErrorMetadata): Te
 
 export function isFailedHleditResult(details: unknown): boolean {
 	return isRecord(details) && details.disposition !== "succeeded";
-}
-
-export function buildDiffDetails(
-	path: string,
-	beforeContent: string,
-	afterContent: string,
-	parsed: Record<string, unknown> | null,
-): Record<string, unknown> {
-	const diffResult = generateDiffString(beforeContent, afterContent);
-	const patch = generateUnifiedPatch(path, beforeContent, afterContent);
-	const cliFirstChangedLine = parsed?.firstChangedLine;
-	return {
-		...extractCliSummary(parsed),
-		diff: diffResult.diff,
-		patch,
-		firstChangedLine: typeof cliFirstChangedLine === "number" ? cliFirstChangedLine : diffResult.firstChangedLine,
-	};
-}
-
-export async function readUtf8File(path: string): Promise<{ ok: true; content: string } | { ok: false; error: string }> {
-	try {
-		const bytes = await readFile(path);
-		const content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-		return { ok: true, content };
-	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		return { ok: false, error: message };
-	}
 }

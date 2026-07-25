@@ -83,11 +83,15 @@ export function resolveHleditBin(): string {
 	return resolve(EXTENSION_ROOT, "bin", "hledit.exe");
 }
 
+// maxOutputBytes 是 wrapper 协议余量：必须容纳 CLI 自身 50 KiB/2000 行截断后的
+// 最坏 JSON 转义膨胀（控制字符 6 倍 + 逐行框架）。正式调用方使用默认值；
+// 更小的显式值仅供回归测试覆盖 overflow 终止路径。
 export async function runHledit(
 	args: string[],
 	stdin: string | undefined,
 	cwd: string,
 	signal: AbortSignal | undefined,
+	maxOutputBytes: number = HLEDIT_MAX_OUTPUT_BYTES,
 ): Promise<HleditRun> {
 	const bin = resolveHleditBin();
 	return new Promise((resolveRun) => {
@@ -146,8 +150,8 @@ export async function runHledit(
 		const appendOutput = (target: "stdout" | "stderr", chunk: string) => {
 			if (settled || terminationRequested) return;
 			outputBytes += Buffer.byteLength(chunk, "utf8");
-			if (outputBytes > HLEDIT_MAX_OUTPUT_BYTES) {
-				finish({ stdout: `hledit output exceeded ${HLEDIT_MAX_OUTPUT_BYTES} bytes, so the process was terminated.`, stderr: "", exitCode: 1 }, true);
+			if (outputBytes > maxOutputBytes) {
+				finish({ stdout: `hledit output exceeded ${maxOutputBytes} bytes, so the process was terminated.`, stderr: "", exitCode: 1 }, true);
 				return;
 			}
 			if (target === "stdout") stdout += chunk;

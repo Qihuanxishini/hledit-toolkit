@@ -138,7 +138,9 @@ func cmdReplaceOnce(path string) error {
 
 	start := matches[0]
 	end := start + len(request.OldLines)
-	resultLines := append([]string{}, file.Lines[:start]...)
+	// 输出行数可精确预估，一次预分配避免三段 append 的重复扩容。
+	resultLines := make([]string, 0, len(file.Lines)+len(request.NewLines)-len(request.OldLines))
+	resultLines = append(resultLines, file.Lines[:start]...)
 	resultLines = append(resultLines, request.NewLines...)
 	resultLines = append(resultLines, file.Lines[end:]...)
 
@@ -146,9 +148,15 @@ func cmdReplaceOnce(path string) error {
 	lastChanged := end
 	contentChanged := !slices.Equal(file.Lines, resultLines)
 	revision := file.Revision
+	editDeltas := []EditDelta{{
+		OldStart: firstChanged,
+		OldEnd:   lastChanged,
+		Delta:    len(request.NewLines) - len(request.OldLines),
+	}}
+	var encoded []byte
 	if contentChanged {
-		joined := file.JoinLines(resultLines)
-		revision = rawFileRevision([]byte(joined))
+		encoded = file.EncodeContent(resultLines, rebuiltLineEndings(file, editDeltas, len(resultLines)))
+		revision = rawFileRevision(encoded)
 	}
 	result := BatchEditResult{
 		OK:               true,
@@ -159,18 +167,14 @@ func cmdReplaceOnce(path string) error {
 		EditsApplied:     1,
 		ContentChanged:   contentChanged,
 		Revision:         revision,
-		EditDeltas: []EditDelta{{
-			OldStart: firstChanged,
-			OldEnd:   lastChanged,
-			Delta:    len(request.NewLines) - len(request.OldLines),
-		}},
+		EditDeltas:       editDeltas,
 		UpdatedAnchors: buildUpdatedAnchorContext(resultLines, firstChanged, lastChanged, len(request.NewLines)),
 	}
 	if !contentChanged {
 		return emitJSON(result)
 	}
 
-	warning, writeErr := atomicWriteIfRevision(path, []byte(file.JoinLines(resultLines)), file.Revision)
+	warning, writeErr := atomicWriteIfRevision(path, encoded, file.Revision)
 	if writeErr != nil {
 		var changedErr *sourceChangedBeforeCommitError
 		if errors.As(writeErr, &changedErr) {
@@ -184,9 +188,6 @@ func cmdReplaceOnce(path string) error {
 		}
 		emitError("io", writeErr.Error())
 		return nil
-	}
-	if file.HasMixedLineEndings {
-		result.Warnings = append(result.Warnings, mixedLineEndingWarning)
 	}
 	if warning != "" {
 		result.Warnings = append(result.Warnings, warning)

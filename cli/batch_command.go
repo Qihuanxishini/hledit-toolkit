@@ -65,11 +65,11 @@ func runBatchApply(path string) error {
 		return nil
 	}
 
-	joined := ""
+	var encoded []byte
 	revision := file.Revision
 	if plan.ContentChanged {
-		joined = file.JoinLines(plan.RebuiltLines)
-		revision = rawFileRevision([]byte(joined))
+		encoded = file.EncodeContent(plan.RebuiltLines, rebuiltLineEndings(file, plan.EditDeltas, len(plan.RebuiltLines)))
+		revision = rawFileRevision(encoded)
 	}
 	result := batchEditResultFromPlan(plan, revision)
 	result.UpdatedAnchors = buildUpdatedAnchorContext(
@@ -81,7 +81,7 @@ func runBatchApply(path string) error {
 	if !plan.ContentChanged {
 		return emitJSON(result)
 	}
-	writeWarning, err := atomicWriteIfRevision(path, []byte(joined), file.Revision)
+	writeWarning, err := atomicWriteIfRevision(path, encoded, file.Revision)
 	if err != nil {
 		var changedErr *sourceChangedBeforeCommitError
 		if errors.As(err, &changedErr) {
@@ -90,9 +90,6 @@ func runBatchApply(path string) error {
 		}
 		emitError("io", err.Error())
 		return nil
-	}
-	if file.HasMixedLineEndings {
-		result.Warnings = append(result.Warnings, mixedLineEndingWarning)
 	}
 	if writeWarning != "" {
 		result.Warnings = append(result.Warnings, writeWarning)

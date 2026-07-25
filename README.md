@@ -11,6 +11,11 @@
 
 插件当前面向 Windows x64，仓库内附带 `pi-hledit-diff/bin/hledit.exe`。
 
+## 设计与优化路线
+
+- [`OPTIMIZATION-ROADMAP.md`](./OPTIMIZATION-ROADMAP.md)：未来 Token、编辑正确性、compaction、提交绑定 diff 与内存稳健性优化的权威执行基线。
+- [`IMPLEMENTATION-PLAN.md`](./IMPLEMENTATION-PLAN.md) 及其他 execution plan 保留为历史实施记录；当前运行契约以代码、测试和维护文档为准，尚未实施的优化方向以 `OPTIMIZATION-ROADMAP.md` 为准。
+
 ## 核心特点
 
 - 使用 v2 `LN#HASH`（三位 URL-safe Base64 hash）锚点检测读取后发生的文件变化，拒绝 stale 修改。
@@ -29,8 +34,8 @@
 ### 行尾与编码行为
 
 - revision 基于原始字节，BOM、CRLF/LF 与末尾换行差异都会改变 revision。
-- 写入时整份文件使用统一行尾：只要原文件包含至少一个 CRLF，重建后所有行都使用 CRLF，否则使用 LF。混合行尾文件在任何内容变更时会被整体规范化——这是明确接受的行为，且成功响应会携带显式 warning（同时进入模型正文与 TUI）；如需保留混合行尾请勿使用本工具编辑该文件。
-- 孤立 `\r`（无 `\n`）不被视为行分隔符；UTF-8 BOM 与末尾换行的有无在写入时保持原状。
+- 写入时逐行保留 terminator：未修改行的行尾字节保持原样，混合行尾文件不再被整体规范化，也不再产生 mixed line ending warning。编辑产生的新行使用编辑位置附近的局部行尾，replacement 最后一行继承被替换范围末行的 terminator。
+- 孤立 `\r`（无 `\n`）属于行文本，不是行分隔符；UTF-8 BOM 与末尾换行的有无在写入时保持原状；删除全部逻辑行会生成真正的空文件。
 
 ## 开发验证
 

@@ -18,12 +18,14 @@ test("formatBatchUpdatedAnchorContext formats CLI-provided anchors", () => {
 	});
 	assert.ok(context);
 
-	assert.deepEqual(formatBatchUpdatedAnchorContext(context), {
-		text: "Updated anchors (only the affected window, lines 1-2; not the whole file):\n1#BHJ:one\n2#BBK:TWO\nLater changes inside this window must use these new anchors. Anchors read earlier stay valid for unchanged lines outside the window; if an edit shifted a line number, a rejected call lists the verified renamed anchor to resubmit with. Call hledit_read_anchors only for ranges that were never read or when a failure requests a targeted read.",
+	const result = formatBatchUpdatedAnchorContext(context);
+	assert.deepEqual(result, {
+		text: "Updated anchors:\n1#BHJ:one\n2#BBK:TWO",
 		offset: 1,
 		limit: 2,
 		truncated: false,
 	});
+	assert.ok(result.text.length < 100);
 });
 
 test("formatBatchUpdatedAnchorContext preserves CLI truncation guidance", () => {
@@ -40,7 +42,7 @@ test("formatBatchUpdatedAnchorContext preserves CLI truncation guidance", () => 
 
 	const result = formatBatchUpdatedAnchorContext(context);
 	assert.equal(result.truncated, true);
-	assert.match(result.text, /offset:8 and limit:25/);
+	assert.equal(result.text, "Updated anchors:\n8#BHJ:partial\nAnchor window truncated; call hledit_read_anchors with offset:8 and limit:25.");
 });
 
 test("formatBatchUpdatedAnchorContext formats an empty file", () => {

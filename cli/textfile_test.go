@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -47,10 +48,10 @@ func TestLoadedTextFilePreservesUTF8BOM(t *testing.T) {
 		t.Fatalf("Lines = %#v; want %#v", got, want)
 	}
 
-	joined := []byte(file.JoinLines([]string{"alpha", "gamma"}))
+	joined := file.EncodeContent([]string{"alpha", "gamma"}, []LineEnding{CRLFLineEnding, CRLFLineEnding})
 	want := append([]byte(utf8BOM), []byte("alpha\r\ngamma\r\n")...)
 	if !bytes.Equal(joined, want) {
-		t.Fatalf("JoinLines bytes = %v; want %v", joined, want)
+		t.Fatalf("EncodeContent bytes = %v; want %v", joined, want)
 	}
 }
 
@@ -75,18 +76,20 @@ func TestBatchEditPreservesUTF8BOM(t *testing.T) {
 	}
 }
 
-func TestParseTextFileDetectsMixedLineEndings(t *testing.T) {
+func TestParseTextFileTracksPerLineTerminators(t *testing.T) {
 	cases := []struct {
 		name    string
 		content string
-		mixed   bool
+		lines   []string
+		endings []LineEnding
 	}{
-		{"pure LF", "a\nb\n", false},
-		{"pure CRLF", "a\r\nb\r\n", false},
-		{"mixed", "a\r\nb\nc\r\nd\n", true},
-		{"mostly LF one CRLF", "m1\nm2\nm3\r\nm4\nm5\n", true},
-		{"lone CR is not a line ending", "a\rb\n", false},
-		{"empty", "", false},
+		{"pure LF", "a\nb\n", []string{"a", "b"}, []LineEnding{LFLineEnding, LFLineEnding}},
+		{"pure CRLF", "a\r\nb\r\n", []string{"a", "b"}, []LineEnding{CRLFLineEnding, CRLFLineEnding}},
+		{"mixed", "a\r\nb\nc\r\nd\n", []string{"a", "b", "c", "d"}, []LineEnding{CRLFLineEnding, LFLineEnding, CRLFLineEnding, LFLineEnding}},
+		{"no trailing newline", "a\nb", []string{"a", "b"}, []LineEnding{LFLineEnding, NoLineEnding}},
+		{"lone CR is line text", "a\rb\n", []string{"a\rb"}, []LineEnding{LFLineEnding}},
+		{"trailing lone CR is line text", "a\n b\r", []string{"a", " b\r"}, []LineEnding{LFLineEnding, NoLineEnding}},
+		{"empty", "", []string{}, []LineEnding{}},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -94,33 +97,20 @@ func TestParseTextFileDetectsMixedLineEndings(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if file.HasMixedLineEndings != testCase.mixed {
-				t.Fatalf("HasMixedLineEndings = %v; want %v", file.HasMixedLineEndings, testCase.mixed)
+			if len(file.Lines) != len(file.LineEndings) {
+				t.Fatalf("len(Lines)=%d len(LineEndings)=%d; invariant violated", len(file.Lines), len(file.LineEndings))
+			}
+			if !slices.Equal(file.Lines, testCase.lines) {
+				t.Fatalf("Lines = %#v; want %#v", file.Lines, testCase.lines)
+			}
+			if !slices.Equal(file.LineEndings, testCase.endings) {
+				t.Fatalf("LineEndings = %#v; want %#v", file.LineEndings, testCase.endings)
+			}
+			// 无损性：原样编码必须逐字节还原源文本（不含被剥离的 BOM）。
+			if rejoined := string(file.EncodeContent(file.Lines, file.LineEndings)); rejoined != testCase.content {
+				t.Fatalf("EncodeContent round-trip = %q; want %q", rejoined, testCase.content)
 			}
 		})
-	}
-}
-
-// 混合行尾文件的归一化是文档化行为，但必须显式返回 warning，不得静默改写未编辑行。
-func TestBatchEditWarnsOnMixedLineEndingNormalization(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "mixed.txt")
-	if err := os.WriteFile(target, []byte("a\r\nb\nc\r\nd\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
-		OP: "replace", Pos: formatTag(2, "b"), Lines: []string{"B"},
-	}}}, false)
-	if !strings.Contains(output, mixedLineEndingWarning) {
-		t.Fatalf("output = %q; want mixed line ending warning", output)
-	}
-	content, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := string(content), "a\r\nB\r\nc\r\nd\r\n"; got != want {
-		t.Fatalf("content = %q; want %q", got, want)
 	}
 }
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.3.1] — 2026-07-25
+
+### Changed
+
+- Build the final file bytes exactly once per write: batch, replace-once, and single-edit verbs encode BOM, line text, and per-line terminators into one precisely sized buffer that both the revision hash and the atomic write consume. Cumulative allocations for a 10 MiB edit drop from ~42 MB to ~10.6 MB.
+- The pre-commit revision recheck streams the target through SHA-256 instead of reading the whole file into memory (~33 KB instead of ~10.5 MB per recheck on a 10 MiB target). Error mapping and commit ordering are unchanged.
+
+## [2.3.0] — 2026-07-25
+
+### Changed
+
+- Preserve line terminators per line: untouched source lines keep their exact terminator bytes, so mixed CRLF/LF files are no longer normalized to a single dominant ending on write. New lines from an edit use the local terminator style near the edit; the last replacement line inherits the terminator of the last replaced line; appending after an unterminated last line terminates that line locally while the new last line stays unterminated. Trailing-newline presence and the UTF-8 BOM are preserved. Applies to single edits, batch, and replace-once.
+- A lone `\r` at the end of an unterminated last line is now preserved as line text instead of being stripped.
+
+### Removed
+
+- The mixed line ending normalization warning: whole-file normalization no longer happens, so the warning contract is gone.
+
 ## [2.2.2] — 2026-07-25
 
 ### Added

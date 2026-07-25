@@ -33,6 +33,16 @@ test("renderHleditCall includes read range and grep", () => {
 	]);
 });
 
+// [喵喵喵]: Phase 2.4 回归——limit 省略时实际 CLI 请求默认 160 行，标题不得显示 1-2000 (2026-07-25)
+test("renderHleditCall shows the actual 160-line default range when limit is omitted", () => {
+	assert.deepEqual(render(renderHleditCall("read_anchors", { path: "src/a.ts" }, theme)), [
+		"read for edit src/a.ts:1-160",
+	]);
+	assert.deepEqual(render(renderHleditCall("read_anchors", { path: "src/a.ts", offset: 41 }, theme)), [
+		"read for edit src/a.ts:41-200",
+	]);
+});
+
 test("renderHleditCall hyperlinks paths when the terminal supports them", () => {
     const previous = getCapabilities();
     setCapabilities({ ...previous, hyperlinks: true });
@@ -192,6 +202,32 @@ test("renderFileChangesResult renders an adaptive unified diff", () => {
 	assert.ok(output.some((line) => line.includes("▌") && line.includes("beta")));
 	assert.ok(output.some((line) => line.includes("▌") && line.includes("BETA")));
 	assert.ok(output.every((line) => visibleWidth(line) <= 72));
+});
+
+// [喵喵喵]: Phase 4.5——新结果优先渲染结构化 changePreview；上面的存量 details.diff
+// 测试同时锁定历史结果的回退渲染 (2026-07-25)
+test("renderFileChangesResult prefers the structured change preview over legacy diff", () => {
+	const result: TextResult = {
+		content: [{ type: "text", text: "Changes applied." }],
+		details: {
+			disposition: "succeeded",
+			changePreview: {
+				truncated: false,
+				lines: [
+					{ kind: "remove", oldLine: 2, text: "beta" },
+					{ kind: "add", newLine: 2, text: "BETA" },
+				],
+			},
+			diff: "-9 legacy\n+9 LEGACY",
+			editsApplied: 1,
+		},
+	};
+	const output = render(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }), 72);
+
+	assert.equal(output[0], "↳ 差异 +1 -1 • 1 个变更块 • 统一");
+	assert.ok(output.some((line) => line.includes("beta")));
+	assert.ok(output.some((line) => line.includes("BETA")));
+	assert.ok(output.every((line) => !line.includes("legacy") && !line.includes("LEGACY")));
 });
 
 test("renderFileChangesResult switches to split layout on wide terminals", () => {

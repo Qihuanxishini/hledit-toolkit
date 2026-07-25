@@ -2,6 +2,8 @@
 
 本文记录 `pi-hledit-diff` 与 patched `hledit` CLI 之间的硬性契约、验证方式和升级约束。
 
+未来优化实施统一遵循仓库根目录的 [`OPTIMIZATION-ROADMAP.md`](../OPTIMIZATION-ROADMAP.md)。本文描述当前运行契约；路线图描述尚未完成的目标架构。若两者暂时不同，在对应 Phase 完成并同步更新本文前，不得把目标行为当作当前已实现行为。
+
 ## 仓库布局
 
 ```text
@@ -152,8 +154,8 @@ proof 必须覆盖 replace/delete 消费的每个原始行以及 insert 依附�
 - `replace_range`、`insert_before` 和 `insert_after` 的 `lines` 接受换行分隔的字符串或非空字符串数组；多行编辑优先使用字符串。字符串按 CRLF、CR 或 LF 分行，末尾一个换行不额外生成空行；数组元素必须各自只含一行原始文件文本；`delete_range` 不接受 `lines`；
 - `prepareArguments` 将两种公开 `lines` 形式规范化为内部 `string[]`，并只修复不改变编辑语义的结构偏差：最多两层 JSON 序列化、单个 change 包装，以及把原样复制的 `LN#HASH:text` 归一化为 `LN#HASH`；不得迁移旧 operation 或旧字段；
 - 单行 `replace_range` 若输出多行且首行与原锚点行完全相同，插件先调用 `batch --check` 验证整个批次。stale、冲突或非法请求优先返回 CLI 错误；仅在 check 成功后返回高风险范围扩展指导；
-- 错误正文必须列出实际 operation、`start_anchor`、`end_anchor` 和 lines 行数，并禁止原样重试。不存在安全结束锚点时要求重新读取且不得输出占位 anchor；`insert_after` 模板使用原 lines 去除重复首行后的真实内容；
-- 同批次若有 `delete_range` 紧接 replace 行的下一行开始，说明后续旧代码已被显式覆盖，护栏允许该批次；若只有一个 `delete_range` 从后两行开始，check 成功后可作为疑似同块提示并生成使用真实 `end_anchor` 的合并模板。调用方仍须确认语义并移除原 delete，插件不得自动改写或执行 change；
+- 错误正文必须列出实际 operation、`start_anchor`、`end_anchor` 和 lines 行数，并禁止原样重试。恢复说明引用原 tool call，只给字段级修改：扩展 `end_anchor`、保留原 `lines`，或改成 `insert_after` 并移除重复首行；不得回显完整 replacement/insert payload；
+- 同批次若有 `delete_range` 紧接 replace 行的下一行开始，说明后续旧代码已被显式覆盖，护栏允许该批次；若只有一个 `delete_range` 从后两行开始，check 成功后可提示把 replace 的 `end_anchor` 改为已验证结束锚点、移除该 delete 并保持原 lines。调用方仍须确认语义，插件不得自动改写或执行 change；
 - object 使用 `additionalProperties:false`，未知字段必须被拒绝；
 - `lines` 不包含 diff 标记或 `LN#HASH` 前缀。
 
@@ -181,43 +183,57 @@ CLI capability 健康时，active tools 始终启用 `hledit_read_anchors`、`hl
 }
 ```
 
-它只接受当前文件中恰好一次出现的 `old_lines` 连续精确匹配。请求严格拒绝未知字段、尾随 JSON、空 `old_lines` 或空 `new_lines` 数组；`old_lines` 的空字符串表示一个空白行，`new_lines` 的空字符串被 schema 拒绝——空行用 `[""]` 表达，删除必须走 `hledit_apply_file_changes` 的 `delete_range`。宿主对 schema 细节约束（minLength/minItems）的执行不可控，因此插件在 execute 边界对空 `old_lines`/`new_lines` 再强制拒绝一次并给出契约级恢复指引。它不需要 anchor proof，零次匹配返回 `content_not_found`，多次匹配返回 `content_ambiguous`、匹配总数和最多 20 个候选行范围，均不写入。插件在同一 `withFileMutationQueue` 中仅为 diff 读取修改前文本，再调用 CLI；CLI 在原子写入前仍复检 revision。成功响应与 batch 一样包含 `revision`、`contentChanged`、`editsApplied:1` 和局部 `updatedAnchors`，以便重建读取证据。
+它只接受当前文件中恰好一次出现的 `old_lines` 连续精确匹配。请求严格拒绝未知字段、尾随 JSON、空 `old_lines` 或空 `new_lines` 数组；`old_lines` 的空字符串表示一个空白行，`new_lines` 的空字符串被 schema 拒绝——空行用 `[""]` 表达，删除必须走 `hledit_apply_file_changes` 的 `delete_range`。宿主对 schema 细节约束（minLength/minItems）的执行不可控，因此插件在 execute 边界对空 `old_lines`/`new_lines` 再强制拒绝一次并给出契约级恢复指引。它不需要 anchor proof，零次匹配返回 `content_not_found`，多次匹配返回 `content_ambiguous`、匹配总数和最多 20 个候选行范围，均不写入。插件在同一 `withFileMutationQueue` 中调用 CLI，不做任何前置文件读取；CLI 在原子写入前仍复检 revision。成功响应与 batch 一样包含 `revision`、`contentChanged`、`editsApplied:1` 和局部 `updatedAnchors`，以便重建读取证据。
+
+### compaction 文件追踪
+
+Pi 内置 compaction 的文件操作提取只识别名为 `read`、`write`、`edit` 的工具调用。插件在 `session_before_compact` 中扫描待压缩消息（含分裂 turn 的前缀消息）里的结构化 tool result，并补充 `preparation.fileOps`：
+
+| 结果 | 记录 |
+| --- | --- |
+| `hledit_read_anchors` 成功 | read |
+| apply / replace-once 成功且内容变更 | modified |
+| apply / replace-once 成功 no-op（`contentChanged === false`） | read |
+| `outcome_unknown` | modified（保守：可能已写入，压缩后必须按已修改重读） |
+| `rejected` / `unavailable`（零写入） | 不记录 |
+
+只信任结构化 `details` 的 `disposition` 与 normalized `path`，不从聊天正文猜测文件状态。
 
 ## 执行路径与一致性边界
 
 ```text
 withFileMutationQueue(real path)
-  → 按 canonical path 选择覆盖全部 change 的 revision/read-set proof
+  → 按 canonical path 选择覆盖全部 change 的 revision/read-set proof（含消费行文本）
       → 证据不足：返回定向读取建议，不启动 batch
-  → read before（仅用于意图护栏与 diff）
-  → 检测高风险单行范围扩展
+  → 基于消费行证据检测高风险单行范围扩展
       → 带同一 proof 调用 hledit batch --check
       → stale / conflict / invalid：返回 CLI 错误
       → check 成功：返回恢复指导，不执行写入
   → 普通请求：带隐藏 proof 调用 hledit batch
   → CLI plan + pre-commit revision recheck + atomic replace
   → 验证 ok / revision / editsApplied / editDeltas / updatedAnchors
-  → read after
-  → diff / patch details
+  → 由消费行证据 + 请求 payload 构建提交绑定的 changePreview
   → 按 editDeltas 重映射区间外旧证据（自校验），再合并新 revision / updatedAnchors 窗口
+  → 释放队列（evidence 更新完成后才放行同文件下一项排队调用）
 ```
 
 约束：
 
 - 插件不直接写目标文件；
 - 普通写入路径只发送一次非 check CLI batch 请求；高风险单行范围路径只发送一次 `batch --check`，同一次工具调用中绝不在 check 后继续真正 batch；
-- CLI 负责 hash 校验、stale、冲突检测、行尾保留（整份文件统一为原文件的主导行尾：含任一 CRLF 即全 CRLF，否则 LF；混合行尾文件在内容变更时被整体规范化，属明确接受的行为，且成功响应必须携带 mixed line ending warning，不得静默）和原子写入；
+- CLI 负责 hash 校验、stale、冲突检测、逐行行尾保留（未修改行的 terminator 字节保持原样，混合行尾文件不再整体规范化、不再返回 mixed warning；新行使用编辑位置附近的局部行尾，replacement 末行继承被替换范围末行的 terminator，trailing newline 存在性保持）和原子写入；
 - 插件只识别语义明确的单行范围重复护栏；恢复指导仅使用已经通过 check 的 anchor，但仍不会猜测、补全、改写或静默丢弃 change；
 - `batch --check` 仅用于高风险护栏的错误优先级与恢复数据验证，不作为正常写入前置步骤；
-- diff/patch 只放入 `details`，不注入 LLM 可见正文；工具错误的 `details` 供 TUI、session 和扩展 hook 使用，模型纠错必须依赖 `content` 中的正文；
+- changePreview 只放入 `details`，不注入 LLM 可见正文；工具错误的 `details` 供 TUI、session 和扩展 hook 使用，模型纠错必须依赖 `content` 中的正文；
+- 成功结果的 `details.changePreview` 只由已验证输入构成：anchored apply 用消费行证据 + 请求 payload + 已验证 `editDeltas`，replace-once 用请求 old/new + CLI 验证的消费区间起点，no-op 是空 preview；插件不再前后读取完整文件，也不再生成全文件 `diff`/`patch`（历史结果中的存量 `details.diff` 仍由 TUI 回退渲染）。preview 上限 2000 行 / 256 KiB，超限保留首尾片段并标记 `truncated:true`；preview 构建失败只降级为 `details.previewError`，不得改变已确认成功的 disposition；
 - `updatedAnchors` 在 CLI 输出边界只验证一次，内部链路信任该不变量。
 - 取消、超时、输出超限或 stdin 失败时，`runHledit` 必须等到子进程确认退出后再返回，mutation queue 不得在 CLI 仍可能写文件时提前放行。
+- `runHledit` 的默认输出上限（1 MiB）是协议余量：CLI 自身按转义前原始字节执行 50 KiB / 2000 行截断，控制字符经 JSON 转义最高膨胀 6 倍（0x01 → `\u0001`），实测最坏合法读取输出约 296 KiB。收窄该余量前必须先通过最坏转义膨胀回归；已启动写入后的输出超限保持 `outcome_unknown`，不得声称零写入。测试可通过 `maxOutputBytes` 参数缩小余量以覆盖 overflow 终止路径，正式调用方一律使用默认值。
 - apply 执行前若没有充分证据，插件不启动 batch，而是返回定向 `hledit_read_anchors` 建议；grep/context 已完整覆盖目标时可直接使用其局部 proof。成功 apply 使用新 revision 与 `updatedAnchors` 建立下一轮证据。
 - stale、`source_changed_before_commit`、outcome unknown 或不兼容响应会使旧证据失效；只有携带完整、未截断 `currentRevision` / `currentAnchors` 的 stale 结果才可作为当前 revision 证据。
+- 实时结果的 evidence 只有一个 owner：apply/replace-once 由 execute 路径在 `withFileMutationQueue` 内更新并在放行前完成，读取由 execute 直接更新；全局 `tool_result` handler 只做失败升级，不再重复应用同一次实时结果。branch/session 重放统一由 `restoreFromBranch` 负责。
 
-即使修改后文件读取失败，CLI 已返回的新锚点仍然可用；此时只把 diff 标记为不可用。
-
-TUI 渲染由插件自身完成，不通过全局 adapter API 委托给其他扩展。锚点读取注册 label 为 `Read for Edit`，调用标题为 `read for edit`；读取结果以 `details.read` 为真源，工具标题仍显示请求范围，结果摘要显示实际范围、总行数、EOF 或下一 offset；多项修改标题按 change 顺序分别显示范围，失败折叠摘要必须包含直接修复动作；路径在终端支持时使用 `file://` 超链接。diff 组件必须在每次 `render(width)` 时按 120 列断点重新选择双栏或统一布局；新增/删除背景色由当前 `toolSuccessBg` 与 `toolDiffAdded` / `toolDiffRemoved` 混合生成，以适配深浅主题。
+TUI 渲染由插件自身完成，不通过全局 adapter API 委托给其他扩展。锚点读取注册 label 为 `Read for Edit`，调用标题为 `read for edit`；读取结果以 `details.read` 为真源，工具标题仍显示请求范围（`limit` 省略时显示实际默认的 160 行范围，不得显示 2000），结果摘要显示实际范围、总行数、EOF 或下一 offset；多项修改标题按 change 顺序分别显示范围，失败折叠摘要必须包含直接修复动作；路径在终端支持时使用 `file://` 超链接。成功修改优先渲染结构化 `details.changePreview`（渲染前重新验证结构），历史结果回退到存量 `details.diff` 字符串。diff 组件必须在每次 `render(width)` 时按 120 列断点重新选择双栏或统一布局；新增/删除背景色由当前 `toolSuccessBg` 与 `toolDiffAdded` / `toolDiffRemoved` 混合生成，以适配深浅主题。
 
 响应式渲染的性能不变量：最终 tool-result 组件必须按最近宽度复用完整 `string[]`；语法高亮与源码可见宽度按 `DiffLine` 或锚点源码行缓存；未溢出的源码行不得调用 ANSI 换行器；`invalidate()` 必须清除最终布局、高亮和主题色缓存，并向被组合的子组件传播。组合 diff、新锚点和 warning 时必须复制子组件输出，不得修改其缓存数组。不得在拖动热路径重新解析 diff、重建 split rows，或对已知适宽行执行二次截断。
 
@@ -291,6 +307,7 @@ rebuild、统计与 `editDeltas` 共用同一物理输出排序：按 boundary �
 CLI 默认使用修改区域前后 2 行、最多 20 行和约 4096 bytes 的局部窗口；它不是完整文件。发生截断时，插件要求模型用 `hledit_read_anchors` 定向重读。
 
 未截断的 `updatedAnchors` 直接来自成功写入后的新文件状态，但只能在该局部窗口覆盖完整目标范围时用于后续提交；不得复用该次写入前的旧锚点。
+正常 `contentChanged:true` 的模型正文只保留一行变更统计和一份可复制的 `Updated anchors` 窗口；未截断窗口不再重复通用锚点复用说明。只有窗口或行文本截断时才追加定向 `hledit_read_anchors` 指令，warning 与 no-op 继续单独说明。
 
 当 `contentChanged:false` 时，CLI 已验证全部操作但没有触碰目标文件；插件将其显示为 no-op，仍消费返回的新锚点并完成队列内的 post-read。
 
@@ -311,7 +328,7 @@ CLI 默认使用修改区域前后 2 行、最多 20 行和约 4096 bytes 的局
 因此 schema 拒绝、stale、logical error、CLI 不可用以及不兼容成功响应都会成为真正的 Pi 工具错误。
 所有 batch 拒绝结果必须明确说明原子失败、零写入，避免调用方误判前序 change 已部分应用；replace-once 的内容匹配拒绝也必须明确说明零写入。
 插件前置护栏拒绝必须在 `details.error` 中返回结构化恢复信息：`code`、`message`、`changeNumber`、`operation`、`anchor` 与 `outputLineCount`。检测到疑似同块 `delete_range` 时，额外返回 `relatedChangeNumber` 和 `candidateEndAnchor`；这些 anchor 已通过本次 `batch --check`，但是否属于同一个业务代码块仍须调用方确认，插件不会自动执行该范围。
-单行范围扩展的模型可见正文必须明确禁止原样重试。没有安全结束锚点时要求重新读取且不得生成违反 anchor schema 的占位值；保留锚点行时提供使用真实剩余 lines 的 `insert_after`；存在唯一后两行起始的相邻 `delete_range` 时才提供完整范围 `replace_range`。TUI 折叠摘要必须直接包含修复动作。
+单行范围扩展的模型可见正文必须明确禁止原样重试，并引用原 tool call 给出字段级修复。没有安全结束锚点时要求重新读取且不得生成违反 anchor schema 的占位值；append 意图要求改为 `insert_after`、把首尾字段换成 `anchor` 并移除重复首行；存在唯一后两行起始的相邻 `delete_range` 时才可建议使用已验证结束锚点并移除该 delete。不得回显完整源码 payload；TUI 折叠摘要必须直接包含修复动作。
 不兼容成功响应与 batch 拒绝不同：CLI 可能已经写入。错误正文必须要求重新读取当前文件，不得声称零写入或直接建议重试。
 已启动但退出、超时、取消、输出超限或响应不完整的 apply 使用 `outcome_unknown`；工具必须先重新读取当前文件，禁止直接重试原请求。没有启动 CLI 的情况使用 `unavailable`。
 
@@ -328,9 +345,11 @@ stale 的 remap 只用于定位，不能自动替换后重试。CLI 能构建同
 | `src/read-evidence.ts` | 按 canonical path/revision 合并读取证据，生成隐藏 proof，基于 `editDeltas` 重映射证据并维护锚点更名表，恢复 branch 状态并处理 apply 失效。 |
 | `src/anchor-hash.ts` | CLI `computeLineHash` 的复刻（含自校验契约），仅用于证据重映射；由 golden 对拍测试锁定。 |
 | `src/active-tools.ts` | 激活锚点工具或恢复 Pi 内置 `edit`。 |
+| `src/compaction-files.ts` | 在 `session_before_compact` 中把三个 hledit 工具的结构化结果补充为 compaction readFiles/modifiedFiles。 |
 | `src/read-args.ts` | 归一化读取请求并构造强制 `--json` 的 CLI `read-range` 参数（含 `--ignore-case`）。 |
 | `src/cli.ts` | 固定 bundled CLI 路径、capability 验证、超时与输出上限。 |
-| `src/result.ts` | 验证结构化读取/编辑响应、`editDeltas` 与 `batch --check` 成功标记，生成模型正文、disposition、actionable error、stale 字段核对信息和 diff details。 |
+| `src/result.ts` | 验证结构化读取/编辑响应、`editDeltas` 与 `batch --check` 成功标记，生成模型正文、disposition、actionable error 和 stale 字段核对信息。 |
+| `src/change-preview.ts` | 由消费行证据、请求 payload 与已验证消费区间构建提交绑定的 `changePreview`，含上限截断、结构验证与 TUI diff 文本桥。 |
 | `src/post-edit-context.ts` | 验证并格式化 CLI 返回的 `updatedAnchors`。 |
 | `src/render.ts` | 工具调用、锚点读取、成功/失败状态与新锚点 TUI 渲染。 |
 | `src/diff-renderer.ts` | 独立自适应 diff 渲染，包括统一/双栏布局、语法高亮、折叠和宽度保护。 |
@@ -371,7 +390,7 @@ capabilities 必须同时返回 `anchorProtocolV2:true`、`readRangeMetadata:tru
 
 ## 真实 Pi 验收
 
-同步运行时白名单后，在新 Pi 窗口或 `/reload` 后先执行 `/hledit-status`，确认 bundled CLI 版本为 `2.2.2` 且 capability 可用。真实窗口验收至少覆盖：
+同步运行时白名单后，在新 Pi 窗口或 `/reload` 后先执行 `/hledit-status`，确认 bundled CLI 版本为 `2.3.1` 且 capability 可用。真实窗口验收至少覆盖：
 
 1. `hledit_read_anchors` 的范围读取和 `grep` / `context` 局部 proof；
 2. `hledit_apply_file_changes` 的单行、换行分隔多行、空白行和成功后局部 `updatedAnchors` 复用；

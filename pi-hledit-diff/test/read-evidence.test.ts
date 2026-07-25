@@ -55,6 +55,20 @@ function replaceRange(startAnchor: string, endAnchor: string): FileChangeParams[
 	return [{ operation: "replace_range", start_anchor: startAnchor, end_anchor: endAnchor, lines: ["replacement"] }];
 }
 
+// 成功 selection 自 Phase 4 起附带 consumedLines（内部消费行证据）；proof 断言
+// 只核对 proof 本身，失败断言保持整体 deepEqual。
+function assertProofSelection(
+	selection: ReturnType<ReadEvidenceStore["selectProof"]>,
+	expected: Record<string, unknown>,
+): void {
+	if ("proof" in expected) {
+		assert.ok("proof" in selection, `expected proof selection, got ${JSON.stringify(selection)}`);
+		assert.deepEqual({ proof: selection.proof }, expected);
+		return;
+	}
+	assert.deepEqual(selection, expected);
+}
+
 function applyDetails(
 	disposition: "succeeded" | "rejected" | "unavailable" | "outcome_unknown",
 	extra: Record<string, unknown> = {},
@@ -73,12 +87,21 @@ test("ReadEvidenceStore merges unfiltered windows from the same revision", () =>
 		{ line: 5, anchor: "5#AAD" },
 	]));
 
-	assert.deepEqual(store.selectProof(PATH, replaceRange("2#AAA", "5#AAD")), {
+	const selection = store.selectProof(PATH, replaceRange("2#AAA", "5#AAD"));
+	assertProofSelection(selection, {
 		proof: {
 			revision: REVISION_A,
 			anchors: ["2#AAA", "3#AAB", "4#AAC", "5#AAD"],
 		},
 	});
+	// Phase 4.1：成功 selection 返回每个消费行的行号/锚点/文本，供护栏与 change preview 使用。
+	assert.ok("proof" in selection);
+	assert.deepEqual([...selection.consumedLines.values()], [
+		{ line: 2, anchor: "2#AAA", text: "line 2" },
+		{ line: 3, anchor: "3#AAB", text: "line 3" },
+		{ line: 4, anchor: "4#AAC", text: "line 4" },
+		{ line: 5, anchor: "5#AAD", text: "line 5" },
+	]);
 });
 
 test("ReadEvidenceStore discards prior windows when revision changes", () => {
@@ -98,7 +121,7 @@ test("grep rows establish partial proof without bridging gaps", () => {
 		{ line: 5, anchor: "5#AAE" },
 	], { grep: "line" }));
 
-	assert.deepEqual(store.selectProof(PATH, [
+	assertProofSelection(store.selectProof(PATH, [
 		{ operation: "replace_range", start_anchor: "2#AAB", end_anchor: "2#AAB", lines: ["two"] },
 		{ operation: "insert_after", anchor: "5#AAE", lines: ["six"] },
 	]), {
@@ -124,7 +147,7 @@ test("grep context merges with unfiltered proof from the same revision", () => {
 		{ line: 4, anchor: "4#AAD" },
 	], { grep: "line" }));
 
-	assert.deepEqual(store.selectProof(PATH, replaceRange("2#AAB", "4#AAD")), {
+	assertProofSelection(store.selectProof(PATH, replaceRange("2#AAB", "4#AAD")), {
 		proof: { revision: REVISION_A, anchors: ["2#AAB", "3#AAC", "4#AAD"] },
 	});
 });
@@ -186,6 +209,22 @@ test("proof failure guidance covers the complete first missing range", () => {
 	assert.match(formatReadProofFailure("target.txt", selection.failure), /offset: 385, limit: 33/);
 });
 
+// [喵喵喵]: Phase 0 正文 snapshot——精确锁定插件侧 proof failure 的完整拒绝正文，
+// 后续正文压缩必须显式更新该基线 (2026-07-25)
+test("model body snapshot: plugin-side proof failure with targeted reread", () => {
+	const store = new ReadEvidenceStore();
+	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 3, anchor: "3#AAA" }]));
+
+	const selection = store.selectProof(PATH, replaceRange("3#AAA", "5#CCC"));
+	assert.ok("failure" in selection);
+	assert.equal(
+		formatReadProofFailure("target.txt", selection.failure),
+		"Valid read proof does not cover every source line required by this change. Batch was not started and no content was written.\n" +
+		"Reason: Read proof is missing lines 4, 5.\n" +
+		'Call hledit_read_anchors({ path: "target.txt", offset: 2, limit: 12 }) first, confirm the complete target range, then submit the change.',
+	);
+});
+
 test("successful apply replaces old evidence with updated anchors", () => {
 	const store = new ReadEvidenceStore();
 	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }]));
@@ -201,7 +240,7 @@ test("successful apply replaces old evidence with updated anchors", () => {
 	}), "/workspace");
 
 	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: "1#AAA", lines: ["next"] }]));
-	assert.deepEqual(store.selectProof(PATH, [{ operation: "insert_after", anchor: "4#BBB", lines: ["next"] }]), {
+	assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: "4#BBB", lines: ["next"] }]), {
 		proof: { revision: REVISION_B, anchors: ["4#BBB"] },
 	});
 });
@@ -222,7 +261,7 @@ test("an unavailable apply keeps evidence because the target was never written",
 	const store = new ReadEvidenceStore();
 	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }]));
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("unavailable"), "/workspace");
-	assert.deepEqual(store.selectProof(PATH, [{ operation: "insert_after", anchor: "1#AAA", lines: ["next"] }]), {
+	assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: "1#AAA", lines: ["next"] }]), {
 		proof: { revision: REVISION_A, anchors: ["1#AAA"] },
 	});
 });
@@ -249,10 +288,10 @@ test("a same-revision no-op apply merges its window instead of shrinking evidenc
 	}), "/workspace");
 
 	// 远离窗口的旧证据在同 revision 下仍然字节级有效，必须保留。
-	assert.deepEqual(store.selectProof(PATH, replaceRange("1#AAA", "2#AAB")), {
+	assertProofSelection(store.selectProof(PATH, replaceRange("1#AAA", "2#AAB")), {
 		proof: { revision: REVISION_A, anchors: ["1#AAA", "2#AAB"] },
 	});
-	assert.deepEqual(store.selectProof(PATH, [{ operation: "insert_after", anchor: "5#AAE", lines: ["next"] }]), {
+	assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: "5#AAE", lines: ["next"] }]), {
 		proof: { revision: REVISION_A, anchors: ["5#AAE"] },
 	});
 });
@@ -278,7 +317,7 @@ test("complete stale context becomes evidence for its current revision", () => {
 		},
 	}), "/workspace");
 
-	assert.deepEqual(store.selectProof(PATH, replaceRange("2#BBB", "3#BBC")), {
+	assertProofSelection(store.selectProof(PATH, replaceRange("2#BBB", "3#BBC")), {
 		proof: { revision: REVISION_B, anchors: ["2#BBB", "3#BBC"] },
 	});
 });
@@ -370,17 +409,17 @@ test("a successful apply remaps out-of-range evidence to shifted line numbers", 
 	const shiftedCharlie = computeAnchorTag(4, "charlie");
 	const shiftedBlank = computeAnchorTag(5, "");
 	const shiftedEcho = computeAnchorTag(6, "echo");
-	assert.deepEqual(store.selectProof(PATH, [{ operation: "insert_after", anchor: computeAnchorTag(1, "alpha"), lines: ["x"] }]), {
+	assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: computeAnchorTag(1, "alpha"), lines: ["x"] }]), {
 		proof: { revision: REVISION_B, anchors: [computeAnchorTag(1, "alpha")] },
 	});
-	assert.deepEqual(store.selectProof(PATH, replaceRange(shiftedCharlie, shiftedBlank)), {
+	assertProofSelection(store.selectProof(PATH, replaceRange(shiftedCharlie, shiftedBlank)), {
 		proof: { revision: REVISION_B, anchors: [shiftedCharlie, shiftedBlank] },
 	});
-	assert.deepEqual(store.selectProof(PATH, [{ operation: "insert_after", anchor: shiftedEcho, lines: ["x"] }]), {
+	assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: shiftedEcho, lines: ["x"] }]), {
 		proof: { revision: REVISION_B, anchors: [shiftedEcho] },
 	});
 	// 窗口行与平移行同处一份证据。
-	assert.deepEqual(store.selectProof(PATH, [{ operation: "insert_after", anchor: newWindowLines[0]!.anchor, lines: ["x"] }]), {
+	assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: newWindowLines[0]!.anchor, lines: ["x"] }]), {
 		proof: { revision: REVISION_B, anchors: [newWindowLines[0]!.anchor] },
 	});
 });
@@ -508,7 +547,7 @@ test("rename hints chain across two successive edits back to the oldest anchor",
 	assert.equal(selection.failure.renamesRestoreProof, true);
 	assert.match(formatReadProofFailure("target.txt", selection.failure), /Resubmit after replacing every renamed anchor/);
 
-	assert.deepEqual(store.selectProof(PATH, [{ operation: "insert_after", anchor: latestAnchor, lines: ["x"] }]), {
+	assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: latestAnchor, lines: ["x"] }]), {
 		proof: { revision: REVISION_C, anchors: [latestAnchor] },
 	});
 });
@@ -534,7 +573,7 @@ test("evidence consumed by the edit is dropped and never remapped", () => {
 	// 旧行 2 的证据必须被窗口的新内容取代，而不是把旧锚点平移过来。
 	const selection = store.selectProof(PATH, [{ operation: "insert_after", anchor: computeAnchorTag(2, "bravo"), lines: ["x"] }]);
 	assert.ok("failure" in selection);
-	assert.deepEqual(store.selectProof(PATH, [{ operation: "insert_after", anchor: computeAnchorTag(2, "BRAVO"), lines: ["x"] }]), {
+	assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: computeAnchorTag(2, "BRAVO"), lines: ["x"] }]), {
 		proof: { revision: REVISION_B, anchors: [computeAnchorTag(2, "BRAVO")] },
 	});
 });

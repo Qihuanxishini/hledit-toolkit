@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.2.2] — 2026-07-25
+
+### Added
+
+- Return an explicit warning on every successful write that normalized a mixed-EOL file: rebuilding the whole file with the dominant CRLF ending is documented behavior, but it is no longer silent. Applies to single edits, batch, and replace-once.
+
 ## [2.2.1] — 2026-07-25
 
 ### Fixed

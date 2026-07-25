@@ -27,7 +27,7 @@ const REPLACEMENT_LINES_SCHEMA = Type.Union(
 		}),
 		Type.Array(REPLACEMENT_LINE_SCHEMA, {
 			minItems: 1,
-			description: "Compatibility form: every array item is one raw line with no CR/LF. Supply raw content rather than anchor-prefixed or diff-marked text.",
+			description: "Compatibility form: every array item is one raw line with no CR/LF. Pass a real JSON array, not a JSON-encoded array string. Supply raw content rather than anchor-prefixed or diff-marked text.",
 		}),
 	],
 	{ description: "Exact raw line content used as a content precondition or replacement. For multiline content, prefer a newline-delimited string." },
@@ -112,7 +112,7 @@ const REPLACE_ONCE_NEW_LINES_SCHEMA = Type.Union(
 		}),
 		Type.Array(REPLACEMENT_LINE_SCHEMA, {
 			minItems: 1,
-			description: "Compatibility form: every array item is one raw line with no CR/LF.",
+			description: "Compatibility form: every array item is one raw line with no CR/LF. Pass a real JSON array, not a JSON-encoded array string.",
 		}),
 	],
 	{ description: "Exact replacement lines. Deletion cannot be expressed here; use an anchored delete_range instead." },

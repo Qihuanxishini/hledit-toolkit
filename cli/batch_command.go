@@ -91,8 +91,11 @@ func runBatchApply(path string) error {
 		emitError("io", err.Error())
 		return nil
 	}
+	if file.HasMixedLineEndings {
+		result.Warnings = append(result.Warnings, mixedLineEndingWarning)
+	}
 	if writeWarning != "" {
-		result.Warnings = []string{writeWarning}
+		result.Warnings = append(result.Warnings, writeWarning)
 	}
 	return emitJSON(result)
 }

@@ -74,3 +74,67 @@ func TestBatchEditPreservesUTF8BOM(t *testing.T) {
 		t.Fatalf("content = %v; want %v", content, want)
 	}
 }
+
+func TestParseTextFileDetectsMixedLineEndings(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		mixed   bool
+	}{
+		{"pure LF", "a\nb\n", false},
+		{"pure CRLF", "a\r\nb\r\n", false},
+		{"mixed", "a\r\nb\nc\r\nd\n", true},
+		{"mostly LF one CRLF", "m1\nm2\nm3\r\nm4\nm5\n", true},
+		{"lone CR is not a line ending", "a\rb\n", false},
+		{"empty", "", false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			file, err := parseTextFile([]byte(testCase.content))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if file.HasMixedLineEndings != testCase.mixed {
+				t.Fatalf("HasMixedLineEndings = %v; want %v", file.HasMixedLineEndings, testCase.mixed)
+			}
+		})
+	}
+}
+
+// 混合行尾文件的归一化是文档化行为，但必须显式返回 warning，不得静默改写未编辑行。
+func TestBatchEditWarnsOnMixedLineEndingNormalization(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "mixed.txt")
+	if err := os.WriteFile(target, []byte("a\r\nb\nc\r\nd\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
+		OP: "replace", Pos: formatTag(2, "b"), Lines: []string{"B"},
+	}}}, false)
+	if !strings.Contains(output, mixedLineEndingWarning) {
+		t.Fatalf("output = %q; want mixed line ending warning", output)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(content), "a\r\nB\r\nc\r\nd\r\n"; got != want {
+		t.Fatalf("content = %q; want %q", got, want)
+	}
+}
+
+func TestBatchEditDoesNotWarnOnUniformLineEndings(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "uniform.txt")
+	if err := os.WriteFile(target, []byte("a\nb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
+		OP: "replace", Pos: formatTag(1, "a"), Lines: []string{"A"},
+	}}}, false)
+	if strings.Contains(output, "line endings") {
+		t.Fatalf("output = %q; must not warn on uniform line endings", output)
+	}
+}

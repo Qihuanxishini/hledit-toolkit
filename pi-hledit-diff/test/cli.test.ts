@@ -9,7 +9,7 @@ import { parseHleditCapabilities, resolveHleditBin, runHledit } from "../src/cli
 import { parseBatchUpdatedAnchorContext } from "../src/post-edit-context.ts";
 
 const EXPECTED_CAPABILITIES = {
-	version: "2.2.1",
+	version: "2.2.2",
 	anchorProtocolV2: true,
 	readRangeMetadata: true,
 	batchInsertAfter: true,

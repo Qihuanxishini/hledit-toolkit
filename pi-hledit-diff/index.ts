@@ -209,6 +209,27 @@ async function runFileChangesWithDiff(
 	});
 }
 
+// 宿主对 schema 细节约束（minLength/minItems）的执行不可控；空 old_lines/new_lines
+// 的拒绝是文档契约，必须在插件自己的边界强制执行一次，而不是指望宿主或 CLI 的
+// 底层 unmarshal 报错。
+function emptyReplaceOnceLinesRejection(params: ReplaceOnceParams): TextResult | undefined {
+	const oldLines: unknown = params.old_lines;
+	const newLines: unknown = params.new_lines;
+	if (Array.isArray(oldLines) && oldLines.length === 0) {
+		return rejectedToolResult(
+			"Content-match replacement was rejected; no content was written.\nold_lines must contain at least one line of the exact current content.",
+			{ code: "invalid", message: "old_lines must contain at least one line." },
+		);
+	}
+	if (newLines === "" || (Array.isArray(newLines) && newLines.length === 0)) {
+		return rejectedToolResult(
+			'Content-match replacement was rejected; no content was written.\nnew_lines must not be empty: pass [""] to replace the match with one blank line, or use hledit_apply_file_changes with delete_range to delete the block.',
+			{ code: "invalid", message: 'new_lines must not be empty; use [""] for one blank line or an anchored delete_range to delete.' },
+		);
+	}
+	return undefined;
+}
+
 async function runReplaceOnceWithDiff(
 	params: ReplaceOnceParams,
 	ctx: ExtensionContext,
@@ -218,6 +239,10 @@ async function runReplaceOnceWithDiff(
 	const absolutePath = resolve(ctx.cwd, normalizedPath);
 	const evidencePath = await resolveReadEvidencePath(ctx.cwd, normalizedPath);
 	const normalizedParams = { ...params, path: normalizedPath };
+	const contractRejection = emptyReplaceOnceLinesRejection(normalizedParams);
+	if (contractRejection) {
+		return attachEvidencePath(contractRejection, normalizedPath, evidencePath);
+	}
 
 	return withFileMutationQueue(absolutePath, async () => {
 		const before = await readUtf8File(absolutePath);

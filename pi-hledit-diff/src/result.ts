@@ -651,6 +651,9 @@ function localizeApplyWarning(warning: string): string {
 	if (warning.startsWith("file was replaced, but directory metadata could not be synchronized:")) {
 		return "The file content was replaced, but directory metadata could not be synchronized; durability may be reduced in extreme scenarios such as power loss.";
 	}
+	if (warning.startsWith("file mixed CRLF and LF line endings")) {
+		return "The file mixed CRLF and LF line endings; this edit normalized the whole file to CRLF, so unchanged lines may appear modified in line-ending-aware diffs.";
+	}
 	return "The file was modified successfully, but the write carries a durability warning; technical details are preserved in the tool result.";
 }
 

@@ -439,3 +439,78 @@ test("apply tool suggests merging a nearby delete range without writing", async 
 	assert.match(applyResult.content[0]?.text ?? "", /remove the delete_range/);
 	assert.equal(await readFile(target, "utf8"), original);
 });
+
+// 宿主对 schema 细节约束（minLength/minItems）的执行不可控；空 lines 契约必须由
+// 插件自身边界兜住，且保证零写入。
+test("replace-once tool enforces the empty lines contract even without host schema validation", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const replaceOnceTool = registeredTools.get(HLEDIT_REPLACE_ONCE_TOOL);
+	assert.ok(replaceOnceTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-empty-contract-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "one\ntwo\n", "utf8");
+	const context = { cwd: directory };
+
+	const emptyString = await replaceOnceTool.execute(
+		"call",
+		{ path: "target.txt", old_lines: ["one"], new_lines: "" } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(emptyString.details.disposition, "rejected");
+	assert.equal(emptyString.details.error?.code, "invalid");
+	assert.match(emptyString.content[0]?.text ?? "", /\[""\]/);
+	assert.match(emptyString.content[0]?.text ?? "", /delete_range/);
+
+	const emptyArray = await replaceOnceTool.execute(
+		"call",
+		{ path: "target.txt", old_lines: ["one"], new_lines: [] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(emptyArray.details.disposition, "rejected");
+
+	const emptyOld = await replaceOnceTool.execute(
+		"call",
+		{ path: "target.txt", old_lines: [], new_lines: ["x"] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(emptyOld.details.disposition, "rejected");
+
+	assert.equal(await readFile(target, "utf8"), "one\ntwo\n");
+});
+
+test("apply tool surfaces the mixed line ending normalization warning", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-mixed-eol-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "a\r\nb\nc\r\nd\n", "utf8");
+	const context = { cwd: directory };
+
+	const read = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	assert.equal(read.details.disposition, "succeeded");
+	const anchor = read.details.read?.lines.find((line) => line.text === "b")?.anchor;
+	assert.ok(anchor);
+
+	const result = await applyTool.execute(
+		"apply",
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: ["B"] }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(result.details.disposition, "succeeded");
+	assert.match(result.content[0]?.text ?? "", /normalized the whole file to CRLF/);
+	assert.equal(await readFile(target, "utf8"), "a\r\nB\r\nc\r\nd\r\n");
+});

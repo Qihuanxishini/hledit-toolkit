@@ -64,13 +64,13 @@ func emitJSON(v any) error {
 	return enc.Encode(v)
 }
 
-func emitResult(firstChanged, lastChanged, linesAdded, linesDeleted int, contentChanged bool, warning string) error {
+func emitResult(firstChanged, lastChanged, linesAdded, linesDeleted int, contentChanged bool, warnings []string) error {
 	result := EditResult{
 		OK: true, FirstChangedLine: firstChanged, LastChangedLine: lastChanged,
 		LinesAdded: linesAdded, LinesDeleted: linesDeleted, ContentChanged: contentChanged,
 	}
-	if warning != "" {
-		result.Warnings = []string{warning}
+	if len(warnings) > 0 {
+		result.Warnings = warnings
 	}
 	return emitJSON(result)
 }
@@ -126,18 +126,23 @@ func editOp(
 	}
 
 	contentChanged := !slices.Equal(lines, result)
-	writeWarning := ""
+	var warnings []string
 	if contentChanged {
 		joined := file.JoinLines(result)
-		var werr error
-		writeWarning, werr = atomicWrite(path, []byte(joined))
+		writeWarning, werr := atomicWrite(path, []byte(joined))
 		if werr != nil {
 			emitError("io", werr.Error())
 			return nil
 		}
+		if file.HasMixedLineEndings {
+			warnings = append(warnings, mixedLineEndingWarning)
+		}
+		if writeWarning != "" {
+			warnings = append(warnings, writeWarning)
+		}
 	}
 
-	emitResult(firstChanged, lastChanged, linesAdded, linesDeleted, contentChanged, writeWarning)
+	emitResult(firstChanged, lastChanged, linesAdded, linesDeleted, contentChanged, warnings)
 	return nil
 }
 

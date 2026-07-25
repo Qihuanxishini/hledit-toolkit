@@ -185,8 +185,11 @@ func cmdReplaceOnce(path string) error {
 		emitError("io", writeErr.Error())
 		return nil
 	}
+	if file.HasMixedLineEndings {
+		result.Warnings = append(result.Warnings, mixedLineEndingWarning)
+	}
 	if warning != "" {
-		result.Warnings = []string{warning}
+		result.Warnings = append(result.Warnings, warning)
 	}
 	return emitJSON(result)
 }

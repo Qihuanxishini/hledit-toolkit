@@ -181,7 +181,7 @@ CLI capability 健康时，active tools 始终启用 `hledit_read_anchors`、`hl
 }
 ```
 
-它只接受当前文件中恰好一次出现的 `old_lines` 连续精确匹配。请求严格拒绝未知字段、尾随 JSON、空 `old_lines` 或空 `new_lines` 数组；`old_lines` 的空字符串表示一个空白行，`new_lines` 的空字符串被 schema 拒绝——空行用 `[""]` 表达，删除必须走 `hledit_apply_file_changes` 的 `delete_range`。它不需要 anchor proof，零次匹配返回 `content_not_found`，多次匹配返回 `content_ambiguous`、匹配总数和最多 20 个候选行范围，均不写入。插件在同一 `withFileMutationQueue` 中仅为 diff 读取修改前文本，再调用 CLI；CLI 在原子写入前仍复检 revision。成功响应与 batch 一样包含 `revision`、`contentChanged`、`editsApplied:1` 和局部 `updatedAnchors`，以便重建读取证据。
+它只接受当前文件中恰好一次出现的 `old_lines` 连续精确匹配。请求严格拒绝未知字段、尾随 JSON、空 `old_lines` 或空 `new_lines` 数组；`old_lines` 的空字符串表示一个空白行，`new_lines` 的空字符串被 schema 拒绝——空行用 `[""]` 表达，删除必须走 `hledit_apply_file_changes` 的 `delete_range`。宿主对 schema 细节约束（minLength/minItems）的执行不可控，因此插件在 execute 边界对空 `old_lines`/`new_lines` 再强制拒绝一次并给出契约级恢复指引。它不需要 anchor proof，零次匹配返回 `content_not_found`，多次匹配返回 `content_ambiguous`、匹配总数和最多 20 个候选行范围，均不写入。插件在同一 `withFileMutationQueue` 中仅为 diff 读取修改前文本，再调用 CLI；CLI 在原子写入前仍复检 revision。成功响应与 batch 一样包含 `revision`、`contentChanged`、`editsApplied:1` 和局部 `updatedAnchors`，以便重建读取证据。
 
 ## 执行路径与一致性边界
 
@@ -206,7 +206,7 @@ withFileMutationQueue(real path)
 
 - 插件不直接写目标文件；
 - 普通写入路径只发送一次非 check CLI batch 请求；高风险单行范围路径只发送一次 `batch --check`，同一次工具调用中绝不在 check 后继续真正 batch；
-- CLI 负责 hash 校验、stale、冲突检测、行尾保留（整份文件统一为原文件的主导行尾：含任一 CRLF 即全 CRLF，否则 LF；混合行尾文件在内容变更时被整体规范化，属明确接受的行为）和原子写入；
+- CLI 负责 hash 校验、stale、冲突检测、行尾保留（整份文件统一为原文件的主导行尾：含任一 CRLF 即全 CRLF，否则 LF；混合行尾文件在内容变更时被整体规范化，属明确接受的行为，且成功响应必须携带 mixed line ending warning，不得静默）和原子写入；
 - 插件只识别语义明确的单行范围重复护栏；恢复指导仅使用已经通过 check 的 anchor，但仍不会猜测、补全、改写或静默丢弃 change；
 - `batch --check` 仅用于高风险护栏的错误优先级与恢复数据验证，不作为正常写入前置步骤；
 - diff/patch 只放入 `details`，不注入 LLM 可见正文；工具错误的 `details` 供 TUI、session 和扩展 hook 使用，模型纠错必须依赖 `content` 中的正文；
@@ -371,7 +371,7 @@ capabilities 必须同时返回 `anchorProtocolV2:true`、`readRangeMetadata:tru
 
 ## 真实 Pi 验收
 
-同步运行时白名单后，在新 Pi 窗口或 `/reload` 后先执行 `/hledit-status`，确认 bundled CLI 版本为 `2.2.1` 且 capability 可用。真实窗口验收至少覆盖：
+同步运行时白名单后，在新 Pi 窗口或 `/reload` 后先执行 `/hledit-status`，确认 bundled CLI 版本为 `2.2.2` 且 capability 可用。真实窗口验收至少覆盖：
 
 1. `hledit_read_anchors` 的范围读取和 `grep` / `context` 局部 proof；
 2. `hledit_apply_file_changes` 的单行、换行分隔多行、空白行和成功后局部 `updatedAnchors` 复用；

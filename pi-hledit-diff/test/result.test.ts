@@ -182,6 +182,19 @@ test("applyFileChangesResult preserves post-write durability warnings", () => {
     assert.deepEqual(result.details.rawWarnings, ["file was replaced, but directory metadata could not be synchronized: access denied"]);
 });
 
+test("applyFileChangesResult localizes the mixed line ending warning", () => {
+	const rawWarning = "file mixed CRLF and LF line endings; the rewritten file uses CRLF throughout";
+	const result = applyFileChangesResult({
+		stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 1, contentChanged: true, linesAdded: 1, linesDeleted: 1, warnings: [rawWarning], editDeltas: [{ oldStart: 1, oldEnd: 1, delta: 0 }], updatedAnchors: { lines: [{ line: 1, anchor: "1#BHJ", text: "changed" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false } }),
+		stderr: "",
+		exitCode: 0,
+	});
+
+	assert.equal(result.details.disposition, "succeeded");
+	assert.match(result.content[0]?.text ?? "", /normalized the whole file to CRLF/);
+	assert.deepEqual(result.details.rawWarnings, [rawWarning]);
+});
+
 test("applyFileChangesResult warns that an unverified success may have changed the file", () => {
 	const result = applyFileChangesResult({ stdout: "unexpected output", stderr: "", exitCode: 0 });
 	const text = result.content[0]?.text ?? "";

@@ -18,7 +18,7 @@ hledit capabilities
 Outputs one JSON object describing behavior that integrations may require:
 
 ```json
-{ "ok": true, "version": "2.1.0", "anchorProtocolV2": true, "readRangeMetadata": true, "batchInsertAfter": true, "batchCheck": true, "batchUpdatedAnchors": true, "batchStaleContext": true, "batchWireV3": true, "batchReadProof": true, "contentReplaceOnce": true }
+{ "ok": true, "version": "2.3.1", "anchorProtocolV2": true, "readRangeMetadata": true, "batchInsertAfter": true, "batchCheck": true, "batchUpdatedAnchors": true, "batchStaleContext": true, "batchWireV3": true, "batchReadProof": true, "contentReplaceOnce": true, "batchEditDeltas": true, "readIgnoreCase": true }
 ```
 
 The bundled Pi extension requires every capability shown above; a successful `help` command alone is not a compatibility guarantee.
@@ -271,7 +271,7 @@ Files are parsed into per-line terminators (`LF`, `CRLF`, or none for an untermi
 1. Resolve an existing symlink to its real target so replacement preserves the symlink entry.
 2. Reject non-regular targets and files with more than one hard link. Preserving hard-link identity would require a non-atomic in-place write.
 3. Create a unique temporary sibling, preserve existing permission bits, write all content, sync, and close it.
-4. For batch apply, re-read the resolved target and compare its exact raw-byte revision with the planned revision. Mismatch or read failure rejects before replacement and removes the temporary file.
+4. For every content-changing write, re-read the resolved target and compare its exact raw-byte revision with the revision loaded for planning. Mismatch or read failure rejects before replacement and removes the temporary file.
 5. Replace the real target with the temporary sibling. POSIX implementations rename then sync the parent directory; Windows uses `MoveFileExW` with replace-existing and write-through flags.
 6. A post-rename parent-sync failure is returned as a successful write with a durability warning, never as a zero-change rejection.
 
@@ -301,7 +301,7 @@ When any anchor's hash doesn't match the current file content:
 - `remaps` helps locate the current content; `currentAnchors` is a bounded window captured from the same file snapshot that rejected the batch.
 - Inspect `currentAnchors` before an explicit retry. It may supply the new anchors only when its complete window still covers the intended target and range; otherwise re-read. It must never trigger automatic retry or overwrite concurrent changes.
 - The whole edit is rejected — no partial writes.
-- `source_changed_before_commit` is also a confirmed zero-write rejection by this batch; it reports `currentRevision` but does not overwrite the externally changed target.
+- `source_changed_before_commit` is a confirmed zero-write rejection for any content-changing write; it reports `currentRevision` when available and does not overwrite the externally changed target.
 
 ## 6. Success Response
 
@@ -371,10 +371,11 @@ Invalid anchors return:
 
 | Code | Meaning |
 |---|---|
-| 0 | Normal — check JSON `ok` for success vs logical error |
-| 1 | Unrecoverable I/O error (file not found, permission denied, etc.) |
+| 0 | Normal command outcome — check JSON `ok` for success vs logical error |
+| 1 | Unrecoverable process/infrastructure failure, such as failure to emit the JSON response |
+| 2 | CLI misuse or invalid command-line shape — usage is written to stderr |
 
-Exit code 1 is only for infrastructure failures. All logical errors (stale, invalid anchor, empty content) return exit 0 with `ok: false` in JSON.
+Command-level failures, including `stale`, `invalid`, `binary`, `encoding`, `range`, `io`, file-not-found, and permission errors, return exit 0 with `ok:false` in JSON. Exit code 1 is reserved for failures that prevent the CLI from reporting a normal protocol outcome.
 
 ## 10. File Layout
 

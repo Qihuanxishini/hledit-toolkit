@@ -373,7 +373,7 @@ go vet ./...
 go test ./...
 ```
 
-测试必须覆盖 capability（含 `batchWireV3`、`batchReadProof` 与 `contentReplaceOnce`）、四种严格 operation、replace-once 的唯一/不命中/歧义/提交前竞态、旧参数拒绝、结构化参数解包、revision 与 BOM/CRLF/LF/末尾换行边界、完整 read proof、proof 缺失/内部变化/stale、物理冲突、提交前 revision 竞态、结构化读取元数据、batch/check parity、未知 JSON 字段拒绝、单行范围重复护栏、stale 同快照字段核对及零写入、结果未知、branch 恢复、三个编辑工具激活、英文失败与提示词、tool error 升级，以及 bundled CLI 与插件的端到端调用。
+测试必须覆盖 capability（含 `batchWireV3`、`batchReadProof`、`contentReplaceOnce`、`batchEditDeltas` 与 `readIgnoreCase`）、四种严格 operation、replace-once 的唯一/不命中/歧义/提交前竞态、旧参数拒绝、结构化参数解包、revision 与 BOM/CRLF/LF/末尾换行边界、完整 read proof、proof 缺失/内部变化/stale、物理冲突、提交前 revision 竞态、结构化读取元数据、batch/check parity、未知 JSON 字段拒绝、单行范围重复护栏、stale 同快照字段核对及零写入、结果未知、branch 恢复、三个编辑工具激活、英文失败与提示词、tool error 升级，以及 bundled CLI 与插件的端到端调用。
 
 ## 构建 bundled CLI
 
@@ -386,7 +386,7 @@ go build -trimpath -ldflags="-s -w" -o ../pi-hledit-diff/bin/hledit.exe .
 ../pi-hledit-diff/bin/hledit.exe capabilities
 ```
 
-capabilities 必须同时返回 `anchorProtocolV2:true`、`readRangeMetadata:true`、`batchInsertAfter:true`、`batchCheck:true`、`batchUpdatedAnchors:true`、`batchStaleContext:true`、`batchWireV3:true`、`batchReadProof:true` 和 `contentReplaceOnce:true`。
+capabilities 必须同时返回 `anchorProtocolV2:true`、`readRangeMetadata:true`、`batchInsertAfter:true`、`batchCheck:true`、`batchUpdatedAnchors:true`、`batchStaleContext:true`、`batchWireV3:true`、`batchReadProof:true`、`contentReplaceOnce:true`、`batchEditDeltas:true` 和 `readIgnoreCase:true`。
 
 ## 真实 Pi 验收
 

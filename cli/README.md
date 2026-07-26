@@ -123,7 +123,7 @@ This monorepo includes the [`pi-hledit-diff`](../pi-hledit-diff/) extension. It 
 - `hledit_apply_file_changes`
 - `hledit_replace_once`
 
-The extension requires `anchorProtocolV2:true`, `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, `batchUpdatedAnchors:true`, `batchStaleContext:true`, `batchWireV3:true`, `batchReadProof:true`, and `contentReplaceOnce:true`. It consumes revision-bearing structured reads for anchored batches, uses unique exact content matching for replace-once, and does not use the legacy single-tool `op` protocol or an edits-only write path.
+The extension requires `anchorProtocolV2:true`, `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, `batchUpdatedAnchors:true`, `batchStaleContext:true`, `batchWireV3:true`, `batchReadProof:true`, `contentReplaceOnce:true`, `batchEditDeltas:true`, and `readIgnoreCase:true`. It consumes revision-bearing structured reads for anchored batches, uses unique exact content matching for replace-once, and does not use the legacy single-tool `op` protocol or an edits-only write path.
 
 After installing the extension in Pi, reload it:
 
@@ -158,7 +158,7 @@ hledit replace-once <file>
 `--grep` matches substrings. `--context N` adds N lines before/after each match. `--pretty` adds ANSI styling for human reading; `--json` stays machine-readable and unstyled.
 `<content-source>` is either `-` for stdin or a file path.
 
-`hledit capabilities` emits machine-readable JSON for integrations. This tree additionally reports `batchWireV3:true`, `batchReadProof:true`, and `contentReplaceOnce:true`; structured-read, patched-batch, and content-replacement clients should require the complete capability set listed above.
+`hledit capabilities` emits machine-readable JSON for integrations. This tree additionally reports `batchWireV3:true`, `batchReadProof:true`, `contentReplaceOnce:true`, `batchEditDeltas:true`, and `readIgnoreCase:true`; structured-read, patched-batch, and content-replacement clients should require the complete capability set listed above.
 
 ## Examples
 
@@ -287,13 +287,14 @@ Anchors are `LN#HHH`:
 ## Behavior notes
 
 - Writes resolve symlink targets, use unique temporary siblings, preserve existing permission bits, and atomically replace the real target.
+- Every content-changing write rechecks the target's exact raw-byte revision immediately before replacement and returns `source_changed_before_commit` rather than overwriting a detected external change.
 - All anchors in a write are validated before writing.
 - Input must be valid UTF-8; an existing UTF-8 BOM is hidden from line text and preserved across writes.
 - Batch JSON rejects unknown fields and trailing values so misspelled protocol fields cannot silently change edit semantics.
 - Files with multiple hard links are rejected rather than silently breaking link identity or weakening atomicity.
 - Validated no-op replacements return `contentChanged:false` without touching the filesystem.
 - Batch insert supports `"after": true`; insert and replace/delete operations may not target the same anchor or range.
-- Logical failures (`stale`, `invalid`, `binary`, `encoding`, `range`, `io`) are reported as JSON on stdout.
+- Logical failures (`stale`, `source_changed_before_commit`, `invalid`, `binary`, `encoding`, `range`, `io`) are reported as JSON on stdout.
 - CLI misuse exits `2`; unrecoverable infrastructure failures exit `1`; normal logical outcomes exit `0`.
 
 ## Failure modes

@@ -618,3 +618,65 @@ func TestCmdReplaceDeletingOnlyLineProducesEmptyFile(t *testing.T) {
 		t.Fatalf("target bytes = %q; want an empty file", string(data))
 	}
 }
+
+func TestSingleWritesRejectConcurrentSourceChange(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(target, contentSrc string)
+	}{
+		{
+			name: "replace",
+			run: func(target, contentSrc string) {
+				_ = cmdReplace(target, formatTag(2, "bravo"), contentSrc)
+			},
+		},
+		{
+			name: "replace range",
+			run: func(target, contentSrc string) {
+				_ = cmdReplaceRange(target, formatTag(1, "alpha"), formatTag(2, "bravo"), contentSrc)
+			},
+		},
+		{
+			name: "insert",
+			run: func(target, contentSrc string) {
+				_ = cmdInsert(target, formatTag(2, "bravo"), contentSrc, true)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			target := editTestWriteLinesFile(t, dir, "target.txt", "alpha", "bravo")
+			contentSrc := editTestWriteLinesFile(t, dir, "content.txt", "delta")
+			externalContent := []byte("alpha\nexternal\n")
+
+			previousSeam := beforeAtomicRevisionCheck
+			beforeAtomicRevisionCheck = func(targetPath string) {
+				if err := os.WriteFile(targetPath, externalContent, 0o600); err != nil {
+					panic(err)
+				}
+			}
+			t.Cleanup(func() { beforeAtomicRevisionCheck = previousSeam })
+
+			out := editTestCaptureStdout(t, func() {
+				test.run(target, contentSrc)
+			})
+			var got EditError
+			editTestMustUnmarshal(t, out, &got)
+			wantRevision := rawFileRevision(externalContent)
+			if got.OK || got.Error != "source_changed_before_commit" || got.CurrentRevision != wantRevision {
+				t.Fatalf("single-write result = %#v; want changed-before-commit with revision %q", got, wantRevision)
+			}
+
+			current, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(current, externalContent) {
+				t.Fatalf("single write overwrote external content: %q", current)
+			}
+			assertNoAtomicTempFiles(t, dir)
+		})
+	}
+}

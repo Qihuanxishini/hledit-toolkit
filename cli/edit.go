@@ -85,7 +85,7 @@ func emitInvalidError(msg string) error {
 
 // editOp applies a validated edit operation to the file.
 // It handles: loading, anchor validation, content reading, applying the edit,
-// atomic write with trailing newline preservation, and result emission.
+// revision-guarded atomic writing with trailing newline preservation, and result emission.
 // apply is a callback that receives the current lines and new content lines,
 // and returns the resulting lines plus edit metadata.
 func editOp(
@@ -136,8 +136,17 @@ func editOp(
 			Delta:    linesAdded - linesDeleted,
 		}}
 		encoded := file.EncodeContent(result, rebuiltLineEndings(file, editDeltas, len(result)))
-		writeWarning, werr := atomicWrite(path, encoded)
+		writeWarning, werr := atomicWriteIfRevision(path, encoded, file.Revision)
 		if werr != nil {
+			var changedErr *sourceChangedBeforeCommitError
+			if errors.As(werr, &changedErr) {
+				return emitJSON(EditError{
+					OK:              false,
+					Error:           "source_changed_before_commit",
+					Message:         changedErr.Error(),
+					CurrentRevision: changedErr.CurrentRevision,
+				})
+			}
 			emitError("io", werr.Error())
 			return nil
 		}

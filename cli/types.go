@@ -32,13 +32,14 @@ type EditResult struct {
 	Warnings         []string `json:"warnings,omitempty"`
 }
 
-// EditError is written to stdout when validation fails (stale anchor, invalid
-// anchor, empty content, etc.). Always paired with exit code 0.
+// EditError is written to stdout when a single-edit operation fails validation
+// or detects a concurrent source change. Always paired with exit code 0.
 type EditError struct {
-	OK      bool    `json:"ok"`
-	Error   string  `json:"error"`
-	Message string  `json:"message"`
-	Remaps  []Remap `json:"remaps,omitempty"`
+	OK              bool    `json:"ok"`
+	Error           string  `json:"error"`
+	Message         string  `json:"message"`
+	Remaps          []Remap `json:"remaps,omitempty"`
+	CurrentRevision string  `json:"currentRevision,omitempty"`
 }
 
 // AnchorContext is a bounded, annotated source window used in batch responses.

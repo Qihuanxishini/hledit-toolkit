@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Recheck the target's raw-byte revision before standalone `replace`, `replace-range`, and `insert` commits so a detected external change is rejected with `source_changed_before_commit` instead of being overwritten.
+
 ## [2.3.1] — 2026-07-25
 
 ### Changed

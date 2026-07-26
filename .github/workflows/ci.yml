@@ -39,6 +39,16 @@ jobs:
         working-directory: pi-hledit-diff
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: cli/go.mod
+          cache: false
+      - name: Test CLI on Windows
+        working-directory: cli
+        run: go test ./...
+      - name: Build bundled CLI from current source
+        working-directory: cli
+        run: go build -trimpath -ldflags="-s -w" -o ../pi-hledit-diff/bin/hledit.exe .
       - uses: actions/setup-node@v5
         with:
           node-version: 24

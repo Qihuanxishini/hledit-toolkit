@@ -11,13 +11,14 @@
 - `hledit_replace_once`（TUI 显示为 `Replace Once`）：以当前文件中唯一的连续精确文本为前置条件，原子替换该文本，不需要预先读取锚点。
 
 编辑语义：
-- 任务已经明确要求修改现有文本文件时，第一次读取预计会修改的目标文件就使用 `hledit_read_anchors`；普通 `read` 仅用于参考文件或尚未确定修改目标的探索。随后用 `hledit_apply_file_changes` 做局部修改；`write` 只用于创建新文件，不用于覆盖现有文件。
-- 锚点格式严格跟随 CLI：`LN#[A-Za-z0-9_-]{3}`；也可将读取结果中的 `LN#HASH:text` 整段原样填入锚点字段，`prepareArguments` 会在 schema 校验前移除冒号后的源码文本。旧两位锚点会在 schema 边界被拒绝，格式合规但内容伪造仍会被 CLI 判为 stale。
+- 锚点编辑现有文本文件时，第一次读取预计会修改的目标文件就使用 `hledit_read_anchors`；普通 `read` 仅用于参考文件或尚未确定修改目标的探索。若已知完整且预期唯一的 `old_lines`，可直接使用 `hledit_replace_once`，无需预读锚点。`write` 只用于创建新文件，不用于覆盖现有文件。
+- 公开锚点字段的规范输入是 `LN#[A-Za-z0-9_-]{3}` token，只复制操作所需的首尾或依附行锚点，不复制源码文本或中间 proof 锚点；中间行 proof 由插件从已读 evidence 自动注入。`prepareArguments` 仍兼容非 constrained caller 粘贴的 `LN#HASH:text` 整行并移除源码后缀。
 - 公开修改协议只有四种完整操作：`replace_range`、`delete_range`、`insert_before` 和 `insert_after`。范围操作必须同时提供 `start_anchor` 与 `end_anchor`；单行范围使用同一个锚点作为首尾。旧 `replace` / `delete` / `insert` 形状不迁移，由严格 schema 直接拒绝。
 - `replace_range`、`insert_before`、`insert_after` 以及 `hledit_replace_once` 的 `old_lines` / `new_lines` 可写为换行分隔的字符串或单行字符串数组；大块内容优先使用字符串。字符串按换行拆分，末尾一个换行不额外生成空行，数组元素仍不得包含换行。空字符串表示一条空白行——唯一例外是 `hledit_replace_once` 的 `new_lines`：空字符串被 schema 拒绝（它通常表达删除意图），显式空白行用 `[""]` 表达。
 - `hledit_replace_once` 仅用于已知 `old_lines` 在当前文件中恰好出现一次的情况；零次或多次匹配均拒绝且零写入。它不接受空 `new_lines`（空字符串或空数组），删除必须使用锚点 `delete_range`。
-- 成功锚点读取会在插件内部记录原始字节 SHA-256 revision 与完整返回行：普通范围读取贡献连续行，grep 读取可贡献离散行；同一 revision 的证据按行合并，revision 改变时清除旧证据。范围修改必须覆盖每个原始行，insert 必须覆盖依附行；revision 与 proof 不进入公开工具 schema。
-- grep 的全局 `truncated` 只表示仍有匹配结果未返回，已完整返回的行仍可建立局部 proof；发生 `textTruncated` 的行不建立新 proof。离散结果不会自动覆盖中间行，证据不足时 apply 在启动 CLI batch 前直接拒绝并返回定向读取建议；建议范围依据完整的首个缺口区间，不受最多 20 个展示行限制，超过单次读取上限时明确要求按 `nextOffset` 续读。
+- 成功锚点读取会在插件内部记录原始字节 SHA-256 revision 与完整返回行：普通范围读取贡献连续行，grep 读取可贡献离散行；同一 revision 的证据按行合并，revision 改变时清除旧证据。范围修改的当前 evidence 必须覆盖每个原始行，insert 必须覆盖依附行；evidence 可来自完整读取或已验证的 `updatedAnchors`，公开 change 只携带边界/依附锚点，revision 与逐行 proof 不进入工具 schema。
+- grep 的全局 `truncated` 只表示仍有匹配结果未返回，已完整返回的行仍可建立局部 proof；发生 `textTruncated` 的行不建立新 proof。离散结果不会自动覆盖中间行，证据不足时 apply 在启动 CLI batch 前直接拒绝；正文标识首个连续缺口，而补读调用覆盖同一受影响 change 从首个到最后一个未读行的跨度，避免多轮 apply → 补读循环。超过单次读取上限时明确要求按 `nextOffset` 续读。
+- 插件侧 `insufficient_read_proof` 是可恢复的补读结果，不设置 Pi `isError`；模型应完成定向读取后继续使用 `hledit_apply_file_changes`。其他拒绝、不可用和结果未知仍按工具错误处理。
 - 若单行 `replace_range` 输出多行且首行与原锚点行完全相同，插件会判定为高风险范围扩展；返回恢复指导前先以 `batch --check` 验证本批次全部锚点，stale、冲突或非法请求优先返回 CLI 原始错误。
 - 高风险范围扩展错误会列出实际参数并禁止原样重试，但不再回显完整源码 payload：存在唯一、从下一行之后开始的相邻 `delete_range` 时，给出修改 `end_anchor`、移除 delete、保持原 lines 的字段级指令；没有安全结束锚点时要求重新读取；append 意图则要求改为 `insert_after` 并移除重复首行。紧接下一行开始的 `delete_range` 已显式覆盖后续旧代码，不触发该护栏。
 - batch 是原子的：任一 change 非法、冲突或 stale 时均为零写入。

@@ -44,11 +44,15 @@ function registerExtensionForTest(): {
 	return { registeredTools, toolResultListener, eventListeners };
 }
 
-test("extension registers all editing tools and escalates logical hledit failures", () => {
+test("extension keeps proof misses recoverable and escalates other hledit failures", () => {
 	const { registeredTools, toolResultListener } = registerExtensionForTest();
 
 	assert.deepEqual([...registeredTools.keys()], [HLEDIT_READ_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_REPLACE_ONCE_TOOL]);
 	const context = { cwd: process.cwd() };
+	assert.equal(toolResultListener({
+		toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL,
+		details: { disposition: "rejected", error: { code: "insufficient_read_proof" } },
+	}, context), undefined);
 	assert.deepEqual(toolResultListener({ toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL, details: { disposition: "rejected" } }, context), { isError: true });
 	assert.deepEqual(toolResultListener({ toolName: HLEDIT_READ_ANCHORS_TOOL, details: { disposition: "unavailable" } }, context), { isError: true });
 	assert.deepEqual(toolResultListener({ toolName: HLEDIT_REPLACE_ONCE_TOOL, details: { disposition: "rejected" } }, context), { isError: true });
@@ -81,16 +85,23 @@ test("registered tool metadata stays concise without losing English safeguards",
 	const applyGuidelines = applyTool.promptGuidelines.join(" ");
 	const replaceOnceGuidelines = replaceOnceTool.promptGuidelines.join(" ");
 	assert.match(readTool.description, /LN#HASH anchors/);
-	assert.match(readGuidelines, /first read[\s\S]*ordinary read/);
-	assert.match(readGuidelines, /grep\/context[\s\S]*local read proof/);
+	assert.match(readGuidelines, /anchored edits[\s\S]*first read[\s\S]*ordinary read/);
+	assert.match(readGuidelines, /replace_once without a prior anchor read/);
+	assert.match(readGuidelines, /grep\/context to locate code[\s\S]*smallest complete range/);
+	assert.match(readGuidelines, /ensure current evidence covers every source line[\s\S]*endpoint-only/);
+	assert.match(readGuidelines, /copy only the current LN#HASH token[\s\S]*interior anchors are carried automatically/);
+	assert.match(applyTool.description, /boundary anchors[\s\S]*hidden complete read proof/);
 	assert.match(applyGuidelines, /never overwrite[\s\S]*with write/);
 	assert.match(applyGuidelines, /empty file/);
 	assert.match(applyGuidelines, /newline-delimited strings/);
+	assert.match(applyGuidelines, /do not copy source text or interior proof anchors/);
 	assert.match(applyGuidelines, /complete, untruncated local window/);
 	assert.match(applyGuidelines, /verified renames/);
-	assert.match(applyGuidelines, /stale[\s\S]*targeted reread/);
+	assert.match(applyGuidelines, /targeted reread guidance[\s\S]*continue with hledit_apply_file_changes/);
 	assert.match(replaceOnceGuidelines, /old_lines[\s\S]*exactly once/);
 	assert.match(replaceOnceGuidelines, /new_lines rejects an empty string[\s\S]*delete_range/);
+	assert.match(JSON.stringify(applyTool.parameters), /interior proof is carried automatically/i);
+	assert.match(JSON.stringify(applyTool.parameters), /complete read or verified updated-anchor line/i);
 
 	const protocolCharacters = [readTool, applyTool, replaceOnceTool].reduce(
 		(total, tool) => total

@@ -8,15 +8,15 @@ const STRICT_OBJECT = { additionalProperties: false };
 const PATH_SCHEMA = Type.String({ minLength: 1, description: "Text file path." });
 const ANCHOR_SCHEMA = Type.String({
 	pattern: ANCHOR_PATTERN,
-	description: "Current LN#HASH anchor copied verbatim; LN#HASH:text is accepted and normalized. Never invent anchors.",
+	description: "Current LN#HASH token copied from a complete read or verified updated-anchor line. Paste only the token, without :text. Never invent anchors.",
 });
 const RANGE_START_ANCHOR_SCHEMA = Type.String({
 	pattern: ANCHOR_PATTERN,
-	description: "First included line; for one line, use the same anchor as end_anchor.",
+	description: "First included line token. Ensure current evidence covers every source line through end_anchor; interior proof is carried automatically. For one line, use the same anchor as end_anchor.",
 });
 const RANGE_END_ANCHOR_SCHEMA = Type.String({
 	pattern: ANCHOR_PATTERN,
-	description: "Last included line; for one line, use the same anchor as start_anchor.",
+	description: "Last included line token. Endpoint tokens alone do not prove unread intermediate lines. For one line, use the same anchor as start_anchor.",
 });
 const REPLACEMENT_LINE_SCHEMA = Type.String({ pattern: "^[^\\r\\n]*$" });
 const REPLACEMENT_LINES_SCHEMA = Type.Union(

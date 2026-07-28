@@ -22,11 +22,11 @@
 - 一次 batch 原子提交同一文件中的多个非冲突修改；`replace-once` 仅在旧内容块在当前文件中唯一时原子替换它。
 - 单次重建文件，避免多 edit 场景下反复复制整份内容。
 - batch 或 replace-once 成功后直接返回 `updatedAnchors` 与 `editDeltas`，无需再次启动 `read-range`；插件用 `editDeltas` 把未受影响行的读取证据平移到新行号，顺序多次编辑同一文件通常不再需要中间重读。
-- 模型提交编辑前的旧锚点时，插件在拒绝正文中直接列出经验证的更名锚点（内容未变、仅行号平移），一次廉价重提交即可恢复；更名不足以覆盖全部缺口时，同时给出剩余范围的定向重读指引。
-- JSON 读取返回基于原始字节的 SHA-256 revision；插件维护连续或 grep 离散的完整已读行集合，并将隐藏 proof 注入 anchored batch。
+- 模型提交编辑前的旧锚点时，插件在拒绝正文中直接列出经验证的更名锚点（内容未变、仅行号平移），一次廉价重提交即可恢复；存在 proof 缺口时，补读范围覆盖同一受影响 change 从首个到最后一个未读行，减少反复 apply。
+- JSON 读取返回基于原始字节的 SHA-256 revision；插件维护由完整读取行或已验证 `updatedAnchors` 组成的当前 evidence，并将隐藏 proof 注入 anchored batch。公开 change 只需复制首尾或依附行的 `LN#HASH` token，无需复制中间锚点。
 - batch 与 replace-once 都在原子替换前复检 revision，检测规划期间的大部分外部修改；复检与 rename 之间仍保留极短竞争窗口。
 - CLI 健康时，三个编辑工具始终替代内置 `edit`；apply 仍独立检查当前 branch 的读取证据，replace-once 以唯一精确内容为前置条件。
-- 插件工具参数采用严格 schema 并启用 provider 侧 constrained sampling（`strict: prefer`，不支持的模型自动回落），将 logical failure 转换为真正的 Pi 工具错误。
+- 插件工具参数采用严格 schema 并启用 provider 侧 constrained sampling（`strict: prefer`，不支持的模型自动回落）；`insufficient_read_proof` 作为可恢复补读结果返回，其他失败继续转换为真正的 Pi 工具错误。
 - `read` / `read-range` / `anchors` 支持 `--ignore-case` 子串过滤；插件 `hledit_read_anchors` 暴露 `ignore_case` 参数。
 - replace/delete 范围的前后物理边界上允许位置确定的 insert（内容依附其锚点行）；落入范围内部边界的 insert 仍整批拒绝。
 - 插件内置主题自适应的锚点预览与统一/双栏 diff 渲染，不依赖其他显示插件。

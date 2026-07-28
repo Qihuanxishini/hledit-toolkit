@@ -28,6 +28,28 @@ type FileReadEvidence = {
 };
 
 type ReadProofLineRange = { start: number; end: number };
+type FileChangeOperation = FileChangeParams["changes"][number]["operation"];
+
+type RequestedSourceRange = ReadProofLineRange & {
+	changeNumber: number;
+	operation: FileChangeOperation;
+};
+
+// [喵喵喵]: 同一物理行可能被多个 change 引用；逐项保留端点，避免按行号建 Map
+// 时后一个锚点覆盖前一个待验证锚点。(2026-07-28)
+type RequestedEndpointAnchor = {
+	line: number;
+	anchor: string;
+	changeNumber: number;
+	operation: FileChangeOperation;
+};
+
+export type ReadProofGap = ReadProofLineRange & {
+	changeNumber: number;
+	operation: FileChangeOperation;
+	requiredStart: number;
+	requiredEnd: number;
+};
 
 export type RenamedAnchor = {
 	requested: string;
@@ -37,9 +59,9 @@ export type RenamedAnchor = {
 export type ReadProofFailure = {
 	code: "insufficient_read_proof";
 	message: string;
-	requiredLines: number[];
-	missingLines: number[];
+	reportedMissingLines: number[];
 	suggestedReadRange?: ReadProofLineRange;
+	proofGap?: ReadProofGap;
 	renamedAnchors?: RenamedAnchor[];
 	// true 表示把列出的更名全部替换进请求即可恢复完整 proof；缺席时更名之外仍有
 	// 缺口，恢复正文必须同时给出定向重读指引。
@@ -106,63 +128,101 @@ function evidencePathFromDetails(details: Record<string, unknown>, cwd: string):
 
 type RequestedChangeEvidence = {
 	ranges: ReadProofLineRange[];
-	endpointAnchors: Map<number, string>;
+	sourceRanges: RequestedSourceRange[];
+	endpointAnchors: RequestedEndpointAnchor[];
 };
 
 const MAX_REPORTED_MISSING_LINES = 20;
 
 function requestedChangeEvidence(changes: FileChangeParams["changes"]): RequestedChangeEvidence | undefined {
-	const ranges: ReadProofLineRange[] = [];
-	const endpointAnchors = new Map<number, string>();
-	for (const change of changes) {
+	const sourceRanges: RequestedSourceRange[] = [];
+	const endpointAnchors: RequestedEndpointAnchor[] = [];
+	for (const [changeIndex, change] of changes.entries()) {
+		const changeNumber = changeIndex + 1;
 		if (change.operation === "insert_before" || change.operation === "insert_after") {
 			const line = lineFromAnchor(change.anchor);
 			if (line === undefined) return undefined;
-			ranges.push({ start: line, end: line });
-			endpointAnchors.set(line, change.anchor);
+			sourceRanges.push({ start: line, end: line, changeNumber, operation: change.operation });
+			endpointAnchors.push({ line, anchor: change.anchor, changeNumber, operation: change.operation });
 			continue;
 		}
 
 		const start = lineFromAnchor(change.start_anchor);
 		const end = lineFromAnchor(change.end_anchor);
 		if (start === undefined || end === undefined || start > end) return undefined;
-		ranges.push({ start, end });
-		endpointAnchors.set(start, change.start_anchor);
-		endpointAnchors.set(end, change.end_anchor);
+		sourceRanges.push({ start, end, changeNumber, operation: change.operation });
+		endpointAnchors.push(
+			{ line: start, anchor: change.start_anchor, changeNumber, operation: change.operation },
+			{ line: end, anchor: change.end_anchor, changeNumber, operation: change.operation },
+		);
 	}
 
-	ranges.sort((left, right) => left.start - right.start || left.end - right.end);
+	// [喵喵喵]: 仅合并真正重叠的范围；相邻 change 保持独立，避免首个缺口的
+	// reportedMissingLines 越过受影响 operation 的边界。(2026-07-28)
+	const rangesInFileOrder = [...sourceRanges].sort((left, right) => left.start - right.start || left.end - right.end);
 	const mergedRanges: ReadProofLineRange[] = [];
-	for (const range of ranges) {
+	for (const range of rangesInFileOrder) {
 		const previous = mergedRanges.at(-1);
-		if (previous && range.start <= previous.end + 1) {
+		if (previous && range.start <= previous.end) {
 			previous.end = Math.max(previous.end, range.end);
 		} else {
-			mergedRanges.push({ ...range });
+			mergedRanges.push({ start: range.start, end: range.end });
 		}
 	}
-	return { ranges: mergedRanges, endpointAnchors };
+	return { ranges: mergedRanges, sourceRanges, endpointAnchors };
 }
 
-function summarizedRequiredLines(ranges: ReadProofLineRange[]): number[] {
-	return ranges.flatMap((range) => range.start === range.end ? [range.start] : [range.start, range.end]);
+function lineRangeDescription(range: ReadProofLineRange): string {
+	return range.start === range.end ? `line ${range.start}` : `lines ${range.start}-${range.end}`;
+}
+
+function proofGapFromMissingRange(
+	missingRange: ReadProofLineRange | undefined,
+	sourceRanges: RequestedSourceRange[],
+): ReadProofGap | undefined {
+	if (!missingRange) return undefined;
+	// [喵喵喵]: 边界 insert 与 range 可合法共享端点；多个 change 同时覆盖首个缺行时，
+	// 选择结束最远者可一次补齐完整范围，避免先补单行再补 range。(2026-07-28)
+	const sourceRange = sourceRanges
+		.filter((range) => range.start <= missingRange.start && range.end >= missingRange.start)
+		.reduce<RequestedSourceRange | undefined>((selected, range) =>
+			!selected || range.end > selected.end ? range : selected, undefined);
+	if (!sourceRange) return undefined;
+	return {
+		start: Math.max(missingRange.start, sourceRange.start),
+		end: Math.min(missingRange.end, sourceRange.end),
+		changeNumber: sourceRange.changeNumber,
+		operation: sourceRange.operation,
+		requiredStart: sourceRange.start,
+		requiredEnd: sourceRange.end,
+	};
+}
+
+function formatProofGapMessage(gap: ReadProofGap): string {
+	const missingRange = lineRangeDescription(gap);
+	if (gap.operation === "replace_range" || gap.operation === "delete_range") {
+		return `Change ${gap.changeNumber} (${gap.operation} ${gap.requiredStart}-${gap.requiredEnd}) requires complete read proof for every source line in the inclusive range; missing ${missingRange}. Endpoint anchors alone are insufficient.`;
+	}
+	return `Change ${gap.changeNumber} (${gap.operation} at line ${gap.requiredStart}) requires complete read proof for its anchor line; missing ${missingRange}.`;
 }
 
 function collectProofCoverage(
 	ranges: ReadProofLineRange[],
 	evidenceLines: Map<number, EvidenceLine>,
-): { coveredLines: number[]; missingLines: number[]; firstMissingRange: ReadProofLineRange | undefined } {
+): { coveredLines: number[]; reportedMissingLines: number[]; firstMissingRange: ReadProofLineRange | undefined } {
 	const availableLines = [...evidenceLines.keys()].sort((left, right) => left - right);
 	const coveredLines: number[] = [];
-	const missingLines: number[] = [];
-	let firstMissingRange: ReadProofLineRange | undefined;
 	let availableIndex = 0;
 
-	const appendMissingRange = (start: number, end: number): boolean => {
-		firstMissingRange ??= { start, end };
-		const reportCount = Math.min(end - start + 1, MAX_REPORTED_MISSING_LINES - missingLines.length);
-		for (let offset = 0; offset < reportCount; offset += 1) missingLines.push(start + offset);
-		return missingLines.length >= MAX_REPORTED_MISSING_LINES;
+	// [喵喵喵]: 诊断只属于首个连续缺口；后续 change 的缺行不应混入同一次
+	// failure，完整补读跨度由 affected change 的 evidence 另行计算。(2026-07-28)
+	const missingCoverage = (start: number, end: number) => {
+		const reportCount = Math.min(end - start + 1, MAX_REPORTED_MISSING_LINES);
+		return {
+			coveredLines,
+			reportedMissingLines: Array.from({ length: reportCount }, (_, offset) => start + offset),
+			firstMissingRange: { start, end },
+		};
 	};
 
 	for (const range of ranges) {
@@ -170,18 +230,22 @@ function collectProofCoverage(
 		let expectedLine = range.start;
 		while (availableLines[availableIndex] !== undefined && availableLines[availableIndex]! <= range.end) {
 			const availableLine = availableLines[availableIndex]!;
-			if (availableLine > expectedLine && appendMissingRange(expectedLine, availableLine - 1)) {
-				return { coveredLines, missingLines, firstMissingRange };
-			}
+			if (availableLine > expectedLine) return missingCoverage(expectedLine, availableLine - 1);
 			coveredLines.push(availableLine);
 			expectedLine = availableLine + 1;
 			availableIndex += 1;
 		}
-		if (expectedLine <= range.end && appendMissingRange(expectedLine, range.end)) {
-			return { coveredLines, missingLines, firstMissingRange };
-		}
+		if (expectedLine <= range.end) return missingCoverage(expectedLine, range.end);
 	}
-	return { coveredLines, missingLines, firstMissingRange };
+	return { coveredLines, reportedMissingLines: [], firstMissingRange: undefined };
+}
+
+// [喵喵喵]: 一次补读覆盖同一 change 从首个缺口到最后一个缺口的完整跨度；
+// 已知的连续尾部不重复读取，避免离散 evidence 触发多轮 apply → 补读。(2026-07-28)
+function unresolvedReadSpanForChange(gap: ReadProofGap, evidenceLines: Map<number, EvidenceLine>): ReadProofLineRange {
+	let lastMissingLine = gap.requiredEnd;
+	while (lastMissingLine > gap.end && evidenceLines.has(lastMissingLine)) lastMissingLine -= 1;
+	return { start: gap.start, end: Math.max(gap.end, lastMissingLine) };
 }
 
 export async function resolveReadEvidencePath(cwd: string, path: string): Promise<string> {
@@ -206,9 +270,9 @@ function remapLineNumber(line: number, deltas: HleditEditDelta[]): number | unde
 	return remapped >= 1 ? remapped : undefined;
 }
 
-function renamedEndpointAnchors(renames: Map<string, string>, endpointAnchors: Map<number, string>): RenamedAnchor[] {
+function renamedEndpointAnchors(renames: Map<string, string>, endpointAnchors: RequestedEndpointAnchor[]): RenamedAnchor[] {
 	const renamed: RenamedAnchor[] = [];
-	for (const requestedAnchor of new Set(endpointAnchors.values())) {
+	for (const requestedAnchor of new Set(endpointAnchors.map((endpoint) => endpoint.anchor))) {
 		const current = renames.get(requestedAnchor);
 		if (current) renamed.push({ requested: requestedAnchor, current });
 	}
@@ -230,9 +294,9 @@ function substituteRenamedAnchors(changes: FileChangeParams["changes"], renames:
 
 type EvidenceProofEvaluation =
 	| { anchors: string[]; coveredLines: number[] }
-	| { failure: { message: string; missingLines: number[]; suggestedReadRange?: ReadProofLineRange } };
+	| { failure: { message: string; reportedMissingLines: number[]; suggestedReadRange?: ReadProofLineRange; proofGap?: ReadProofGap } };
 
-// 对同一份证据评估一次请求的逐行 coverage 与端点锚点匹配；selectProof 用它分别
+// 对同一份证据评估一次请求的逐行 coverage 与每个提交端点；selectProof 用它分别
 // 评估原始请求与"更名替换后"的 what-if 请求。
 function evaluateProofAgainstEvidence(
 	requested: RequestedChangeEvidence,
@@ -240,24 +304,31 @@ function evaluateProofAgainstEvidence(
 	renames: Map<string, string>,
 ): EvidenceProofEvaluation {
 	const coverage = collectProofCoverage(requested.ranges, evidenceLines);
-	if (coverage.missingLines.length > 0) {
+	if (coverage.reportedMissingLines.length > 0) {
+		const proofGap = proofGapFromMissingRange(coverage.firstMissingRange, requested.sourceRanges);
+		const suggestedReadRange = proofGap
+			? unresolvedReadSpanForChange(proofGap, evidenceLines)
+			: coverage.firstMissingRange;
 		return {
 			failure: {
-				message: `Read proof is missing lines ${coverage.missingLines.join(", ")}${coverage.missingLines.length === MAX_REPORTED_MISSING_LINES ? " (only the first 20 are listed)" : ""}.`,
-				missingLines: coverage.missingLines,
-				...(coverage.firstMissingRange ? { suggestedReadRange: coverage.firstMissingRange } : {}),
+				message: proofGap
+					? formatProofGapMessage(proofGap)
+					: `Read proof is missing ${lineRangeDescription(coverage.firstMissingRange ?? { start: coverage.reportedMissingLines[0]!, end: coverage.reportedMissingLines.at(-1)! })}.`,
+				reportedMissingLines: coverage.reportedMissingLines,
+				...(suggestedReadRange ? { suggestedReadRange } : {}),
+				...(proofGap ? { proofGap } : {}),
 			},
 		};
 	}
-	for (const [line, requestedAnchor] of requested.endpointAnchors) {
-		if (evidenceLines.get(line)?.anchor !== requestedAnchor) {
+	for (const endpoint of requested.endpointAnchors) {
+		if (evidenceLines.get(endpoint.line)?.anchor !== endpoint.anchor) {
 			return {
 				failure: {
-					message: renames.has(requestedAnchor)
-						? `The submitted anchor ${requestedAnchor} predates this file's last edit; the same unchanged content now has a shifted line number.`
-						: `The submitted anchor for line ${line} does not match the most recently read anchor on this branch.`,
-					missingLines: [line],
-					suggestedReadRange: { start: line, end: line },
+					message: renames.has(endpoint.anchor)
+						? `Change ${endpoint.changeNumber} (${endpoint.operation}) submitted anchor ${endpoint.anchor} from before this file's last edit; the same unchanged content now has a shifted line number.`
+						: `Change ${endpoint.changeNumber} (${endpoint.operation}) submitted anchor for line ${endpoint.line} does not match the most recently read anchor on this branch.`,
+					reportedMissingLines: [endpoint.line],
+					suggestedReadRange: { start: endpoint.line, end: endpoint.line },
 				},
 			};
 		}
@@ -283,17 +354,23 @@ export function formatReadProofFailure(path: string, failure: ReadProofFailure):
 		}
 		lines.push("Replacing the renamed anchors is required but not sufficient; the remaining lines below also need the targeted read before resubmitting.");
 	}
-	const targetLines = failure.missingLines.length > 0 ? failure.missingLines : failure.requiredLines;
+	const targetLines = failure.reportedMissingLines;
 	const firstLine = failure.suggestedReadRange?.start ?? targetLines[0] ?? 1;
 	const lastLine = failure.suggestedReadRange?.end ?? targetLines[targetLines.length - 1] ?? firstLine;
 	const offset = Math.max(1, firstLine - 2);
 	const preferredLimit = Math.max(12, lastLine - offset + 3);
 	const limit = Math.min(MAX_READ_LIMIT, preferredLimit);
 	const lastSuggestedLine = offset + limit - 1;
+	const completionTarget = failure.proofGap
+		? `all required source lines for change ${failure.proofGap.changeNumber} through line ${lastLine}`
+		: firstLine === lastLine ? "the target line" : "the complete target range";
 	const readInstruction = lastSuggestedLine < lastLine
-		? `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: ${limit} }) first, then continue with nextOffset until line ${lastLine} is covered before submitting the change.`
-		: `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: ${limit} }) first, confirm the complete target range, then submit the change.`;
-	lines.push(readInstruction);
+		? `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: ${limit} }) first, then continue with nextOffset until line ${lastLine} is covered.`
+		: `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: ${limit} }) first and confirm ${completionTarget}.`;
+	const resubmitInstruction = renames.length > 0
+		? "After the read succeeds, resubmit the original hledit_apply_file_changes call with every listed anchor rename applied."
+		: "After the read succeeds, resubmit the original hledit_apply_file_changes call.";
+	lines.push(readInstruction, resubmitInstruction);
 	return lines.join("\n");
 }
 
@@ -412,25 +489,28 @@ export class ReadEvidenceStore {
 				failure: {
 					code: "insufficient_read_proof",
 					message: "The source lines required by this change could not be determined.",
-					requiredLines: [],
-					missingLines: [],
+					reportedMissingLines: [],
 				},
 			};
 		}
 
-		const requiredLines = summarizedRequiredLines(requested.ranges);
 		const evidence = this.files.get(path);
 		if (!evidence) {
-			const firstRequired = requested.ranges[0]!.start;
-			const lastRequired = requested.ranges.at(-1)!.end;
-			const coverage = collectProofCoverage(requested.ranges, new Map<number, EvidenceLine>());
+			const emptyEvidence = new Map<number, EvidenceLine>();
+			const coverage = collectProofCoverage(requested.ranges, emptyEvidence);
+			const proofGap = proofGapFromMissingRange(coverage.firstMissingRange, requested.sourceRanges);
+			const suggestedReadRange = proofGap
+				? unresolvedReadSpanForChange(proofGap, emptyEvidence)
+				: coverage.firstMissingRange;
 			return {
 				failure: {
 					code: "insufficient_read_proof",
-					message: `No current anchors have been read for lines ${firstRequired}-${lastRequired}.`,
-					requiredLines,
-					missingLines: coverage.missingLines,
-					...(coverage.firstMissingRange ? { suggestedReadRange: coverage.firstMissingRange } : {}),
+					message: proofGap
+						? formatProofGapMessage(proofGap)
+						: "No current anchors have been read for the source lines required by this change.",
+					reportedMissingLines: coverage.reportedMissingLines,
+					...(suggestedReadRange ? { suggestedReadRange } : {}),
+					...(proofGap ? { proofGap } : {}),
 				},
 			};
 		}
@@ -449,9 +529,9 @@ export class ReadEvidenceStore {
 		const failure: ReadProofFailure = {
 			code: "insufficient_read_proof",
 			message: direct.failure.message,
-			requiredLines,
-			missingLines: direct.failure.missingLines,
+			reportedMissingLines: direct.failure.reportedMissingLines,
 			...(direct.failure.suggestedReadRange ? { suggestedReadRange: direct.failure.suggestedReadRange } : {}),
+			...(direct.failure.proofGap ? { proofGap: direct.failure.proofGap } : {}),
 		};
 		if (renamedAnchors.length === 0) {
 			return { failure };
@@ -471,12 +551,12 @@ export class ReadEvidenceStore {
 			return {
 				failure: {
 					code: "insufficient_read_proof",
-					message: direct.failure.message,
-					requiredLines,
-					missingLines: substitutedEvaluation.failure.missingLines,
+					message: substitutedEvaluation.failure.message,
+					reportedMissingLines: substitutedEvaluation.failure.reportedMissingLines,
 					...(substitutedEvaluation.failure.suggestedReadRange
 						? { suggestedReadRange: substitutedEvaluation.failure.suggestedReadRange }
 						: {}),
+					...(substitutedEvaluation.failure.proofGap ? { proofGap: substitutedEvaluation.failure.proofGap } : {}),
 					renamedAnchors,
 				},
 			};
@@ -494,13 +574,11 @@ export class ReadEvidenceStore {
 			if (!path) continue;
 
 			if (entry.message.toolName === HLEDIT_READ_ANCHORS_TOOL) {
-				if (details.disposition !== "succeeded") {
-					this.invalidate(path);
-					continue;
-				}
+				// [喵喵喵]: 读取失败没有写入副作用；保留旧 evidence，由最终 revision proof
+				// 安全兜底，避免一次越界或临时 I/O 失败迫使目标整段重读。(2026-07-28)
+				if (details.disposition !== "succeeded") continue;
 				const read = parsePersistedRead(details.read);
 				if (read) this.recordRead(path, read);
-				else this.invalidate(path);
 				continue;
 			}
 
@@ -516,8 +594,8 @@ export class ReadEvidenceStore {
 		if (!path) return;
 
 		if (toolName === HLEDIT_READ_ANCHORS_TOOL) {
+			// 与 branch replay 使用同一无写入副作用规则。
 			if (details.disposition === "succeeded" && details.read) this.recordRead(path, details.read);
-			else this.invalidate(path);
 			return;
 		}
 		if (toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL && toolName !== HLEDIT_REPLACE_ONCE_TOOL) return;

@@ -375,6 +375,7 @@ test("applyFileChangesResult localizes proof and pre-commit revision rejections"
 	assert.equal(insufficient.details.disposition, "rejected");
 	assert.equal(insufficient.details.error?.code, "insufficient_read_proof");
 	assert.match(insufficient.content[0]?.text ?? "", /Read proof does not cover/);
+	assert.match(insufficient.content[0]?.text ?? "", /Call hledit_read_anchors[\s\S]*resubmit the original hledit_apply_file_changes call/);
 
 	const changed = applyFileChangesResult({
 		stdout: JSON.stringify({ ok: false, error: "source_changed_before_commit", message: "source changed before commit", currentRevision: REVISION }),
@@ -468,18 +469,39 @@ test("applyFileChangesResult exposes validated stale snapshot context", () => {
 // 后续正文压缩必须显式更新这些基线并说明删除的重复 (2026-07-25)
 test("model body snapshot: CLI insufficient_read_proof rejection", () => {
 	const result = applyFileChangesResult({
-		stdout: JSON.stringify({ ok: false, error: "insufficient_read_proof", message: "edit 0 requires read proof for line 3", currentRevision: REVISION }),
+		stdout: JSON.stringify({ ok: false, error: "insufficient_read_proof", message: "edit 0 requires read proof for line 3", failed: 0, currentRevision: REVISION }),
 		stderr: "",
 		exitCode: 0,
-	}, { path: "src/a.ts" });
+	}, {
+		path: "src/a.ts",
+		operation: "anchored_batch",
+		changes: [{ operation: "replace_range", start_anchor: "3#AAA", end_anchor: "5#AAB", lines: ["replacement"] }],
+	});
 
 	assert.equal(
 		result.content[0]?.text,
 		"The atomic batch was rejected; no content was written.\n" +
 		"Reason: Read proof does not cover every original source line required by this change.\n" +
-		"Error code: insufficient_read_proof",
+		"Error code: insufficient_read_proof\n" +
+		"Failed change: 1\n" +
+		'Call hledit_read_anchors({ path: "src/a.ts", offset: 1, limit: 12 }) to reread every source line required by change 1, then resubmit the original hledit_apply_file_changes call.',
 	);
 	assert.equal(result.details.disposition, "rejected");
+});
+
+test("CLI proof recovery paginates the complete failed change", () => {
+	const result = applyFileChangesResult({
+		stdout: JSON.stringify({ ok: false, error: "insufficient_read_proof", message: "edit 0 requires read proof for line 3", failed: 0, currentRevision: REVISION }),
+		stderr: "",
+		exitCode: 0,
+	}, {
+		path: "src/large.ts",
+		operation: "anchored_batch",
+		changes: [{ operation: "delete_range", start_anchor: "3#AAA", end_anchor: "3005#AAB" }],
+	});
+
+	assert.match(result.content[0]?.text ?? "", /offset: 1, limit: 2000/);
+	assert.match(result.content[0]?.text ?? "", /continue with nextOffset until line 3005 is covered/);
 });
 
 test("model body snapshot: stale rejection with snapshot context and field-level recovery", () => {

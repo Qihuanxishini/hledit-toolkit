@@ -102,9 +102,9 @@ CLI 必须返回非空版本，并同时声明：
 `revision` 是目标文件原始字节的 SHA-256，包含 BOM、CRLF/LF 和末尾换行差异。读取证据统一建模为 canonical real path 下的“revision + 完整观察行集合”：普通范围读取可贡献连续行，grep 读取可贡献离散行，`selectProof()` 统一判断每项修改的逐行 coverage 和端点锚点。
 同一 revision 的普通读取与 grep 读取按行合并；revision 改变时清除旧 evidence。同一 revision 的无匹配 grep 保留既有 evidence，新 revision 的无匹配 grep 会使旧 evidence 失效。
 全局 `truncated` 只表示仍有结果未返回，已经完整返回的行仍可建立局部 proof；`textTruncated` 的行不建立新 proof。离散 grep 结果不会隐式证明中间行，范围修改仍必须覆盖每个消费行。
-proof 失败正文最多展示 20 个缺失行，但恢复建议不得据此截断目标范围。`collectProofCoverage()` 额外保留完整的首个缺口区间；`formatReadProofFailure()` 用该区间计算定向 `offset/limit`，超过 `MAX_READ_LIMIT` 时要求按 `nextOffset` 续读直到覆盖缺口结束行。
+内部 `ReadProofFailure.reportedMissingLines` 最多保留 20 个缺失行用于诊断，字段名明确它不是完整缺口。coverage 仅合并真正重叠的消费范围，相邻 change 保持独立，避免诊断跨越受影响 operation。`collectProofCoverage()` 保留首个连续缺口，`selectProof()` 标识受影响 change、operation 与原始要求范围，并把 `suggestedReadRange` 扩展到该 change 的最后一个未读行；这样正文既能准确说明首个缺口，又能用一次定向读取覆盖同一 change 的全部离散缺口。超过 `MAX_READ_LIMIT` 时按 `nextOffset` 续读直到建议范围结束。
 越界错误必须携带 `requestedOffset` 与 `totalLines`。模型可见正文第一行直接使用 CLI `message`，折叠 TUI 不以内部错误码替代具体原因；插件仍严格拒绝越界，不自动 clamp。
-`session_start` / `session_tree` 只从当前 branch 的有效 tool result 按顺序恢复 evidence，不从聊天正文解析 anchors；apply 成功、stale 与不确定写入结果仍按各自 revision 和完整性规则替换或失效证据。
+`session_start` / `session_tree` 只从当前 branch 的有效 tool result 按顺序恢复 evidence，不从聊天正文解析 anchors。失败读取没有写入副作用，因此保留此前 evidence，最终 apply 的 revision proof 继续兜底；成功的新 revision 读取仍替换旧 evidence。apply 成功、stale 与不确定写入结果按各自 revision 和完整性规则替换或失效证据。
 
 ### `hledit_apply_file_changes`
 
@@ -150,9 +150,9 @@ proof 必须覆盖 replace/delete 消费的每个原始行以及 insert 依附�
 
 - 每次调用只修改一个文件，但应合并该文件中的所有非冲突变更；
 - 公开 operation 仅有 `replace_range`、`delete_range`、`insert_before` 和 `insert_after`；旧 `replace` / `delete` / `insert` 形状及 `replace-range` 别名不迁移，必须由严格 schema 拒绝；
-- `replace_range` / `delete_range` 必须同时提供 `start_anchor` 与 `end_anchor`，范围包含首尾；单行范围使用同一个锚点作为首尾；
+- `replace_range` / `delete_range` 必须同时提供 `start_anchor` 与 `end_anchor`，范围包含首尾；单行范围使用同一个锚点作为首尾。公开 change 只携带首尾或依附行的 `LN#HASH` token，区间内部逐行 proof 由 evidence 层自动注入；
 - `replace_range`、`insert_before` 和 `insert_after` 的 `lines` 接受换行分隔的字符串或非空字符串数组；多行编辑优先使用字符串。字符串按 CRLF、CR 或 LF 分行，末尾一个换行不额外生成空行；数组元素必须各自只含一行原始文件文本；`delete_range` 不接受 `lines`；
-- `prepareArguments` 将两种公开 `lines` 形式规范化为内部 `string[]`，并只修复不改变编辑语义的结构偏差：最多两层 JSON 序列化、单个 change 包装，以及把原样复制的 `LN#HASH:text` 归一化为 `LN#HASH`；不得迁移旧 operation 或旧字段；
+- `prepareArguments` 将两种公开 `lines` 形式规范化为内部 `string[]`，并只兼容不改变编辑语义的结构偏差：最多两层 JSON 序列化、单个 change 包装，以及非 constrained caller 粘贴的 `LN#HASH:text` 整行；规范 schema 输入仍是纯 `LN#HASH` token。不得迁移旧 operation 或旧字段；
 - 单行 `replace_range` 若输出多行且首行与原锚点行完全相同，插件先调用 `batch --check` 验证整个批次。stale、冲突或非法请求优先返回 CLI 错误；仅在 check 成功后返回高风险范围扩展指导；
 - 错误正文必须列出实际 operation、`start_anchor`、`end_anchor` 和 lines 行数，并禁止原样重试。恢复说明引用原 tool call，只给字段级修改：扩展 `end_anchor`、保留原 `lines`，或改成 `insert_after` 并移除重复首行；不得回显完整 replacement/insert payload；
 - 同批次若有 `delete_range` 紧接 replace 行的下一行开始，说明后续旧代码已被显式覆盖，护栏允许该批次；若只有一个 `delete_range` 从后两行开始，check 成功后可提示把 replace 的 `end_anchor` 改为已验证结束锚点、移除该 delete 并保持原 lines。调用方仍须确认语义，插件不得自动改写或执行 change；
@@ -171,7 +171,7 @@ CLI capability 健康时，active tools 始终启用 `hledit_read_anchors`、`hl
 - hash 复刻与 bundled CLI 的一致性由 golden 对拍测试锁定（`test/anchor-hash.test.ts`）；改动 hash 语义属于锚点协议升级，必须两侧同步并更新对拍。
 - 重映射同时维护"旧锚点 → 新锚点"的更名表（跨多次编辑链式合并）。模型提交编辑前旧锚点时，`selectProof` 先做 what-if 评估：把已验证更名替换进请求后重算 coverage 与端点匹配。全部恢复时拒绝正文只给"替换更名后重提交"的指引并标记 `renamesRestoreProof: true`；更名之外仍有缺口时给出"替换更名 + 定向重读剩余缺口"的复合指引，重读范围按替换后的坐标计算。两种路径都在 `details.error.renamedAnchors` 列出更名；插件不自动改写请求。
 - 缺少 `editDeltas` 的成功响应（不应出现于 bundled CLI）退化为仅窗口证据；no-op（revision 未变）与重映射后的同 revision 窗口按行合并进现有证据，不再把整份证据收缩成 ≤20 行窗口。
-- `unavailable`（CLI 未启动、前置读取失败、ok:false 不兼容拒绝）不再使证据失效——目标从未被写入，revision 校验兜底；`outcome_unknown`、stale 与 `source_changed_before_commit` 仍按原规则失效或替换。
+- 失败或不兼容的 `hledit_read_anchors` 不使既有证据失效；读取没有写入副作用，旧证据即使已过期也会由最终 apply 的 revision proof 安全拒绝。apply 的 `unavailable` 同样保留证据；`outcome_unknown`、stale 与 `source_changed_before_commit` 仍按原规则失效或替换。
 
 ### `hledit_replace_once`
 
@@ -319,13 +319,15 @@ CLI 默认使用修改区域前后 2 行、最多 20 行和约 4096 bytes 的局
 "succeeded" | "rejected" | "unavailable" | "outcome_unknown"
 ```
 
-在 `tool_result` handler 中，只要 disposition 不是 `succeeded`，就返回：
+`tool_result` handler 将 `insufficient_read_proof` 视为可恢复的补读结果，不设置 `isError`。插件前置 evidence 拒绝的正文必须标识首个受影响 change、连续缺口和下一次 `hledit_read_anchors` 调用；理论上不可达的 CLI proof 拒绝也必须根据失败 change 给出完整范围补读及 `nextOffset` 分页指引。两条路径都要求补读成功后继续提交原 `hledit_apply_file_changes`。
+
+其余 disposition 非 `succeeded` 的结果仍返回：
 
 ```ts
 { isError: true }
 ```
 
-因此 schema 拒绝、stale、logical error、CLI 不可用以及不兼容成功响应都会成为真正的 Pi 工具错误。
+因此 schema 拒绝、stale、其他 logical error、CLI 不可用以及不兼容成功响应仍会成为真正的 Pi 工具错误。
 所有 batch 拒绝结果必须明确说明原子失败、零写入，避免调用方误判前序 change 已部分应用；replace-once 的内容匹配拒绝也必须明确说明零写入。
 插件前置护栏拒绝必须在 `details.error` 中返回结构化恢复信息：`code`、`message`、`changeNumber`、`operation`、`anchor` 与 `outputLineCount`。检测到疑似同块 `delete_range` 时，额外返回 `relatedChangeNumber` 和 `candidateEndAnchor`；这些 anchor 已通过本次 `batch --check`，但是否属于同一个业务代码块仍须调用方确认，插件不会自动执行该范围。
 单行范围扩展的模型可见正文必须明确禁止原样重试，并引用原 tool call 给出字段级修复。没有安全结束锚点时要求重新读取且不得生成违反 anchor schema 的占位值；append 意图要求改为 `insert_after`、把首尾字段换成 `anchor` 并移除重复首行；存在唯一后两行起始的相邻 `delete_range` 时才可建议使用已验证结束锚点并移除该 delete。不得回显完整源码 payload；TUI 折叠摘要必须直接包含修复动作。
@@ -339,7 +341,7 @@ stale 的 remap 只用于定位，不能自动替换后重试。CLI 能构建同
 
 | 文件 | 职责 |
 | --- | --- |
-| `index.ts` | 工具注册（含 constrained sampling）、mutation 主流程、错误升级和 session 工具激活。 |
+| `index.ts` | 工具注册（含 constrained sampling）、mutation 主流程、可恢复 proof 分类、其他错误升级和 session 工具激活。 |
 | `src/schema.ts` | 严格工具 schema 与参数类型。 |
 | `src/file-changes.ts` | 将四种公开 change 映射为 CLI batch JSON，并识别高风险单行范围扩展。 |
 | `src/read-evidence.ts` | 按 canonical path/revision 合并读取证据，生成隐藏 proof，基于 `editDeltas` 重映射证据并维护锚点更名表，恢复 branch 状态并处理 apply 失效。 |

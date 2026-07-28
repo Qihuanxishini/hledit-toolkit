@@ -111,7 +111,7 @@ test("ReadEvidenceStore discards prior windows when revision changes", () => {
 
 	const selection = store.selectProof(PATH, replaceRange("1#AAA", "2#BBB"));
 	assert.ok("failure" in selection);
-	assert.deepEqual(selection.failure.missingLines, [1]);
+	assert.deepEqual(selection.failure.reportedMissingLines, [1]);
 });
 
 test("grep rows establish partial proof without bridging gaps", () => {
@@ -131,12 +131,26 @@ test("grep rows establish partial proof without bridging gaps", () => {
 	const spanningSelection = store.selectProof(PATH, replaceRange("2#AAB", "5#AAE"));
 	assert.ok("failure" in spanningSelection);
 	assert.equal(spanningSelection.failure.code, "insufficient_read_proof");
-	assert.deepEqual(spanningSelection.failure.missingLines, [3, 4]);
+	assert.deepEqual(spanningSelection.failure.reportedMissingLines, [3, 4]);
 
 	const mismatchedAnchor = store.selectProof(PATH, replaceRange("2#ZZZ", "2#ZZZ"));
 	assert.ok("failure" in mismatchedAnchor);
 	assert.equal(mismatchedAnchor.failure.code, "insufficient_read_proof");
-	assert.deepEqual(mismatchedAnchor.failure.missingLines, [2]);
+	assert.deepEqual(mismatchedAnchor.failure.reportedMissingLines, [2]);
+});
+
+// 同一物理行可被多个 change 引用；每个提交锚点都必须独立验证，不能按行号覆盖。
+test("proof validation checks every endpoint submitted for the same line", () => {
+	const store = new ReadEvidenceStore();
+	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 2, anchor: "2#AAB" }]));
+
+	const selection = store.selectProof(PATH, [
+		{ operation: "insert_before", anchor: "2#ZZZ", lines: ["before"] },
+		{ operation: "insert_after", anchor: "2#AAB", lines: ["after"] },
+	]);
+	assert.ok("failure" in selection);
+	assert.deepEqual(selection.failure.reportedMissingLines, [2]);
+	assert.match(selection.failure.message, /submitted anchor for line 2 does not match/);
 });
 
 test("grep context merges with unfiltered proof from the same revision", () => {
@@ -162,7 +176,7 @@ test("grep pagination records complete rows but excludes text-truncated rows", (
 	assert.ok("proof" in store.selectProof(PATH, replaceRange("4#AAD", "4#AAD")));
 	const truncatedSelection = store.selectProof(PATH, replaceRange("5#AAE", "5#AAE"));
 	assert.ok("failure" in truncatedSelection);
-	assert.deepEqual(truncatedSelection.failure.missingLines, [5]);
+	assert.deepEqual(truncatedSelection.failure.reportedMissingLines, [5]);
 
 	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 6, anchor: "6#AAF" }]));
 	store.recordRead(PATH, readMetadata(REVISION_A, [
@@ -180,7 +194,7 @@ test("empty grep reads preserve same-revision proof and discard stale revisions"
 	store.recordRead(PATH, readMetadata(REVISION_B, [], { grep: "missing" }));
 	const selection = store.selectProof(PATH, replaceRange("1#AAA", "1#AAA"));
 	assert.ok("failure" in selection);
-	assert.deepEqual(selection.failure.missingLines, [1]);
+	assert.deepEqual(selection.failure.reportedMissingLines, [1]);
 });
 
 test("oversized ranges fail without enumerating every requested line", () => {
@@ -189,8 +203,17 @@ test("oversized ranges fail without enumerating every requested line", () => {
 
 	const selection = store.selectProof(PATH, replaceRange("1#AAA", "9007199254740991#BBB"));
 	assert.ok("failure" in selection);
-	assert.deepEqual(selection.failure.missingLines, Array.from({ length: 20 }, (_, index) => index + 2));
-	assert.match(selection.failure.message, /only the first 20 are listed/);
+	assert.deepEqual(selection.failure.reportedMissingLines, Array.from({ length: 20 }, (_, index) => index + 2));
+	assert.deepEqual(selection.failure.proofGap, {
+		start: 2,
+		end: 9007199254740991,
+		changeNumber: 1,
+		operation: "replace_range",
+		requiredStart: 1,
+		requiredEnd: 9007199254740991,
+	});
+	assert.match(selection.failure.message, /missing lines 2-9007199254740991/);
+	assert.doesNotMatch(selection.failure.message, /first 20/);
 	const guidance = formatReadProofFailure("target.txt", selection.failure);
 	assert.match(guidance, /offset: 1, limit: 2000/);
 	assert.match(guidance, /then continue with nextOffset until line 9007199254740991 is covered/);
@@ -205,12 +228,118 @@ test("proof failure guidance covers the complete first missing range", () => {
 		{ operation: "replace_range", start_anchor: "387#BBB", end_anchor: "415#CCC", lines: ["section"] },
 	]);
 	assert.ok("failure" in selection);
-	assert.deepEqual(selection.failure.missingLines, Array.from({ length: 20 }, (_, index) => index + 387));
+	assert.deepEqual(selection.failure.reportedMissingLines, Array.from({ length: 20 }, (_, index) => index + 387));
+	assert.deepEqual(selection.failure.proofGap, {
+		start: 387,
+		end: 415,
+		changeNumber: 2,
+		operation: "replace_range",
+		requiredStart: 387,
+		requiredEnd: 415,
+	});
+	assert.match(selection.failure.message, /Change 2 \(replace_range 387-415\)/);
 	assert.match(formatReadProofFailure("target.txt", selection.failure), /offset: 385, limit: 33/);
 });
 
-// [喵喵喵]: Phase 0 正文 snapshot——精确锁定插件侧 proof failure 的完整拒绝正文，
-// 后续正文压缩必须显式更新该基线 (2026-07-25)
+// [喵喵喵]: 一次补读覆盖同一 change 的全部未读跨度，避免 sparse evidence
+// 造成多轮 apply → 补读循环。(2026-07-28)
+test("proof guidance covers every unresolved gap in the affected change", () => {
+	const store = new ReadEvidenceStore();
+	store.recordRead(PATH, readMetadata(REVISION_A, [
+		{ line: 1, anchor: "1#AAA" },
+		{ line: 10, anchor: "10#AAB" },
+		{ line: 20, anchor: "20#AAC" },
+	], { grep: "line" }));
+
+	const selection = store.selectProof(PATH, replaceRange("1#AAA", "20#AAC"));
+	assert.ok("failure" in selection);
+	assert.deepEqual(selection.failure.proofGap, {
+		start: 2,
+		end: 9,
+		changeNumber: 1,
+		operation: "replace_range",
+		requiredStart: 1,
+		requiredEnd: 20,
+	});
+	assert.deepEqual(selection.failure.suggestedReadRange, { start: 2, end: 19 });
+	assert.match(formatReadProofFailure("target.txt", selection.failure), /offset: 1, limit: 21/);
+});
+
+test("proof gap keeps the original change number when changes are out of file order", () => {
+	const store = new ReadEvidenceStore();
+	const selection = store.selectProof(PATH, [
+		{ operation: "replace_range", start_anchor: "10#AAA", end_anchor: "20#AAB", lines: ["later"] },
+		{ operation: "delete_range", start_anchor: "1#AAC", end_anchor: "9#AAD" },
+	]);
+
+	assert.ok("failure" in selection);
+	assert.deepEqual(selection.failure.proofGap, {
+		start: 1,
+		end: 9,
+		changeNumber: 2,
+		operation: "delete_range",
+		requiredStart: 1,
+		requiredEnd: 9,
+	});
+	assert.deepEqual(selection.failure.reportedMissingLines, Array.from({ length: 9 }, (_, index) => index + 1));
+	assert.deepEqual(selection.failure.suggestedReadRange, { start: 1, end: 9 });
+});
+
+test("proof recovery prefers a spanning range over a boundary insert", () => {
+	const store = new ReadEvidenceStore();
+	const selection = store.selectProof(PATH, [
+		{ operation: "insert_before", anchor: "2#AAA", lines: ["prefix"] },
+		{ operation: "replace_range", start_anchor: "2#AAA", end_anchor: "5#AAB", lines: ["body"] },
+	]);
+
+	assert.ok("failure" in selection);
+	assert.deepEqual(selection.failure.proofGap, {
+		start: 2,
+		end: 5,
+		changeNumber: 2,
+		operation: "replace_range",
+		requiredStart: 2,
+		requiredEnd: 5,
+	});
+	assert.deepEqual(selection.failure.reportedMissingLines, [2, 3, 4, 5]);
+	assert.deepEqual(selection.failure.suggestedReadRange, { start: 2, end: 5 });
+});
+
+test("proof failure identifies the affected operation and continuous gap in a disjoint batch", () => {
+	const store = new ReadEvidenceStore();
+	store.recordRead(PATH, readMetadata(REVISION_A, [
+		{ line: 9, anchor: "9#AAA" },
+		...Array.from({ length: 9 }, (_, index) => ({ line: 138 + index, anchor: `${138 + index}#AAA` })),
+		{ line: 263, anchor: "263#AAA" },
+		...Array.from({ length: 21 }, (_, index) => ({ line: 1044 + index, anchor: `${1044 + index}#AAA` })),
+	], { grep: "line" }));
+
+	const selection = store.selectProof(PATH, [
+		{ operation: "insert_after", anchor: "9#AAA", lines: ["inserted"] },
+		{ operation: "replace_range", start_anchor: "138#AAA", end_anchor: "263#AAA", lines: ["section"] },
+		{ operation: "delete_range", start_anchor: "1044#AAA", end_anchor: "1064#AAA" },
+	]);
+	assert.ok("failure" in selection);
+	assert.deepEqual(selection.failure.proofGap, {
+		start: 147,
+		end: 262,
+		changeNumber: 2,
+		operation: "replace_range",
+		requiredStart: 138,
+		requiredEnd: 263,
+	});
+	assert.equal(
+		selection.failure.message,
+		"Change 2 (replace_range 138-263) requires complete read proof for every source line in the inclusive range; missing lines 147-262. Endpoint anchors alone are insufficient.",
+	);
+	const guidance = formatReadProofFailure("target.txt", selection.failure);
+	assert.match(guidance, /offset: 145, limit: 120/);
+	assert.match(guidance, /resubmit the original hledit_apply_file_changes call/);
+	assert.doesNotMatch(guidance, /147, 148, 149/);
+});
+
+// [喵喵喵]: proof failure 正文锁定首个受影响 change、连续缺口和下一步补读，
+// 防止模型把最多 20 个 details 行号误当作完整缺口。(2026-07-28)
 test("model body snapshot: plugin-side proof failure with targeted reread", () => {
 	const store = new ReadEvidenceStore();
 	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 3, anchor: "3#AAA" }]));
@@ -220,8 +349,9 @@ test("model body snapshot: plugin-side proof failure with targeted reread", () =
 	assert.equal(
 		formatReadProofFailure("target.txt", selection.failure),
 		"Valid read proof does not cover every source line required by this change. Batch was not started and no content was written.\n" +
-		"Reason: Read proof is missing lines 4, 5.\n" +
-		'Call hledit_read_anchors({ path: "target.txt", offset: 2, limit: 12 }) first, confirm the complete target range, then submit the change.',
+		"Reason: Change 1 (replace_range 3-5) requires complete read proof for every source line in the inclusive range; missing lines 4-5. Endpoint anchors alone are insufficient.\n" +
+		'Call hledit_read_anchors({ path: "target.txt", offset: 2, limit: 12 }) first and confirm all required source lines for change 1 through line 5.\n' +
+		"After the read succeeds, resubmit the original hledit_apply_file_changes call.",
 	);
 });
 
@@ -261,6 +391,24 @@ test("an unavailable apply keeps evidence because the target was never written",
 	const store = new ReadEvidenceStore();
 	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }]));
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("unavailable"), "/workspace");
+	assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: "1#AAA", lines: ["next"] }]), {
+		proof: { revision: REVISION_A, anchors: ["1#AAA"] },
+	});
+});
+
+test("failed read calls preserve existing evidence", () => {
+	const store = new ReadEvidenceStore();
+	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }]));
+	store.updateFromToolResult(HLEDIT_READ_ANCHORS_TOOL, {
+		disposition: "rejected",
+		evidencePath: PATH,
+		error: { code: "range", message: "outside file" },
+	}, "/workspace");
+	store.updateFromToolResult(HLEDIT_READ_ANCHORS_TOOL, {
+		disposition: "unavailable",
+		evidencePath: PATH,
+	}, "/workspace");
+
 	assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: "1#AAA", lines: ["next"] }]), {
 		proof: { revision: REVISION_A, anchors: ["1#AAA"] },
 	});
@@ -353,10 +501,18 @@ test("branch restoration replays only tool results present on the current branch
 			details: { disposition: "succeeded", evidencePath: PATH, read },
 		},
 	};
+	const failedReadEntry = {
+		type: "message",
+		message: {
+			role: "toolResult",
+			toolName: HLEDIT_READ_ANCHORS_TOOL,
+			details: { disposition: "rejected", evidencePath: PATH, error: { code: "range", message: "outside file" } },
+		},
+	};
 	const store = new ReadEvidenceStore();
 	store.restoreFromBranch({
 		cwd: "/workspace",
-		sessionManager: { getBranch: () => [readEntry] },
+		sessionManager: { getBranch: () => [readEntry, failedReadEntry] },
 	} as never);
 	assert.ok("proof" in store.selectProof(PATH, [{ operation: "insert_after", anchor: "1#AAA", lines: ["next"] }]));
 
@@ -492,7 +648,7 @@ test("a rename hint does not hide an unrelated proof gap in the same batch", () 
 	assert.deepEqual(selection.failure.renamedAnchors, [{ requested: staleAnchor, current: renamedAnchor }]);
 	assert.equal(selection.failure.renamesRestoreProof, undefined);
 	// 剩余缺口按更名替换后的坐标计算，不包含已被更名解释的旧区间。
-	assert.deepEqual(selection.failure.missingLines, [8, 9]);
+	assert.deepEqual(selection.failure.reportedMissingLines, [8, 9]);
 	assert.deepEqual(selection.failure.suggestedReadRange, { start: 8, end: 9 });
 
 	const formatted = formatReadProofFailure("target.txt", selection.failure);
@@ -500,6 +656,7 @@ test("a rename hint does not hide an unrelated proof gap in the same batch", () 
 	assert.match(formatted, /required but not sufficient/);
 	assert.match(formatted, /offset: 6, limit: 12/);
 	assert.doesNotMatch(formatted, /Resubmit after replacing every renamed anchor with its current form, or reread the range/);
+	assert.match(formatted, /resubmit the original hledit_apply_file_changes call with every listed anchor rename applied/);
 });
 
 test("rename hints chain across two successive edits back to the oldest anchor", () => {

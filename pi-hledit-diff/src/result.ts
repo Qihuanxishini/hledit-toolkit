@@ -1,7 +1,7 @@
 import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
 import { ANCHOR_HASH_PATTERN, lineFromAnchor } from "./file-changes.ts";
 import { parseAnchorContext, parseBatchUpdatedAnchorContext, type BatchAnchorContext } from "./post-edit-context.ts";
-import type { NormalizedReadRequest } from "./read-args.ts";
+import { MAX_READ_LIMIT, type NormalizedReadRequest } from "./read-args.ts";
 import type { FileChangeParams } from "./schema.ts";
 
 export type HleditToolKind = "read_anchors" | "apply_file_changes" | "replace_once";
@@ -656,6 +656,48 @@ function appendContentMatchRecovery(lines: string[], error: HleditErrorMetadata,
 	lines.push("old_lines are ambiguous. Call hledit_read_anchors to inspect and choose the intended block before submitting an anchored edit.");
 }
 
+// [喵喵喵]: CLI proof 拒绝在本地 evidence 选择之后理论上不可达，但既然仍被定义为
+// 可恢复结果，兜底正文也必须给出具体补读动作。(2026-07-28)
+function appendInsufficientReadProofRecovery(
+	lines: string[],
+	result: Record<string, unknown>,
+	context: ApplyResultContext,
+	error: HleditErrorMetadata,
+): void {
+	if (error.code !== "insufficient_read_proof") return;
+	const failedIndex = isIntegerAtLeast(result.failed, 0) ? result.failed : undefined;
+	const change = failedIndex === undefined ? undefined : context.changes?.[failedIndex];
+	const resubmitTool = context.operation === "content_replace_once" ? "hledit_replace_once" : "hledit_apply_file_changes";
+	const genericInstruction = context.path
+		? `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)} }) to reread every source line required by the failed change, then resubmit the original ${resubmitTool} call.`
+		: `Call hledit_read_anchors to reread every source line required by the failed change, then resubmit the original ${resubmitTool} call.`;
+	if (failedIndex === undefined || !context.path || !change) {
+		lines.push(genericInstruction);
+		return;
+	}
+
+	let start: number | undefined;
+	let end: number | undefined;
+	if (change.operation === "insert_before" || change.operation === "insert_after") {
+		start = lineFromAnchor(change.anchor);
+		end = start;
+	} else {
+		start = lineFromAnchor(change.start_anchor);
+		end = lineFromAnchor(change.end_anchor);
+	}
+	if (start === undefined || end === undefined || end < start) {
+		lines.push(genericInstruction);
+		return;
+	}
+
+	const changeNumber = failedIndex + 1;
+	const offset = Math.max(1, start - 2);
+	const limit = Math.min(MAX_READ_LIMIT, Math.max(12, end - offset + 3));
+	const lastSuggestedLine = offset + limit - 1;
+	lines.push(lastSuggestedLine < end
+		? `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, offset: ${offset}, limit: ${limit} }) first, continue with nextOffset until line ${end} is covered, then resubmit the original ${resubmitTool} call.`
+		: `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, offset: ${offset}, limit: ${limit} }) to reread every source line required by change ${changeNumber}, then resubmit the original ${resubmitTool} call.`);
+}
 function formatApplyFailureResult(
 	result: Record<string, unknown>,
 	context: ApplyResultContext,
@@ -685,6 +727,7 @@ function formatApplyFailureResult(
 			? `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)} }) before retrying; do not reuse the prior request.`
 			: "Call hledit_read_anchors before retrying; do not reuse the prior request.");
 	}
+	appendInsufficientReadProofRecovery(lines, result, context, error);
 	appendContentMatchRecovery(lines, error, context.path);
 	return lines.join("\n");
 }
@@ -922,4 +965,10 @@ export function rejectedToolResult(text: string, error: HleditErrorMetadata): Te
 
 export function isFailedHleditResult(details: unknown): boolean {
 	return isRecord(details) && details.disposition !== "succeeded";
+}
+
+export function shouldMarkHleditResultAsError(details: unknown): boolean {
+	if (!isFailedHleditResult(details)) return false;
+	if (!isRecord(details) || details.disposition !== "rejected" || !isRecord(details.error)) return true;
+	return details.error.code !== "insufficient_read_proof";
 }

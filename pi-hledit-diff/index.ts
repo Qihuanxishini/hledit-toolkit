@@ -37,7 +37,7 @@ import { buildReadArgs, normalizeReadRequest, normalizeToolPath } from "./src/re
 import {
 	applyFileChangesResult,
 	fileChangeCheckFailure,
-	isFailedHleditResult,
+	shouldMarkHleditResultAsError,
 	parseRunObject,
 	readAnchorsResult,
 	rejectedToolResult,
@@ -151,6 +151,12 @@ async function runFileChangesWithDiff(
 					message: proofSelection.failure.message,
 					...(proofSelection.failure.renamedAnchors ? { renamedAnchors: proofSelection.failure.renamedAnchors } : {}),
 					...(proofSelection.failure.renamesRestoreProof ? { renamesRestoreProof: true as const } : {}),
+					...(proofSelection.failure.proofGap
+						? {
+							changeNumber: proofSelection.failure.proofGap.changeNumber,
+							operation: proofSelection.failure.proofGap.operation,
+						}
+						: {}),
 				}),
 				normalizedPath,
 				evidencePath,
@@ -288,9 +294,9 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 	pi.registerTool(({
 		name: HLEDIT_READ_ANCHORS_TOOL,
 		label: "Read for Edit",
-		description: "Read a text file and return LN#HASH anchors for stale-safe edits.",
+		description: "Read a text file and return LN#HASH anchors with source text for stale-safe edits.",
 		promptGuidelines: [
-			"When editing an existing text file, first read the target with hledit_read_anchors; use ordinary read only for references or before the target is known. Use a small offset/limit for known locations or grep/context to locate code. Only complete returned lines are local read proof; ranges require every source line. Copy LN#HASH:text anchors verbatim into hledit_apply_file_changes.",
+			"For anchored edits of a nonempty existing text file, first read the target with hledit_read_anchors unless complete current proof is already available from verified updated anchors. Use ordinary read only for references or before the target is known. If complete old_lines is known and expected to be unique, use hledit_replace_once without a prior anchor read. Use grep/context to locate code; once the target is known, read the smallest complete range needed for proof. Before replace_range or delete_range, ensure current evidence covers every source line from start_anchor through end_anchor; endpoint-only or sparse grep evidence is insufficient. In changes, copy only the current LN#HASH token for each endpoint or attachment line; interior anchors are carried automatically as hidden proof.",
 		],
 		parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 		// provider 侧按 schema 约束采样，从源头消除畸形参数；不支持的模型自动回落普通调用。
@@ -322,10 +328,10 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 	pi.registerTool(({
 		name: HLEDIT_APPLY_FILE_CHANGES_TOOL,
 		label: "Apply File Changes",
-		description: "Atomically apply one complete non-overlapping batch of anchored edits to a text file.",
+		description: "Atomically apply one complete non-overlapping batch using boundary anchors and hidden complete read proof.",
 		promptGuidelines: [
 			"For a nonempty readable file, use hledit_apply_file_changes once with its complete non-overlapping batch; never overwrite it with write. Use write only for an empty file or when hledit_read_anchors reports source-line truncation. Prefer newline-delimited strings for multiline content.",
-			"Copy current LN#HASH:text anchors verbatim. After success, use updated anchors only inside the returned complete, untruncated local window; unchanged anchors outside it remain valid unless shifted. Apply listed verified renames explicitly. On stale, truncation, incomplete context, or insufficient proof, follow the targeted reread guidance; never invent anchors, retry unchanged, or overwrite concurrent changes.",
+			"Copy only the current LN#HASH tokens required by each change; do not copy source text or interior proof anchors. After success, use updated anchors only inside the returned complete, untruncated local window; unchanged anchors outside it remain valid unless shifted. Apply listed verified renames explicitly. On stale, truncation, incomplete context, or insufficient proof, follow the targeted reread guidance and continue with hledit_apply_file_changes; never invent anchors, retry unchanged, or overwrite concurrent changes.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
@@ -383,8 +389,9 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 
 	pi.on("tool_result", (event) => {
 		// D6/2.2：实时结果的 evidence 只由 execute 路径在 mutation queue 内应用一次；
-		// branch/session 重放由 restoreFromBranch 负责。此处仅保留失败升级。
-		if (isAnchoredEditingTool(event.toolName) && isFailedHleditResult(event.details)) {
+		// branch/session 重放由 restoreFromBranch 负责。insufficient_read_proof 是可恢复的
+		// 补读结果，其余失败继续升级为 Pi 工具错误。
+		if (isAnchoredEditingTool(event.toolName) && shouldMarkHleditResultAsError(event.details)) {
 			return { isError: true };
 		}
 	});

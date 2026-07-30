@@ -4,7 +4,6 @@ import test from "node:test";
 import {
   buildFileChangeCheckRequest,
   buildFileChangeRequest,
-  buildReplaceOnceRequest,
   fileChangeLineRanges,
   findSingleLineRangeExpansionIssue,
   formatSingleLineRangeExpansionIssue,
@@ -44,13 +43,6 @@ test("buildFileChangeRequest translates every supported change", () => {
   });
 });
 
-
-test("buildReplaceOnceRequest sends canonical exact content preconditions", () => {
-  assert.deepEqual(buildReplaceOnceRequest({ path: "src/a.ts", old_lines: ["old", "block"], new_lines: ["new"] }), {
-    args: ["replace-once", "src/a.ts"],
-    stdin: '{"old_lines":["old","block"],"new_lines":["new"]}',
-  });
-});
 
 test("buildFileChangeCheckRequest adds validate-only mode", () => {
   const request = buildFileChangeCheckRequest({

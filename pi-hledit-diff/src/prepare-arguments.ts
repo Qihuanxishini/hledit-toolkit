@@ -1,5 +1,5 @@
 import { MAX_READ_LIMIT } from "./read-args.ts";
-import type { FileChangeParams, ReadAnchorsParams, ReplaceOnceParams } from "./schema.ts";
+import type { FileChangeParams, ReadAnchorsParams } from "./schema.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -145,18 +145,4 @@ export function prepareFileChangeArguments(args: unknown): FileChangeParams {
 		...parsed,
 		changes: normalizeChanges(parsed.changes),
 	} as FileChangeParams;
-}
-
-export function prepareReplaceOnceArguments(args: unknown): ReplaceOnceParams {
-	const parsed = parseJsonStructure(args, isRecord);
-	if (!isRecord(parsed)) {
-		return parsed as ReplaceOnceParams;
-	}
-	return {
-		...parsed,
-		old_lines: normalizeReplacementLines(parsed.old_lines),
-		// 空字符串 new_lines 保持原样交给 schema 拒绝：它通常表达"删除"意图，
-		// 归一化成 [""] 会静默变成"替换为一个空行"。
-		new_lines: parsed.new_lines === "" ? parsed.new_lines : normalizeReplacementLines(parsed.new_lines),
-	} as ReplaceOnceParams;
 }

@@ -1,5 +1,7 @@
 # 多行 `lines` 输入优化实施计划
 
+> **已由 [`ANCHOR-EDITING-HARDENING-PLAN.md`](./ANCHOR-EDITING-HARDENING-PLAN.md) 于 2026-07-30 取代。** 本文件保留历史实施事实；其中 replace-once 与旧版本说明不再描述当前运行契约。
+
 ## 状态
 
 - 状态：已完成；审计、实现、自动验证、运行时同步与真实 Pi 窗口测试均于 2026-07-24 通过。

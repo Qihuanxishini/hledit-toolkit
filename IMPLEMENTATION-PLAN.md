@@ -1,5 +1,7 @@
 # hledit 编辑可靠性与 Token 效率改进计划
 
+> **已由 [`ANCHOR-EDITING-HARDENING-PLAN.md`](./ANCHOR-EDITING-HARDENING-PLAN.md) 于 2026-07-30 取代。** 本文件保留历史实施事实；其中 replace-once、三工具和旧版本假设不再描述当前运行契约。
+
 > 状态：Phase 0～3 已于 2026-07-23 完成实施与验证；Phase 4 未批准、未执行
 > 范围：`cli/` 与 `pi-hledit-diff/` 之间的单文件锚点读取、批量编辑、失败恢复和工具激活链路
 > 执行记录以第 11 节完成定义为准；各 Phase 内的未勾选条目保留为原始计划清单，不表示当前执行状态。

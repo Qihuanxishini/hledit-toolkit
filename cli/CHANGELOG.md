@@ -2,8 +2,16 @@
 
 ## [Unreleased]
 
-### Fixed
+## [3.0.0] — 2026-07-30
 
+### Removed
+
+- Remove the `replace-once` verb and its exact-content matching implementation. CLI misuse now reports the removed verb as unknown and performs no write.
+- Remove the `contentReplaceOnce` capability. Integrations can use field absence as part of the breaking 3.x compatibility gate.
+
+### Changed
+
+- Bump the public CLI version to 3.0.0 for the breaking anchored-only integration contract.
 - Recheck the target's raw-byte revision before standalone `replace`, `replace-range`, and `insert` commits so a detected external change is rejected with `source_changed_before_commit` instead of being overwritten.
 
 ## [2.3.1] — 2026-07-25

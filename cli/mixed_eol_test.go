@@ -205,16 +205,6 @@ func TestMixedEOLBOMPreservedWithPerLineTerminators(t *testing.T) {
 	mixedEOLAssertFile(t, target, utf8BOM+"a\r\nB\n")
 }
 
-func TestMixedEOLReplaceOncePreservesUntouchedTerminators(t *testing.T) {
-	dir := t.TempDir()
-	target := mixedEOLWriteFile(t, dir, "once.txt", "a\r\nb\nc\r\n")
-
-	output := replaceOnceTestRun(t, target, `{"old_lines":["b"],"new_lines":["B1","B2"]}`)
-
-	mixedEOLAssertBatchSuccess(t, output, target)
-	mixedEOLAssertFile(t, target, "a\r\nB1\nB2\nc\r\n")
-}
-
 func TestMixedEOLSingleVerbReplacePreservesTerminators(t *testing.T) {
 	dir := t.TempDir()
 	target := mixedEOLWriteFile(t, dir, "verb.txt", "a\r\nb\nc\r\n")

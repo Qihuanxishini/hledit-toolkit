@@ -3,9 +3,15 @@ import { getCapabilities, hyperlink, truncateToWidth, visibleWidth, wrapTextWith
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { changePreviewDiffText, parseChangePreview } from "./change-preview.ts";
-import { renderStandaloneDiff, type HleditRenderComponent, type HleditRenderTheme } from "./diff-renderer.ts";
+import {
+    renderStandaloneDiff,
+    type DiffSummaryStats,
+    type HleditRenderComponent,
+    type HleditRenderTheme,
+} from "./diff-renderer.ts";
 import { fileChangeLineRanges } from "./file-changes.ts";
 import { DEFAULT_READ_LIMIT, normalizeToolPath } from "./read-args.ts";
+import { parseAnchorContext } from "./post-edit-context.ts";
 import type { HleditReadMetadata, HleditToolKind, TextResult } from "./result.ts";
 
 export type RenderComponent = HleditRenderComponent;
@@ -241,7 +247,7 @@ export function renderHleditCall(
 		: kind === "apply_file_changes" ? fileChangeLineRanges(input.changes) : undefined;
     const operationCount = kind === "apply_file_changes" && Array.isArray(input.changes) ? input.changes.length : undefined;
     const grepContext = kind === "read_anchors" && typeof input.context === "number" && Number.isInteger(input.context) && input.context > 0 ? input.context : undefined;
-    const title = theme.fg("toolTitle", theme.bold(kind === "read_anchors" ? "read for edit" : kind === "replace_once" ? "replace once" : "apply changes"));
+    const title = theme.fg("toolTitle", theme.bold(kind === "read_anchors" ? "read for edit" : "apply changes"));
     const styledPath = path ? linkedToolPath(theme.fg("accent", path), path, context) : undefined;
     const target = styledPath ? styledPath + (range ? theme.fg("warning", `:${range}`) : "") : theme.fg("dim", "…");
     let suffix = "";
@@ -347,9 +353,7 @@ export function renderFileChangesResult(
     context: ToolRenderContextLike,
 ): RenderComponent {
     if (options.isPartial) {
-        const args = isRecord(context.args) ? context.args : {};
-        const contentMatch = "old_lines" in args && "new_lines" in args;
-        return component((width) => [truncateToWidth(theme.fg("warning", contentMatch ? "正在应用精确内容替换…" : "正在应用锚点修改…"), width, "")]);
+        return component((width) => [truncateToWidth(theme.fg("warning", "正在应用锚点修改…"), width, "")]);
     }
     if (result.details.disposition !== "succeeded" || context.isError) {
         return renderFailure(result, options.expanded, theme);
@@ -367,41 +371,44 @@ export function renderFileChangesResult(
     const writeWarnings = Array.isArray(result.details.warnings)
         ? result.details.warnings.filter((warning): warning is string => typeof warning === "string")
         : [];
-    const diffComponent = renderStandaloneDiff(diff, path, options.expanded, theme);
-    if (!diffComponent) {
-        const summary = successfulChangeSummary(result, theme);
-        return component((width) => {
-            if (width === 0) return [];
-            const lines = [truncateToWidth(summary, width, "")];
-            if (diffWarning) lines.push(truncateToWidth(theme.fg("warning", `差异警告：${diffWarning}`), width, ""));
-            for (const warning of writeWarnings) lines.push(truncateToWidth(theme.fg("warning", `写入警告：${warning}`), width, ""));
-            return lines;
-        });
-    }
+    const added = typeof result.details.linesAdded === "number" ? result.details.linesAdded : undefined;
+    const deleted = typeof result.details.linesDeleted === "number" ? result.details.linesDeleted : undefined;
+    const hasPreviewChange = changePreview?.lines.some((line) => line.kind === "add" || line.kind === "remove") === true;
+    const summaryStats: DiffSummaryStats | undefined = changePreview && (changePreview.truncated || !hasPreviewChange) && added !== undefined && deleted !== undefined
+        ? { added, removed: deleted, completeHunks: false }
+        : undefined;
+    const diffComponent = renderStandaloneDiff(diff, path, options.expanded, theme, summaryStats);
+    const changeBodyComponent = diffComponent ?? component((width) => {
+        if (width === 0) return [];
+        return [truncateToWidth(successfulChangeSummary(result, theme), width, "")];
+    });
 
-    const postEditContext = isRecord(result.details.postEditContext) ? result.details.postEditContext : undefined;
-    const windowOffset = typeof postEditContext?.offset === "number" ? postEditContext.offset : undefined;
-    const windowLimit = typeof postEditContext?.limit === "number" ? postEditContext.limit : undefined;
-    const windowLastLine = windowOffset !== undefined && windowLimit !== undefined && windowLimit > 0
-        ? windowOffset + windowLimit - 1
+    const updatedAnchorContext = parseAnchorContext(result.details.updatedAnchors);
+    const windowLastLine = updatedAnchorContext && updatedAnchorContext.limit > 0
+        ? updatedAnchorContext.offset + updatedAnchorContext.limit - 1
         : undefined;
     const updatedAnchorHeading = windowLastLine === undefined
         ? "更新后的锚点（局部窗口）"
-        : `更新后的锚点（局部窗口：第 ${windowOffset}-${windowLastLine} 行）`;
-
-    const updatedAnchors = options.expanded ? parseAnchoredOutput(getText(result)).lines : [];
+        : `更新后的锚点（局部窗口：第 ${updatedAnchorContext!.offset}-${windowLastLine} 行）`;
+    const updatedAnchors = options.expanded && updatedAnchorContext
+        ? updatedAnchorContext.lines.map((line) => ({ anchor: line.anchor, lineNumber: line.line, content: line.text }))
+        : [];
     const updatedAnchorRows = createAnchoredSourceRowsComponent(updatedAnchors, path, theme);
-    if (updatedAnchors.length === 0 && !diffWarning && writeWarnings.length === 0) return diffComponent;
+    const anchorWindowTruncated = updatedAnchorContext?.truncated === true || updatedAnchorContext?.lines.some((line) => line.textTruncated) === true;
+    if (updatedAnchors.length === 0 && !diffWarning && writeWarnings.length === 0) return changeBodyComponent;
 
     return component((width) => {
         if (width === 0) return [];
-        const lines = [...diffComponent.render(width)];
+        const lines = [...changeBodyComponent.render(width)];
         if (updatedAnchors.length > 0) {
             lines.push(
                 "",
                 truncateToWidth(theme.fg("muted", theme.bold(updatedAnchorHeading)), width, ""),
                 ...updatedAnchorRows.render(width),
             );
+            if (anchorWindowTruncated) {
+                lines.push(truncateToWidth(theme.fg("warning", "更新后的锚点窗口或行内容已截断；编辑前请重新读取所需范围"), width, ""));
+            }
         }
         if (diffWarning) {
             lines.push(truncateToWidth(theme.fg("warning", `差异警告：${diffWarning}`), width, ""));
@@ -411,7 +418,7 @@ export function renderFileChangesResult(
         }
         return lines;
     }, () => {
-        diffComponent.invalidate();
+        changeBodyComponent.invalidate();
         updatedAnchorRows.invalidate();
     });
 }

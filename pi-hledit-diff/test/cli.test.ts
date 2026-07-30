@@ -10,7 +10,7 @@ import { parseBatchUpdatedAnchorContext } from "../src/post-edit-context.ts";
 import { applyFileChangesResult } from "../src/result.ts";
 
 const EXPECTED_CAPABILITIES = {
-	version: "2.3.1",
+	version: "3.0.0",
 	anchorProtocolV2: true,
 	readRangeMetadata: true,
 	batchInsertAfter: true,
@@ -19,7 +19,6 @@ const EXPECTED_CAPABILITIES = {
 	batchStaleContext: true,
 	batchWireV3: true,
 	batchReadProof: true,
-	contentReplaceOnce: true,
 	batchEditDeltas: true,
 	readIgnoreCase: true,
 } as const;
@@ -49,21 +48,16 @@ test("runHledit reports an already-aborted invocation", async () => {
 	assert.equal(typeof run.started, "boolean");
 });
 
-test("parseHleditCapabilities requires structured reads and patched batch capabilities", () => {
+test("parseHleditCapabilities requires the reviewed CLI 3.x two-tool contract", () => {
 	assert.deepEqual(
 		parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...EXPECTED_CAPABILITIES }), stderr: "", exitCode: 0 }),
 		EXPECTED_CAPABILITIES,
 	);
-	assert.equal(
-		parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }),
-		undefined,
-	);
-	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true}', stderr: "", exitCode: 0 }), undefined);
-	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }), undefined);
-	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"1.2.6","readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true}', stderr: "", exitCode: 0 }), undefined);
-	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"2.0.0","readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }), undefined);
-	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"2.0.0","anchorProtocolV2":true,"readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true}', stderr: "", exitCode: 0 }), undefined);
-	assert.equal(parseHleditCapabilities({ stdout: '{"ok":true,"version":"2.0.0","anchorProtocolV2":true,"readRangeMetadata":true,"batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchors":true,"batchStaleContext":true,"batchWireV3":true}', stderr: "", exitCode: 0 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...EXPECTED_CAPABILITIES, version: "2.3.1" }), stderr: "", exitCode: 0 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...EXPECTED_CAPABILITIES, version: "4.0.0" }), stderr: "", exitCode: 0 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...EXPECTED_CAPABILITIES, contentReplaceOnce: true }), stderr: "", exitCode: 0 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...EXPECTED_CAPABILITIES, contentReplaceOnce: false }), stderr: "", exitCode: 0 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...EXPECTED_CAPABILITIES, batchReadProof: false }), stderr: "", exitCode: 0 }), undefined);
 	assert.equal(parseHleditCapabilities({ stdout: "not json", stderr: "", exitCode: 0 }), undefined);
 });
 
@@ -103,33 +97,18 @@ test("bundled batch emits plugin-compatible updated anchors", async (t) => {
 	assert.equal(await readFile(target, "utf8"), "one\nTWO\nthree\n");
 });
 
-
-test("bundled replace-once replaces one unique block and rejects ambiguity", async (t) => {
-	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-diff-replace-once-"));
+test("bundled CLI rejects the removed replace-once verb without writing", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-diff-removed-verb-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
 	const target = join(directory, "target.txt");
-	await writeFile(target, "one\ntwo\nthree\ntwo\n", "utf8");
+	const original = "one\ntwo\nthree\n";
+	await writeFile(target, original, "utf8");
 
-	const ambiguous = await runHledit(
-		["replace-once", target],
-		JSON.stringify({ old_lines: ["two"], new_lines: ["TWO"] }),
-		directory,
-		undefined,
-	);
-	const ambiguousResult = JSON.parse(ambiguous.stdout) as Record<string, unknown>;
-	assert.deepEqual(ambiguousResult.candidates, [{ startLine: 2, endLine: 2 }, { startLine: 4, endLine: 4 }]);
-	assert.equal(ambiguousResult.error, "content_ambiguous");
-
-	const applied = await runHledit(
-		["replace-once", target],
-		JSON.stringify({ old_lines: ["one", "two", "three"], new_lines: ["ONE", "TWO", "THREE"] }),
-		directory,
-		undefined,
-	);
-	const appliedResult = JSON.parse(applied.stdout) as Record<string, unknown>;
-	assert.equal(appliedResult.ok, true);
-	assert.equal(appliedResult.editsApplied, 1);
-	assert.equal(await readFile(target, "utf8"), "ONE\nTWO\nTHREE\ntwo\n");
+	const run = await runHledit(["replace-once", target], JSON.stringify({ old_lines: ["two"], new_lines: ["TWO"] }), directory, undefined);
+	assert.equal(run.exitCode, 2);
+	assert.equal(run.stdout, "");
+	assert.match(run.stderr, /unknown verb "replace-once"/);
+	assert.equal(await readFile(target, "utf8"), original);
 });
 
 test("bundled batch is atomic when a later anchor is stale", async (t) => {

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import piHleditDiffExtension from "../index.ts";
-import { HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_READ_ANCHORS_TOOL, HLEDIT_REPLACE_ONCE_TOOL } from "../src/active-tools.ts";
+import { HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_READ_ANCHORS_TOOL } from "../src/active-tools.ts";
 import type { TextResult } from "../src/result.ts";
 
 type ExtensionListener = (event: unknown, context: TestContext) => unknown | Promise<unknown>;
@@ -77,7 +77,7 @@ test("anchored editing tools stay active regardless of current read evidence", a
 		sessionManager: { getBranch: () => branch },
 	};
 	const harness = registerActivationHarness();
-	const expectedActiveTools = ["read", "bash", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_REPLACE_ONCE_TOOL];
+	const expectedActiveTools = ["read", "bash", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL];
 	await harness.listener("session_start")({}, context);
 	assert.deepEqual(harness.activeTools(), expectedActiveTools);
 

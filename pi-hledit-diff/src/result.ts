@@ -4,7 +4,7 @@ import { parseAnchorContext, parseBatchUpdatedAnchorContext, type BatchAnchorCon
 import { MAX_READ_LIMIT, type NormalizedReadRequest } from "./read-args.ts";
 import type { FileChangeParams } from "./schema.ts";
 
-export type HleditToolKind = "read_anchors" | "apply_file_changes" | "replace_once";
+export type HleditToolKind = "read_anchors" | "apply_file_changes";
 export type HleditDisposition = "succeeded" | "rejected" | "unavailable" | "outcome_unknown";
 
 export type HleditReadLine = {
@@ -48,10 +48,6 @@ export type HleditStaleAnchor = {
 	currentTextTruncated?: true;
 };
 
-export type ContentMatchCandidate = {
-	startLine: number;
-	endLine: number;
-};
 
 // 与 CLI EditDelta 对应：oldStart/oldEnd 是原始行坐标中被消费的区间（纯插入时
 // oldEnd === oldStart-1 的空区间），delta 是该编辑造成的行数变化。
@@ -104,9 +100,6 @@ export type HleditErrorMetadata = {
 	staleAnchors?: HleditStaleAnchor[];
 	currentAnchors?: BatchAnchorContext;
 	currentRevision?: string;
-	matchCount?: number;
-	candidates?: ContentMatchCandidate[];
-	candidatesTruncated?: true;
 	renamedAnchors?: Array<{ requested: string; current: string }>;
 	renamesRestoreProof?: true;
 };
@@ -114,9 +107,6 @@ export type HleditErrorMetadata = {
 type ApplyResultContext = {
 	path?: string;
 	changes?: FileChangeParams["changes"];
-	operation?: "anchored_batch" | "content_replace_once";
-	// replace-once 的请求行数，用于核对 CLI 返回的 editDeltas 与请求一致。
-	replaceOnce?: { oldLineCount: number; newLineCount: number };
 };
 
 export type HleditDetails = Record<string, unknown> & {
@@ -490,7 +480,6 @@ function appendCurrentAnchorContext(lines: string[], context: BatchAnchorContext
 		? "Current anchor snapshot at submission time (the file is empty):"
 		: `Current anchor snapshot at submission time (local window: lines ${context.offset}-${lastLine}):`);
 	lines.push(context.lines.map((line) => `${line.anchor}:${line.text}`).join("\n") || "(file is empty)");
-	lines.push("This snapshot never retries or overwrites concurrent changes. Reuse its anchors only after confirming that this complete window still covers the intended target and range; otherwise reread the affected range.");
 	if (context.truncated || context.lines.some((line) => line.textTruncated)) {
 		lines.push(`The current snapshot is truncated. Call hledit_read_anchors with offset:${context.offset} and limit:${context.desiredLimit} to obtain the complete range.`);
 	}
@@ -558,19 +547,6 @@ function localizeIOApplyMessage(rawMessage: string): string {
 	return "The file operation failed. Check the path, permissions, file type, and link state.";
 }
 
-function parseContentMatchCandidates(result: Record<string, unknown>): ContentMatchCandidate[] | undefined {
-	if (!Array.isArray(result.candidates)) {
-		return undefined;
-	}
-	const candidates: ContentMatchCandidate[] = [];
-	for (const candidate of result.candidates) {
-		if (!isRecord(candidate) || !isIntegerAtLeast(candidate.startLine, 1) || !isIntegerAtLeast(candidate.endLine, candidate.startLine)) {
-			return undefined;
-		}
-		candidates.push({ startLine: candidate.startLine, endLine: candidate.endLine });
-	}
-	return candidates;
-}
 
 function parseApplyErrorMetadata(result: Record<string, unknown>, context: ApplyResultContext): HleditErrorMetadata | undefined {
 	if (result.ok !== false || typeof result.error !== "string" || typeof result.message !== "string") return undefined;
@@ -578,9 +554,6 @@ function parseApplyErrorMetadata(result: Record<string, unknown>, context: Apply
 	const currentAnchors = result.error === "stale" ? parseAnchorContext(result.currentAnchors) : undefined;
 	const staleAnchors = result.error === "stale" ? parseStaleAnchors(result, currentAnchors, context) : undefined;
 	const currentRevision = isRawRevision(result.currentRevision) ? result.currentRevision : undefined;
-	const matchCount = isIntegerAtLeast(result.matchCount, 2) ? result.matchCount : undefined;
-	const candidates = result.error === "content_ambiguous" ? parseContentMatchCandidates(result) : undefined;
-	const candidatesTruncated = result.candidatesTruncated === true ? true : undefined;
 	let message: string;
 	switch (result.error) {
 		case "stale":
@@ -591,14 +564,6 @@ function parseApplyErrorMetadata(result: Record<string, unknown>, context: Apply
 			break;
 		case "source_changed_before_commit":
 			message = "The target changed before atomic commit. No content was written.";
-			break;
-		case "content_not_found":
-			message = "old_lines do not match any contiguous block in the current file.";
-			break;
-		case "content_ambiguous":
-			message = matchCount === undefined
-				? "old_lines match more than one contiguous block in the current file."
-				: `old_lines match ${matchCount} contiguous blocks in the current file.`;
 			break;
 		case "invalid":
 			message = localizeInvalidApplyMessage(result.message, failedChange);
@@ -622,9 +587,6 @@ function parseApplyErrorMetadata(result: Record<string, unknown>, context: Apply
 		...(staleAnchors ? { staleAnchors } : {}),
 		...(currentAnchors ? { currentAnchors } : {}),
 		...(currentRevision ? { currentRevision } : {}),
-		...(matchCount !== undefined ? { matchCount } : {}),
-		...(candidates ? { candidates } : {}),
-		...(candidatesTruncated ? { candidatesTruncated } : {}),
 	};
 }
 
@@ -636,25 +598,6 @@ function localizeApplyWarning(warning: string): string {
 	return "The file was modified successfully, but the write carries a durability warning; technical details are preserved in the tool result.";
 }
 
-function appendContentMatchRecovery(lines: string[], error: HleditErrorMetadata, path: string | undefined): void {
-	if (error.code === "content_not_found") {
-		lines.push("The exact old_lines precondition is no longer present. Do not weaken or approximate the match.");
-		if (path) lines.push(`Call hledit_read_anchors({ path: ${JSON.stringify(path)} }) to inspect the intended target before submitting an anchored edit.`);
-		return;
-	}
-	if (error.code !== "content_ambiguous") {
-		return;
-	}
-	if (error.candidates && error.candidates.length > 0) {
-		lines.push("Candidate ranges:", ...error.candidates.map((candidate) => `- lines ${candidate.startLine}-${candidate.endLine}`));
-		if (error.candidatesTruncated) lines.push("Only the first candidate ranges are shown.");
-		const first = error.candidates[0]!;
-		const offset = Math.max(1, first.startLine - 2);
-		if (path) lines.push(`Call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: 12 }) and choose the intended block before submitting an anchored edit.`);
-		return;
-	}
-	lines.push("old_lines are ambiguous. Call hledit_read_anchors to inspect and choose the intended block before submitting an anchored edit.");
-}
 
 // [喵喵喵]: CLI proof 拒绝在本地 evidence 选择之后理论上不可达，但既然仍被定义为
 // 可恢复结果，兜底正文也必须给出具体补读动作。(2026-07-28)
@@ -667,7 +610,7 @@ function appendInsufficientReadProofRecovery(
 	if (error.code !== "insufficient_read_proof") return;
 	const failedIndex = isIntegerAtLeast(result.failed, 0) ? result.failed : undefined;
 	const change = failedIndex === undefined ? undefined : context.changes?.[failedIndex];
-	const resubmitTool = context.operation === "content_replace_once" ? "hledit_replace_once" : "hledit_apply_file_changes";
+	const resubmitTool = "hledit_apply_file_changes";
 	const genericInstruction = context.path
 		? `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)} }) to reread every source line required by the failed change, then resubmit the original ${resubmitTool} call.`
 		: `Call hledit_read_anchors to reread every source line required by the failed change, then resubmit the original ${resubmitTool} call.`;
@@ -703,9 +646,8 @@ function formatApplyFailureResult(
 	context: ApplyResultContext,
 	error: HleditErrorMetadata,
 ): string {
-	const contentMatch = context.operation === "content_replace_once";
 	const lines = [
-		contentMatch ? "Content-match replacement was rejected; no content was written." : "The atomic batch was rejected; no content was written.",
+		"The atomic batch was rejected; no content was written.",
 		`Reason: ${error.message}`,
 		`Error code: ${error.code}`,
 	];
@@ -728,7 +670,6 @@ function formatApplyFailureResult(
 			: "Call hledit_read_anchors before retrying; do not reuse the prior request.");
 	}
 	appendInsufficientReadProofRecovery(lines, result, context, error);
-	appendContentMatchRecovery(lines, error, context.path);
 	return lines.join("\n");
 }
 
@@ -743,11 +684,9 @@ function appendApplyWarnings(lines: string[], result: Record<string, unknown>): 
 	lines.push("Warnings:", ...warnings.map((warning) => `- ${localizeApplyWarning(warning)}`));
 }
 
-function formatApplyResult(result: Record<string, unknown>, context: ApplyResultContext): string {
+function formatApplyResult(result: Record<string, unknown>): string {
 	if (result.contentChanged === false) {
-		const lines = [context.operation === "content_replace_once"
-			? "No changes were needed; the exact content precondition still holds."
-			: "No changes were needed; the original anchors are still valid."];
+		const lines = ["No changes were needed; the original anchors are still valid."];
 		appendApplyWarnings(lines, result);
 		return lines.join("\n");
 	}
@@ -784,15 +723,6 @@ function expectedBatchEditDeltas(changes: FileChangeParams["changes"]): HleditEd
 // editDeltas 驱动证据重映射与锚点更名，必须与请求可精确互推；对不上时按不兼容
 // 成功响应处理（outcome_unknown），宁可多一轮重读也不用可疑数据平移证据。
 function editDeltasMatchRequest(deltas: HleditEditDelta[], context: ApplyResultContext): boolean {
-	if (context.operation === "content_replace_once") {
-		if (!context.replaceOnce) return true;
-		if (deltas.length !== 1) return false;
-		const [only] = deltas;
-		return (
-			only!.oldEnd - only!.oldStart + 1 === context.replaceOnce.oldLineCount &&
-			only!.delta === context.replaceOnce.newLineCount - context.replaceOnce.oldLineCount
-		);
-	}
 	if (!context.changes) return true;
 	const expected = expectedBatchEditDeltas(context.changes);
 	if (!expected || expected.length !== deltas.length) return false;
@@ -806,7 +736,6 @@ function editDeltasMatchRequest(deltas: HleditEditDelta[], context: ApplyResultC
 function isValidApplySuccess(parsed: Record<string, unknown> | null, context: ApplyResultContext): boolean {
 	if (parsed?.ok !== true || !isRawRevision(parsed.revision)) return false;
 	if (typeof parsed.editsApplied !== "number" || !Number.isSafeInteger(parsed.editsApplied) || parsed.editsApplied < 0) return false;
-	if (context.operation === "content_replace_once" && parsed.editsApplied !== 1) return false;
 	if (context.changes && parsed.editsApplied !== context.changes.length) return false;
 	if (parsed.contentChanged !== undefined && typeof parsed.contentChanged !== "boolean") return false;
 	if (parsed.warnings !== undefined && (!Array.isArray(parsed.warnings) || !parsed.warnings.every((warning) => typeof warning === "string"))) return false;
@@ -869,7 +798,7 @@ function formatApplyRunText(
 	if (parsed.ok === false) {
 		return applyError ? formatApplyFailureResult(parsed, context, applyError) : invalidApplySuccessText();
 	}
-	return applySuccessValid ? formatApplyResult(parsed, context) : invalidApplySuccessText();
+	return applySuccessValid ? formatApplyResult(parsed) : invalidApplySuccessText();
 }
 
 export function extractCliSummary(parsed: Record<string, unknown> | null): Record<string, unknown> {
@@ -922,17 +851,6 @@ export function applyFileChangesResult(run: HleditRun, context: ApplyResultConte
 	};
 }
 
-export function replaceOnceResult(
-	run: HleditRun,
-	path: string | undefined,
-	counts?: { oldLineCount: number; newLineCount: number },
-): TextResult {
-	return applyFileChangesResult(run, {
-		path,
-		operation: "content_replace_once",
-		...(counts ? { replaceOnce: counts } : {}),
-	});
-}
 
 export function fileChangeCheckFailure(run: HleditRun, context: ApplyResultContext = {}): TextResult | undefined {
 	const parsed = parseRunObject(run);

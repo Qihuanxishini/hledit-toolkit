@@ -3,9 +3,9 @@ import test from "node:test";
 
 import {
 	buildAnchoredChangePreview,
-	buildReplaceOncePreview,
 	changePreviewDiffText,
 	emptyChangePreview,
+	MAX_PREVIEW_BYTES,
 	MAX_PREVIEW_LINES,
 	parseChangePreview,
 } from "../src/change-preview.ts";
@@ -58,18 +58,6 @@ test("anchored preview refuses to guess when a consumed line is missing from evi
 	assert.equal(preview, undefined);
 });
 
-test("replace-once preview uses the CLI-verified start line", () => {
-	const preview = buildReplaceOncePreview({ path: "a.txt", old_lines: ["b"], new_lines: ["B1", "B2"] }, 2);
-
-	assert.deepEqual(preview, {
-		truncated: false,
-		lines: [
-			{ kind: "remove", oldLine: 2, text: "b" },
-			{ kind: "add", newLine: 2, text: "B1" },
-			{ kind: "add", newLine: 3, text: "B2" },
-		],
-	});
-});
 
 test("oversized previews keep head and tail fragments and mark truncation", () => {
 	const inserted = Array.from({ length: MAX_PREVIEW_LINES + 500 }, (_, index) => `line-${index}`);
@@ -85,8 +73,31 @@ test("oversized previews keep head and tail fragments and mark truncation", () =
 	assert.equal(preview.lines.at(-1)?.text, `line-${inserted.length - 1}`);
 });
 
+
+test("preview byte cap counts Chinese and emoji as UTF-8 and clips one oversized line", () => {
+	const original = `${"中文🙂".repeat(MAX_PREVIEW_BYTES)}TAIL`;
+	const preview = buildAnchoredChangePreview(
+		[{ operation: "insert_after", anchor: "1#AAA", lines: [original] }],
+		consumedLines([[1, "one"]]),
+	);
+
+	assert.ok(preview);
+	assert.equal(preview.truncated, true);
+	assert.equal(preview.lines.length, 1);
+	assert.equal(preview.lines[0]?.textTruncated, true);
+	assert.match(preview.lines[0]?.text ?? "", /^中文/);
+	assert.match(preview.lines[0]?.text ?? "", /TAIL$/);
+	const bytes = preview.lines.reduce((total, line) => total + Buffer.byteLength(line.text, "utf8") + 1, 0);
+	assert.ok(bytes <= MAX_PREVIEW_BYTES, `${bytes} must not exceed ${MAX_PREVIEW_BYTES}`);
+	assert.equal(Buffer.from(preview.lines[0]?.text ?? "", "utf8").toString("utf8"), preview.lines[0]?.text);
+});
+
 test("change preview survives a details JSON round trip and rejects malformed shapes", () => {
-	const preview = buildReplaceOncePreview({ path: "a.txt", old_lines: ["b"], new_lines: ["B"] }, 2);
+	const preview = buildAnchoredChangePreview(
+		[{ operation: "replace_range", start_anchor: "2#AAA", end_anchor: "2#AAA", lines: ["B"] }],
+		consumedLines([[2, "b"]]),
+	);
+	assert.ok(preview);
 	assert.deepEqual(parseChangePreview(JSON.parse(JSON.stringify(preview))), preview);
 	assert.deepEqual(parseChangePreview(JSON.parse(JSON.stringify(emptyChangePreview()))), { lines: [], truncated: false });
 
@@ -94,6 +105,9 @@ test("change preview survives a details JSON round trip and rejects malformed sh
 	assert.equal(parseChangePreview({ lines: "no" }), undefined);
 	assert.equal(parseChangePreview({ truncated: false, lines: [{ kind: "swap", text: "x" }] }), undefined);
 	assert.equal(parseChangePreview({ truncated: false, lines: [{ kind: "add", newLine: 0, text: "x" }] }), undefined);
+	assert.equal(parseChangePreview({ truncated: false, lines: [{ kind: "add", text: "x" }] }), undefined);
+	assert.equal(parseChangePreview({ truncated: false, lines: [{ kind: "remove", oldLine: 1, newLine: 1, text: "x" }] }), undefined);
+	assert.equal(parseChangePreview({ truncated: false, lines: [{ kind: "add", newLine: 1, text: "x", textTruncated: true }] }), undefined);
 });
 
 test("changePreviewDiffText renders line-numbered hunks with fold markers", () => {

@@ -1,5 +1,7 @@
 # hledit Token、正确性与内存稳健性优化路线图
 
+> **已由 [`ANCHOR-EDITING-HARDENING-PLAN.md`](./ANCHOR-EDITING-HARDENING-PLAN.md) 于 2026-07-30 取代。** Phase 0～5 的实施记录保持原样；replace-once、三工具和旧性能基线仅是历史事实。
+
 > 状态：实施中；Phase 1.1～1.3 已完成，后续按执行状态继续
 > 记录日期：2026-07-25
 > 范围：`cli/` 与 `pi-hledit-diff/` 的模型工具协议、结果正文、读取证据、compaction、diff、文本重建和原子提交链路

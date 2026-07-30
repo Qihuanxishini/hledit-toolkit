@@ -4,7 +4,6 @@ import test from "node:test";
 import {
 	HLEDIT_APPLY_FILE_CHANGES_TOOL,
 	HLEDIT_READ_ANCHORS_TOOL,
-	HLEDIT_REPLACE_ONCE_TOOL,
 	isAnchoredEditingTool,
 	preferBuiltInEditFallback,
 	preferAnchoredEditingTools,
@@ -16,20 +15,19 @@ test("preferAnchoredEditingTools replaces built-in and legacy edit tools", () =>
 		"bash",
 		HLEDIT_READ_ANCHORS_TOOL,
 		HLEDIT_APPLY_FILE_CHANGES_TOOL,
-		HLEDIT_REPLACE_ONCE_TOOL,
 	]);
 });
 
 test("preferAnchoredEditingTools does not duplicate replacement tools", () => {
 	assert.deepEqual(
-		preferAnchoredEditingTools(["read", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_REPLACE_ONCE_TOOL]),
-		["read", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_REPLACE_ONCE_TOOL],
+		preferAnchoredEditingTools(["read", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL]),
+		["read", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL],
 	);
 });
 
 test("preferBuiltInEditFallback removes unavailable hledit tools and restores edit", () => {
 	assert.deepEqual(
-		preferBuiltInEditFallback(["read", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_REPLACE_ONCE_TOOL, "bash"]),
+		preferBuiltInEditFallback(["read", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL, "bash"]),
 		["read", "bash", "edit"],
 	);
 });
@@ -41,6 +39,5 @@ test("preferBuiltInEditFallback preserves one existing edit entry", () => {
 test("isAnchoredEditingTool identifies only the new tool names", () => {
 	assert.equal(isAnchoredEditingTool(HLEDIT_READ_ANCHORS_TOOL), true);
 	assert.equal(isAnchoredEditingTool(HLEDIT_APPLY_FILE_CHANGES_TOOL), true);
-	assert.equal(isAnchoredEditingTool(HLEDIT_REPLACE_ONCE_TOOL), true);
 	assert.equal(isAnchoredEditingTool("hledit"), false);
 });

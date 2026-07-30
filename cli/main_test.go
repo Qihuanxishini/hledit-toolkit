@@ -98,8 +98,29 @@ func TestMainCapabilities(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("capabilities output is not JSON: %q: %v", out, err)
 	}
-	if !got.OK || got.Version != version || !got.AnchorProtocolV2 || !got.BatchInsertAfter || !got.BatchCheck || !got.BatchUpdatedAnchors || !got.BatchStaleContext || !got.ReadRangeMetadata || !got.BatchWireV3 || !got.BatchReadProof || !got.ContentReplaceOnce {
+	if !got.OK || got.Version != version || !got.AnchorProtocolV2 || !got.BatchInsertAfter || !got.BatchCheck || !got.BatchUpdatedAnchors || !got.BatchStaleContext || !got.ReadRangeMetadata || !got.BatchWireV3 || !got.BatchReadProof || !got.BatchEditDeltas || !got.ReadIgnoreCase {
 		t.Fatalf("capabilities = %#v, want current batch and structured recovery capabilities", got)
+	}
+}
+
+func TestMainRejectsRemovedReplaceOnceVerb(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target.txt")
+	const original = "alpha\nbeta\n"
+	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := mainTestRunForCode(t, "replace-once", path)
+	if code != 2 || stdout != "" || !strings.Contains(stderr, `unknown verb "replace-once"`) {
+		t.Fatalf("removed verb result = code %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != original {
+		t.Fatalf("removed verb changed target: %q", content)
 	}
 }
 

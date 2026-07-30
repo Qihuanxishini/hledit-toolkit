@@ -10,7 +10,6 @@ import { resolve } from "node:path";
 import {
 	HLEDIT_APPLY_FILE_CHANGES_TOOL,
 	HLEDIT_READ_ANCHORS_TOOL,
-	HLEDIT_REPLACE_ONCE_TOOL,
 	isAnchoredEditingTool,
 	preferBuiltInEditFallback,
 	preferAnchoredEditingTools,
@@ -18,7 +17,6 @@ import {
 import { HLEDIT_INSTALL_HINT, parseHleditCapabilities, resolveHleditBin, runHledit } from "./src/cli.ts";
 import {
 	buildAnchoredChangePreview,
-	buildReplaceOncePreview,
 	emptyChangePreview,
 	type VerifiedChangePreview,
 } from "./src/change-preview.ts";
@@ -26,32 +24,27 @@ import { recordAnchoredFileOperations } from "./src/compaction-files.ts";
 import {
 	buildFileChangeCheckRequest,
 	buildFileChangeRequest,
-	buildReplaceOnceRequest,
 	findSingleLineRangeExpansionIssue,
 	formatSingleLineRangeExpansionIssue,
 } from "./src/file-changes.ts";
 import { formatBatchUpdatedAnchorContext, type BatchAnchorContext } from "./src/post-edit-context.ts";
-import { prepareFileChangeArguments, prepareReadAnchorsArguments, prepareReplaceOnceArguments } from "./src/prepare-arguments.ts";
+import { prepareFileChangeArguments, prepareReadAnchorsArguments } from "./src/prepare-arguments.ts";
 import { formatReadProofFailure, ReadEvidenceStore, resolveReadEvidencePath } from "./src/read-evidence.ts";
-import { buildReadArgs, normalizeReadRequest, normalizeToolPath } from "./src/read-args.ts";
+import { normalizeToolPath } from "./src/read-args.ts";
+import { runReadAnchorsTransaction } from "./src/read-transaction.ts";
 import {
 	applyFileChangesResult,
 	fileChangeCheckFailure,
 	shouldMarkHleditResultAsError,
 	parseRunObject,
-	readAnchorsResult,
 	rejectedToolResult,
-	replaceOnceResult,
-	type HleditEditDelta,
 	type TextResult,
 } from "./src/result.ts";
 import {
 	HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 	HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
-	HLEDIT_REPLACE_ONCE_PARAMS_SCHEMA,
 	type FileChangeParams,
 	type ReadAnchorsParams,
-	type ReplaceOnceParams,
 } from "./src/schema.ts";
 import {
 	renderFileChangesResult,
@@ -61,9 +54,9 @@ import {
 	type ToolRenderContextLike,
 } from "./src/render.ts";
 
-export { buildFileChangeRequest, buildReplaceOnceRequest } from "./src/file-changes.ts";
+export { buildFileChangeRequest } from "./src/file-changes.ts";
 export { buildReadArgs, normalizeToolPath } from "./src/read-args.ts";
-export type { FileChangeParams, ReadAnchorsParams, ReplaceOnceParams } from "./src/schema.ts";
+export type { FileChangeParams, ReadAnchorsParams } from "./src/schema.ts";
 
 function appendResultText(result: TextResult, text: string | undefined): TextResult["content"] {
 	if (!text) {
@@ -140,7 +133,7 @@ async function runFileChangesWithDiff(
 	const absolutePath = resolve(ctx.cwd, normalizedPath);
 	const evidencePath = await resolveReadEvidencePath(ctx.cwd, normalizedPath);
 	const normalizedParams = { ...params, path: normalizedPath };
-	const applyContext = { path: normalizedPath, changes: normalizedParams.changes, operation: "anchored_batch" as const };
+	const applyContext = { path: normalizedPath, changes: normalizedParams.changes };
 
 	const applyWithinQueue = async (): Promise<TextResult> => {
 		const proofSelection = evidence.selectProof(evidencePath, normalizedParams.changes);
@@ -218,67 +211,6 @@ async function runFileChangesWithDiff(
 	});
 }
 
-// 宿主对 schema 细节约束（minLength/minItems）的执行不可控；空 old_lines/new_lines
-// 的拒绝是文档契约，必须在插件自己的边界强制执行一次，而不是指望宿主或 CLI 的
-// 底层 unmarshal 报错。
-function emptyReplaceOnceLinesRejection(params: ReplaceOnceParams): TextResult | undefined {
-	const oldLines: unknown = params.old_lines;
-	const newLines: unknown = params.new_lines;
-	if (Array.isArray(oldLines) && oldLines.length === 0) {
-		return rejectedToolResult(
-			"Content-match replacement was rejected; no content was written.\nold_lines must contain at least one line of the exact current content.",
-			{ code: "invalid", message: "old_lines must contain at least one line." },
-		);
-	}
-	if (newLines === "" || (Array.isArray(newLines) && newLines.length === 0)) {
-		return rejectedToolResult(
-			'Content-match replacement was rejected; no content was written.\nnew_lines must not be empty: pass [""] to replace the match with one blank line, or use hledit_apply_file_changes with delete_range to delete the block.',
-			{ code: "invalid", message: 'new_lines must not be empty; use [""] for one blank line or an anchored delete_range to delete.' },
-		);
-	}
-	return undefined;
-}
-
-async function runReplaceOnceWithDiff(
-	params: ReplaceOnceParams,
-	ctx: ExtensionContext,
-	signal: AbortSignal | undefined,
-	evidence: ReadEvidenceStore,
-): Promise<TextResult> {
-	const normalizedPath = normalizeToolPath(params.path);
-	const absolutePath = resolve(ctx.cwd, normalizedPath);
-	const evidencePath = await resolveReadEvidencePath(ctx.cwd, normalizedPath);
-	const normalizedParams = { ...params, path: normalizedPath };
-	const contractRejection = emptyReplaceOnceLinesRejection(normalizedParams);
-	if (contractRejection) {
-		return attachEvidencePath(contractRejection, normalizedPath, evidencePath);
-	}
-
-	const replaceOnceWithinQueue = async (): Promise<TextResult> => {
-		const request = buildReplaceOnceRequest(normalizedParams);
-		const run = await runHledit(request.args, request.stdin, ctx.cwd, signal);
-		const result = replaceOnceResult(run, normalizedPath, {
-			oldLineCount: normalizedParams.old_lines.length,
-			newLineCount: normalizedParams.new_lines.length,
-		});
-		if (result.details.disposition !== "succeeded") {
-			return attachEvidencePath(result, normalizedPath, evidencePath);
-		}
-		const changePreview = tryBuildChangePreview(result, () => {
-			// oldStart 取 CLI 已验证的唯一消费区间起点，不使用未经验证的字段。
-			const oldStart = (result.details.editDeltas as HleditEditDelta[] | undefined)?.[0]?.oldStart;
-			return oldStart === undefined ? undefined : buildReplaceOncePreview(normalizedParams, oldStart);
-		});
-		return finalizeSuccessfulEditResult(result, run, normalizedPath, evidencePath, changePreview);
-	};
-
-	// D6：与 anchored batch 相同，evidence 更新在队列放行前完成。
-	return withFileMutationQueue(absolutePath, async () => {
-		const result = await replaceOnceWithinQueue();
-		evidence.updateFromToolResult(HLEDIT_REPLACE_ONCE_TOOL, result.details, ctx.cwd);
-		return result;
-	});
-}
 
 export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 	let warnedHleditUnavailable = false;
@@ -296,7 +228,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		label: "Read for Edit",
 		description: "Read a text file and return LN#HASH anchors with source text for stale-safe edits.",
 		promptGuidelines: [
-			"For anchored edits of a nonempty existing text file, first read the target with hledit_read_anchors unless complete current proof is already available from verified updated anchors. Use ordinary read only for references or before the target is known. If complete old_lines is known and expected to be unique, use hledit_replace_once without a prior anchor read. Use grep/context to locate code; once the target is known, read the smallest complete range needed for proof. Before replace_range or delete_range, ensure current evidence covers every source line from start_anchor through end_anchor; endpoint-only or sparse grep evidence is insufficient. In changes, copy only the current LN#HASH token for each endpoint or attachment line; interior anchors are carried automatically as hidden proof.",
+			"For anchored edits of a nonempty existing text file, first read the target with hledit_read_anchors unless complete current proof is already available from verified updated anchors. Use ordinary read only for references or before the target is known. Use grep/context to locate code; once the target is known, read the smallest complete range needed for proof. Before replace_range or delete_range, ensure current evidence covers every source line from start_anchor through end_anchor; endpoint-only or sparse grep evidence is insufficient. In changes, copy only the current LN#HASH token for each endpoint or attachment line; interior anchors are carried automatically as hidden proof.",
 		],
 		parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 		// provider 侧按 schema 约束采样，从源头消除畸形参数；不支持的模型自动回落普通调用。
@@ -315,13 +247,9 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			_onUpdate: AgentToolUpdateCallback<unknown> | undefined,
 			ctx: ExtensionContext,
 		): Promise<TextResult> {
-			const request = normalizeReadRequest(params);
-			const result = readAnchorsResult(await runHledit(buildReadArgs(request), undefined, ctx.cwd, signal), request);
-			const evidencePath = await resolveReadEvidencePath(ctx.cwd, request.path);
-			const resultWithPath = { ...result, details: { ...result.details, path: request.path, evidencePath } };
-			readEvidence.updateFromToolResult(HLEDIT_READ_ANCHORS_TOOL, resultWithPath.details, ctx.cwd);
+			const result = await runReadAnchorsTransaction(params, ctx.cwd, signal, readEvidence, runHledit);
 			synchronizeAnchoredTools();
-			return resultWithPath;
+			return result;
 		},
 	}) as never);
 
@@ -351,37 +279,6 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		): Promise<TextResult> {
 			// evidence 由 runFileChangesWithDiff 在 mutation queue 内更新（单一实时 owner）。
 			const result = await runFileChangesWithDiff(params, ctx, signal, readEvidence);
-			synchronizeAnchoredTools();
-			return result;
-		},
-	}) as never);
-
-
-	pi.registerTool(({
-		name: HLEDIT_REPLACE_ONCE_TOOL,
-		label: "Replace Once",
-		description: "Atomically replace one unique exact text block without a prior anchor read.",
-		promptGuidelines: [
-			"Use hledit_replace_once only when complete old_lines must occur exactly once; no anchor read is required. Prefer newline-delimited strings. new_lines rejects an empty string: use [\"\"] for one blank line or hledit_apply_file_changes delete_range for deletion. On rejection, follow candidate/reread guidance; never loosen or retry the same match.",
-		],
-		parameters: HLEDIT_REPLACE_ONCE_PARAMS_SCHEMA,
-		constrainedSampling: { type: "json_schema", strict: "prefer" },
-		prepareArguments: prepareReplaceOnceArguments,
-		renderCall(args: unknown, theme: RenderTheme, context: ToolRenderContextLike) {
-			return renderHleditCall("replace_once", args, theme, context);
-		},
-		renderResult(result: TextResult, options: ToolRenderResultOptions, theme: RenderTheme, context: ToolRenderContextLike) {
-			return renderFileChangesResult(result, options, theme, context);
-		},
-		async execute(
-			_toolCallId: string,
-			params: ReplaceOnceParams,
-			signal: AbortSignal | undefined,
-			_onUpdate: AgentToolUpdateCallback<unknown> | undefined,
-			ctx: ExtensionContext,
-		): Promise<TextResult> {
-			// evidence 由 runReplaceOnceWithDiff 在 mutation queue 内更新（单一实时 owner）。
-			const result = await runReplaceOnceWithDiff(params, ctx, signal, readEvidence);
 			synchronizeAnchoredTools();
 			return result;
 		},

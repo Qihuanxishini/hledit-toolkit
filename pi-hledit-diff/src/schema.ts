@@ -95,37 +95,9 @@ export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 	STRICT_OBJECT,
 );
 
-// replace_once 的 new_lines 拒绝空字符串：模型沿用其他编辑工具的习惯，用空字符串表达"删除"，
-// 而这里它只会静默留下一个空行。删除必须显式走 delete_range；显式空行用 [""] 表达。
-const REPLACE_ONCE_NEW_LINES_SCHEMA = Type.Union(
-	[
-		Type.String({
-			minLength: 1,
-			description: "Newline-delimited replacement. Empty is invalid; use [\"\"] for one blank line or delete_range for deletion.",
-		}),
-		Type.Array(REPLACEMENT_LINE_SCHEMA, {
-			minItems: 1,
-			description: "One raw line per item, without CR/LF. Use a real JSON array.",
-		}),
-	],
-	{ description: "Replacement lines; deletion requires delete_range." },
-);
-
-export const HLEDIT_REPLACE_ONCE_PARAMS_SCHEMA = Type.Object(
-	{
-		path: PATH_SCHEMA,
-		old_lines: REPLACEMENT_LINES_SCHEMA,
-		new_lines: REPLACE_ONCE_NEW_LINES_SCHEMA,
-	},
-	{
-		...STRICT_OBJECT,
-		description: "Replace one unique exact old_lines block; zero or multiple matches reject without writing. No anchor read required.",
-	},
-);
 
 export type ReadAnchorsParams = Static<typeof HLEDIT_READ_ANCHORS_PARAMS_SCHEMA>;
 export type FileChangeInput = Static<typeof HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA>;
-export type ReplaceOnceInput = Static<typeof HLEDIT_REPLACE_ONCE_PARAMS_SCHEMA>;
 type CanonicalFileChange =
 	| { operation: "replace_range"; start_anchor: string; end_anchor: string; lines: string[] }
 	| { operation: "delete_range"; start_anchor: string; end_anchor: string }
@@ -134,9 +106,4 @@ type CanonicalFileChange =
 export type FileChangeParams = {
 	path: string;
 	changes: CanonicalFileChange[];
-};
-export type ReplaceOnceParams = {
-	path: string;
-	old_lines: string[];
-	new_lines: string[];
 };

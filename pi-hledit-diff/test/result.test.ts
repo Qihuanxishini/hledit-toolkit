@@ -9,7 +9,6 @@ import {
     parseRunObject,
     readAnchorsResult,
     rejectedToolResult,
-    replaceOnceResult,
     unavailableToolResult,
 } from "../src/result.ts";
 
@@ -272,7 +271,6 @@ test("applyFileChangesResult rejects internally inconsistent editDeltas", () => 
 test("applyFileChangesResult verifies editDeltas against the anchored batch request", () => {
 	const context = {
 		path: "src/a.ts",
-		operation: "anchored_batch" as const,
 		changes: [
 			{ operation: "insert_after" as const, anchor: "2#BHJ", lines: ["x", "y"] },
 			{ operation: "replace_range" as const, start_anchor: "5#BKM", end_anchor: "6#BLN", lines: ["z"] },
@@ -310,43 +308,6 @@ test("applyFileChangesResult verifies editDeltas against the anchored batch requ
 	assert.equal(missingChange.details.disposition, "outcome_unknown");
 });
 
-test("replaceOnceResult verifies the single delta against request line counts", () => {
-	const payload = (delta: Record<string, unknown>) => JSON.stringify({
-		ok: true,
-		revision: REVISION,
-		editsApplied: 1,
-		contentChanged: true,
-		linesAdded: 3,
-		linesDeleted: 2,
-		editDeltas: [delta],
-		updatedAnchors: { lines: [{ line: 4, anchor: "4#BHJ", text: "new" }], offset: 4, limit: 1, desiredLimit: 1, truncated: false },
-	});
-	const counts = { oldLineCount: 2, newLineCount: 3 };
-
-	const consistent = replaceOnceResult({ stdout: payload({ oldStart: 4, oldEnd: 5, delta: 1 }), stderr: "", exitCode: 0 }, "src/a.ts", counts);
-	assert.equal(consistent.details.disposition, "succeeded");
-
-	const wrongSpan = replaceOnceResult({ stdout: payload({ oldStart: 4, oldEnd: 4, delta: 1 }), stderr: "", exitCode: 0 }, "src/a.ts", counts);
-	assert.equal(wrongSpan.details.disposition, "outcome_unknown");
-	assert.match(wrongSpan.content[0]?.text ?? "", /editDeltas consistent with the request/);
-});
-
-test("replaceOnceResult requires exactly one applied edit", () => {
-	const result = replaceOnceResult({
-		stdout: JSON.stringify({
-			ok: true,
-			revision: REVISION,
-			editsApplied: 0,
-			contentChanged: false,
-			updatedAnchors: { lines: [{ line: 1, anchor: "1#BHJ", text: "unchanged" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false },
-		}),
-		stderr: "",
-		exitCode: 0,
-	}, "src/a.ts");
-
-	assert.equal(result.details.disposition, "outcome_unknown");
-	assert.match(result.content[0]?.text ?? "", /incompatible success response/);
-});
 
 test("fileChangeCheckFailure accepts only an explicit validate-only success", () => {
 	const valid = fileChangeCheckFailure({
@@ -442,7 +403,7 @@ test("applyFileChangesResult exposes validated stale snapshot context", () => {
 	const text = result.content[0]?.text ?? "";
 
 	assert.match(text, /2#BBK:modified/);
-	assert.match(text, /never retries or overwrites concurrent changes/);
+	assert.match(text, /Only reuse these anchors after confirming/);
 	assert.match(text, /explicitly replace start_anchor\/end_anchor with 2#BBK/);
 	assert.doesNotMatch(text, /Before retrying, call hledit_read_anchors/);
 	assert.match(text, /Field: start_anchor\/end_anchor/);
@@ -474,7 +435,6 @@ test("model body snapshot: CLI insufficient_read_proof rejection", () => {
 		exitCode: 0,
 	}, {
 		path: "src/a.ts",
-		operation: "anchored_batch",
 		changes: [{ operation: "replace_range", start_anchor: "3#AAA", end_anchor: "5#AAB", lines: ["replacement"] }],
 	});
 
@@ -496,7 +456,6 @@ test("CLI proof recovery paginates the complete failed change", () => {
 		exitCode: 0,
 	}, {
 		path: "src/large.ts",
-		operation: "anchored_batch",
 		changes: [{ operation: "delete_range", start_anchor: "3#AAA", end_anchor: "3005#AAB" }],
 	});
 
@@ -541,7 +500,6 @@ test("model body snapshot: stale rejection with snapshot context and field-level
 		"1#BHJ:one\n" +
 		"2#BBK:modified\n" +
 		"3#BJL:three\n" +
-		"This snapshot never retries or overwrites concurrent changes. Reuse its anchors only after confirming that this complete window still covers the intended target and range; otherwise reread the affected range.\n" +
 		"Only reuse these anchors after confirming that the window still covers the intended target and complete range; otherwise call hledit_read_anchors again.",
 	);
 	assert.equal(result.details.disposition, "rejected");

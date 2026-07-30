@@ -1,5 +1,7 @@
 # Read for Edit 工作流优化执行计划
 
+> **已由 [`ANCHOR-EDITING-HARDENING-PLAN.md`](../ANCHOR-EDITING-HARDENING-PLAN.md) 于 2026-07-30 取代。** 本文件保留历史实施事实；后续加入又被移除的 replace-once 不属于当前运行契约。
+
 > 状态：已完成（实现与验证通过）
 > 批准日期：2026-07-24
 > 适用范围：`pi-hledit-diff` 扩展

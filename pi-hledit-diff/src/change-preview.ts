@@ -1,17 +1,17 @@
 import { generateDiffString } from "@earendil-works/pi-coding-agent";
 import { lineFromAnchor } from "./file-changes.ts";
-import type { FileChangeParams, ReplaceOnceParams } from "./schema.ts";
+import type { FileChangeParams } from "./schema.ts";
 
 // 提交绑定的局部 change preview（OPTIMIZATION-ROADMAP Phase 4 / D4）：
-// 只由已验证的输入构成——anchored apply 用读取证据中被消费的旧行加请求的新行，
-// replace-once 用请求的 old/new 加 CLI 已验证的起始行。外部进程在编辑间隙的
-// 无关修改不可能混入，因为不再对完整文件前后快照做 diff。
+// 只由 anchored apply 的同 revision 消费行证据和请求新行构成；外部进程在编辑
+// 间隙的无关修改不会混入，因为这里不读取完整文件前后快照。
 
 export type ChangePreviewLine = {
 	kind: "context" | "remove" | "add";
 	oldLine?: number;
 	newLine?: number;
 	text: string;
+	textTruncated?: true;
 };
 
 export type VerifiedChangePreview = {
@@ -64,11 +64,54 @@ function appendBlockLines(target: ChangePreviewLine[], block: PreviewBlock, newS
 	}
 }
 
-function previewTextBytes(lines: ChangePreviewLine[]): number {
-	return lines.reduce((total, line) => total + line.text.length + 1, 0);
+const PREVIEW_LINE_TRUNCATION_MARKER = " … [preview line truncated] … ";
+
+function previewLineBytes(line: ChangePreviewLine): number {
+	return Buffer.byteLength(line.text, "utf8") + 1;
 }
 
-// 超限时保留首尾片段并标记 truncated；变更统计始终由 CLI summary 提供，不依赖 preview。
+function previewTextBytes(lines: ChangePreviewLine[]): number {
+	return lines.reduce((total, line) => total + previewLineBytes(line), 0);
+}
+
+function utf8Prefix(text: string, maxBytes: number): string {
+	let low = 0;
+	let high = text.length;
+	while (low < high) {
+		const middle = Math.ceil((low + high) / 2);
+		if (Buffer.byteLength(text.slice(0, middle), "utf8") <= maxBytes) low = middle;
+		else high = middle - 1;
+	}
+	if (low > 0 && low < text.length && /[\uD800-\uDBFF]/.test(text[low - 1]!)) low -= 1;
+	return text.slice(0, low);
+}
+
+function utf8Suffix(text: string, maxBytes: number): string {
+	let low = 0;
+	let high = text.length;
+	while (low < high) {
+		const length = Math.ceil((low + high) / 2);
+		if (Buffer.byteLength(text.slice(text.length - length), "utf8") <= maxBytes) low = length;
+		else high = length - 1;
+	}
+	let start = text.length - low;
+	if (start > 0 && start < text.length && /[\uDC00-\uDFFF]/.test(text[start]!)) start += 1;
+	return text.slice(start);
+}
+
+function fitPreviewLine(line: ChangePreviewLine, maxBytes: number): ChangePreviewLine | undefined {
+	if (previewLineBytes(line) <= maxBytes) return line;
+	const textBudget = maxBytes - 1;
+	const markerBytes = Buffer.byteLength(PREVIEW_LINE_TRUNCATION_MARKER, "utf8");
+	if (textBudget < markerBytes) return undefined;
+	const fragmentBudget = textBudget - markerBytes;
+	const head = utf8Prefix(line.text, Math.floor(fragmentBudget / 2));
+	const tail = utf8Suffix(line.text, fragmentBudget - Buffer.byteLength(head, "utf8"));
+	return { ...line, text: `${head}${PREVIEW_LINE_TRUNCATION_MARKER}${tail}`, textTruncated: true };
+}
+
+// 超限时保留首尾片段并标记 truncated；单个超长行也在 UTF-8 byte budget 内保留首尾。
+// 完整变更统计始终由 CLI summary 提供，不依赖局部 preview。
 function capPreviewLines(lines: ChangePreviewLine[]): VerifiedChangePreview {
 	if (lines.length <= MAX_PREVIEW_LINES && previewTextBytes(lines) <= MAX_PREVIEW_BYTES) {
 		return { lines, truncated: false };
@@ -78,17 +121,23 @@ function capPreviewLines(lines: ChangePreviewLine[]): VerifiedChangePreview {
 	const head: ChangePreviewLine[] = [];
 	let headBytes = 0;
 	for (const line of lines) {
-		if (head.length >= headBudgetLines || headBytes + line.text.length + 1 > headBudgetBytes) break;
-		head.push(line);
-		headBytes += line.text.length + 1;
+		if (head.length >= headBudgetLines) break;
+		const fitted = fitPreviewLine(line, headBudgetBytes - headBytes);
+		if (!fitted) break;
+		head.push(fitted);
+		headBytes += previewLineBytes(fitted);
+		if (fitted.textTruncated) break;
 	}
 	const tail: ChangePreviewLine[] = [];
 	let tailBytes = 0;
 	for (let index = lines.length - 1; index > head.length - 1; index -= 1) {
+		if (head.length + tail.length >= MAX_PREVIEW_LINES) break;
 		const line = lines[index]!;
-		if (head.length + tail.length >= MAX_PREVIEW_LINES || headBytes + tailBytes + line.text.length + 1 > MAX_PREVIEW_BYTES) break;
-		tail.unshift(line);
-		tailBytes += line.text.length + 1;
+		const fitted = fitPreviewLine(line, MAX_PREVIEW_BYTES - headBytes - tailBytes);
+		if (!fitted) break;
+		tail.unshift(fitted);
+		tailBytes += previewLineBytes(fitted);
+		if (fitted.textTruncated) break;
 	}
 	return { lines: [...head, ...tail], truncated: true };
 }
@@ -143,14 +192,6 @@ export function buildAnchoredChangePreview(
 	return previewFromBlocks(blocks);
 }
 
-// replace-once：oldStart 必须来自 CLI 已验证的 editDeltas（唯一消费区间起点）。
-export function buildReplaceOncePreview(params: ReplaceOnceParams, oldStart: number): VerifiedChangePreview {
-	return previewFromBlocks([{
-		oldStart,
-		oldLines: params.old_lines as string[],
-		newLines: params.new_lines as string[],
-	}]);
-}
 
 export function emptyChangePreview(): VerifiedChangePreview {
 	return { lines: [], truncated: false };
@@ -161,7 +202,9 @@ export function parseChangePreview(value: unknown): VerifiedChangePreview | unde
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
 	const record = value as Record<string, unknown>;
 	if (typeof record.truncated !== "boolean" || !Array.isArray(record.lines)) return undefined;
+	if (record.lines.length > MAX_PREVIEW_LINES) return undefined;
 	const lines: ChangePreviewLine[] = [];
+	let bytes = 0;
 	for (const entry of record.lines) {
 		if (typeof entry !== "object" || entry === null) return undefined;
 		const line = entry as Record<string, unknown>;
@@ -170,13 +213,21 @@ export function parseChangePreview(value: unknown): VerifiedChangePreview | unde
 		const newLine = line.newLine;
 		if (oldLine !== undefined && (typeof oldLine !== "number" || !Number.isSafeInteger(oldLine) || oldLine < 1)) return undefined;
 		if (newLine !== undefined && (typeof newLine !== "number" || !Number.isSafeInteger(newLine) || newLine < 1)) return undefined;
+		if (line.kind === "add" && (newLine === undefined || oldLine !== undefined)) return undefined;
+		if (line.kind === "remove" && (oldLine === undefined || newLine !== undefined)) return undefined;
+		if (line.kind === "context" && (oldLine === undefined || newLine === undefined)) return undefined;
+		if (line.textTruncated !== undefined && line.textTruncated !== true) return undefined;
+		bytes += Buffer.byteLength(line.text, "utf8") + 1;
+		if (bytes > MAX_PREVIEW_BYTES) return undefined;
 		lines.push({
 			kind: line.kind,
 			...(oldLine !== undefined ? { oldLine } : {}),
 			...(newLine !== undefined ? { newLine } : {}),
 			text: line.text,
+			...(line.textTruncated === true ? { textTruncated: true as const } : {}),
 		});
 	}
+	if (!record.truncated && lines.some((line) => line.textTruncated)) return undefined;
 	return { lines, truncated: record.truncated };
 }
 

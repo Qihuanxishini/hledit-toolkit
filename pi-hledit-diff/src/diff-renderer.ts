@@ -52,6 +52,12 @@ type ParsedDiff = {
 	hunks: number;
 };
 
+export type DiffSummaryStats = {
+	added: number;
+	removed: number;
+	completeHunks: boolean;
+};
+
 type SplitDiffRow = {
 	left?: DiffLine;
 	right?: DiffLine;
@@ -418,13 +424,21 @@ function renderSplit(
 	return rows;
 }
 
-function diffSummary(parsed: ParsedDiff, theme: HleditRenderTheme, mode?: "split" | "unified"): string {
+function diffSummary(
+	parsed: ParsedDiff,
+	theme: HleditRenderTheme,
+	mode?: "split" | "unified",
+	summaryStats?: DiffSummaryStats,
+): string {
+	const added = summaryStats?.added ?? parsed.added;
+	const removed = summaryStats?.removed ?? parsed.removed;
 	const pieces = [
 		theme.fg("toolOutput", `↳ ${theme.bold("差异")}`),
-		theme.fg("toolDiffAdded", `+${parsed.added}`),
-		theme.fg("toolDiffRemoved", `-${parsed.removed}`),
-		theme.fg("muted", `• ${parsed.hunks} 个变更块`),
+		theme.fg("toolDiffAdded", `+${added}`),
+		theme.fg("toolDiffRemoved", `-${removed}`),
 	];
+	if (summaryStats?.completeHunks !== false) pieces.push(theme.fg("muted", `• ${parsed.hunks} 个变更块`));
+	else pieces.push(theme.fg("muted", "• 局部预览"));
 	if (mode) pieces.push(theme.fg("dim", `• ${mode === "split" ? "双栏" : "统一"}`));
 	return pieces.join(" ");
 }
@@ -444,6 +458,7 @@ export function renderStandaloneDiff(
 	path: string | undefined,
 	expanded: boolean,
 	theme: HleditRenderTheme,
+	summaryStats?: DiffSummaryStats,
 ): HleditRenderComponent | undefined {
 	if (!diff.trim()) return undefined;
 	const parsed = parseGeneratedDiff(diff);
@@ -475,7 +490,7 @@ export function renderStandaloneDiff(
 			const safeWidth = normalizeWidth(width);
 			if (cachedLines && cachedWidth === safeWidth) return cachedLines;
 			if (safeWidth === 0) return storeRenderedLines(safeWidth, []);
-			if (safeWidth < 24) return storeRenderedLines(safeWidth, [truncateToWidth(diffSummary(parsed, theme), safeWidth, "")]);
+			if (safeWidth < 24) return storeRenderedLines(safeWidth, [truncateToWidth(diffSummary(parsed, theme, undefined, summaryStats), safeWidth, "")]);
 
 			const mode = safeWidth >= SPLIT_MIN_WIDTH ? "split" : "unified";
 			const body = mode === "split"
@@ -483,7 +498,7 @@ export function renderStandaloneDiff(
 				: renderUnified(parsed.entries, safeWidth, numberWidth, lineHighlighter.highlight, theme, currentPalette());
 			const frame = theme.fg("dim", "─".repeat(safeWidth));
 			return storeRenderedLines(safeWidth, [
-				truncateToWidth(diffSummary(parsed, theme, mode), safeWidth, ""),
+				truncateToWidth(diffSummary(parsed, theme, mode, summaryStats), safeWidth, ""),
 				frame,
 				...applyLineLimit(body, expanded, safeWidth, theme),
 				frame,

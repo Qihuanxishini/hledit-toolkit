@@ -4,7 +4,6 @@ import { resolve } from "node:path";
 import {
 	HLEDIT_APPLY_FILE_CHANGES_TOOL,
 	HLEDIT_READ_ANCHORS_TOOL,
-	HLEDIT_REPLACE_ONCE_TOOL,
 } from "./active-tools.ts";
 import { computeAnchorTag } from "./anchor-hash.ts";
 import { lineFromAnchor, type HleditBatchReadProof } from "./file-changes.ts";
@@ -15,6 +14,11 @@ import type { FileChangeParams } from "./schema.ts";
 
 const RAW_REVISION_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
+export const MAX_EVIDENCE_RECORDS_PER_FILE = 10_000;
+export const MAX_EVIDENCE_BYTES_PER_FILE = 4 * 1024 * 1024;
+export const MAX_EVIDENCE_RECORDS_PER_SESSION = 50_000;
+export const MAX_EVIDENCE_BYTES_PER_SESSION = 16 * 1024 * 1024;
+
 type EvidenceLine = {
 	anchor: string;
 	text: string;
@@ -23,8 +27,15 @@ type EvidenceLine = {
 type FileReadEvidence = {
 	revision: string;
 	lines: Map<number, EvidenceLine>;
-	// 上次成功编辑造成的锚点更名（旧锚点 -> 内容未变的新锚点），仅用于失败恢复提示。
+	// 成功编辑造成的锚点更名（旧锚点 -> 内容未变的新锚点），仅用于失败恢复提示。
 	renames: Map<string, string>;
+	// 旧 rename token 被当前行重新占用后身份不可判定；只有明确的新 read 可以解除。
+	ambiguousTokens: Set<string>;
+};
+
+type EvidenceUsage = {
+	records: number;
+	bytes: number;
 };
 
 type ReadProofLineRange = { start: number; end: number };
@@ -375,6 +386,7 @@ export function formatReadProofFailure(path: string, failure: ReadProofFailure):
 }
 
 export class ReadEvidenceStore {
+	// Map 顺序即 session entry 可重放的 file-level LRU；每次 read/apply result 都 touch。
 	private readonly files = new Map<string, FileReadEvidence>();
 
 	clear(): void {
@@ -385,53 +397,179 @@ export class ReadEvidenceStore {
 		this.files.delete(path);
 	}
 
-	recordRead(path: string, read: HleditReadMetadata): void {
-		const evidence = this.files.get(path);
-		if (evidence && evidence.revision !== read.revision) this.files.delete(path);
-		// 过滤读取可以贡献离散行；范围是否完整由 selectProof 统一判断。
-		const next = evidence?.revision === read.revision
-			? evidence
-			: { revision: read.revision, lines: new Map<number, EvidenceLine>(), renames: new Map<string, string>() };
-		for (const line of read.lines) {
-			if (!line.textTruncated) next.lines.set(line.line, { anchor: line.anchor, text: line.text });
+	private evidenceUsage(path: string, evidence: FileReadEvidence): EvidenceUsage {
+		let bytes = Buffer.byteLength(path, "utf8");
+		for (const line of evidence.lines.values()) {
+			bytes += Buffer.byteLength(line.anchor, "utf8") + Buffer.byteLength(line.text, "utf8");
 		}
-		if (next.lines.size > 0) this.files.set(path, next);
-		else this.files.delete(path);
+		for (const [older, current] of evidence.renames) {
+			bytes += Buffer.byteLength(older, "utf8") + Buffer.byteLength(current, "utf8");
+		}
+		for (const token of evidence.ambiguousTokens) bytes += Buffer.byteLength(token, "utf8");
+		return {
+			records: evidence.lines.size + evidence.renames.size + evidence.ambiguousTokens.size,
+			bytes,
+		};
 	}
 
-	recordUpdatedAnchors(path: string, revision: string, context: BatchAnchorContext): void {
+	private fitsFileLimit(path: string, evidence: FileReadEvidence): boolean {
+		const usage = this.evidenceUsage(path, evidence);
+		return usage.records <= MAX_EVIDENCE_RECORDS_PER_FILE && usage.bytes <= MAX_EVIDENCE_BYTES_PER_FILE;
+	}
+
+	private enforceSessionLimit(): void {
+		let records = 0;
+		let bytes = 0;
+		for (const [path, evidence] of this.files) {
+			const usage = this.evidenceUsage(path, evidence);
+			records += usage.records;
+			bytes += usage.bytes;
+		}
+		while (records > MAX_EVIDENCE_RECORDS_PER_SESSION || bytes > MAX_EVIDENCE_BYTES_PER_SESSION) {
+			const oldest = this.files.entries().next().value as [string, FileReadEvidence] | undefined;
+			if (!oldest) return;
+			const [path, evidence] = oldest;
+			const usage = this.evidenceUsage(path, evidence);
+			this.files.delete(path);
+			records -= usage.records;
+			bytes -= usage.bytes;
+		}
+	}
+
+	private storeEvidence(path: string, evidence: FileReadEvidence): boolean {
+		if (evidence.lines.size === 0) {
+			this.files.delete(path);
+			return true;
+		}
+		if (!this.fitsFileLimit(path, evidence)) {
+			this.files.delete(path);
+			return false;
+		}
+		this.files.delete(path);
+		this.files.set(path, evidence);
+		this.enforceSessionLimit();
+		return this.files.has(path);
+	}
+
+	private touch(path: string): void {
+		const evidence = this.files.get(path);
+		if (!evidence) return;
+		this.files.delete(path);
+		this.files.set(path, evidence);
+	}
+
+	private addTokenReuseAmbiguities(
+		lines: Map<number, EvidenceLine>,
+		renames: Map<string, string>,
+		preserved: Set<string>,
+	): Set<string> {
+		const ambiguousTokens = new Set(preserved);
+		const currentTokens = new Set([...lines.values()].map((line) => line.anchor));
+		for (const older of renames.keys()) {
+			if (currentTokens.has(older)) ambiguousTokens.add(older);
+		}
+		return ambiguousTokens;
+	}
+
+	recordRead(path: string, read: HleditReadMetadata): void {
+		const existing = this.files.get(path);
+		const sameRevision = existing?.revision === read.revision;
+		const lines = sameRevision ? new Map(existing.lines) : new Map<number, EvidenceLine>();
+		const renames = sameRevision ? new Map(existing.renames) : new Map<string, string>();
+		const ambiguousTokens = sameRevision ? new Set(existing.ambiguousTokens) : new Set<string>();
+		const freshLines = new Map<number, EvidenceLine>();
+
+		// 明确 read 覆盖当前 token 时，以当前语义为准：删除同 token 的旧 alias 和歧义。
+		for (const line of read.lines) {
+			if (line.textTruncated) continue;
+			const info = { anchor: line.anchor, text: line.text };
+			lines.set(line.line, info);
+			freshLines.set(line.line, info);
+			renames.delete(line.anchor);
+			ambiguousTokens.delete(line.anchor);
+		}
+		const next: FileReadEvidence = {
+			revision: read.revision,
+			lines,
+			renames,
+			ambiguousTokens: this.addTokenReuseAmbiguities(lines, renames, ambiguousTokens),
+		};
+		if (this.storeEvidence(path, next)) return;
+
+		// 合并后超限时不保留历史 alias/ambiguity 链，只尝试缓存触发更新的 fresh window。
+		this.storeEvidence(path, {
+			revision: read.revision,
+			lines: freshLines,
+			renames: new Map(),
+			ambiguousTokens: new Set(),
+		});
+	}
+
+	recordUpdatedAnchors(
+		path: string,
+		revision: string,
+		context: BatchAnchorContext,
+		tokensNeedingDisambiguation?: ReadonlySet<string>,
+	): void {
 		if (!validRevision(revision) || context.lines.length === 0) {
 			this.files.delete(path);
 			return;
 		}
 		const existing = this.files.get(path);
-		// revision 未变时（no-op 提交、重映射后的同版合并、连续 stale 的同快照窗口）
-		// 旧证据字节级精确有效，合并窗口而不是把整份证据收缩成 ≤20 行窗口。
 		const sameRevision = existing?.revision === revision;
-		const lines = sameRevision ? existing.lines : new Map<number, EvidenceLine>();
-		const renames = sameRevision ? existing.renames : new Map<string, string>();
+		const lines = sameRevision ? new Map(existing.lines) : new Map<number, EvidenceLine>();
+		const renames = sameRevision ? new Map(existing.renames) : new Map<string, string>();
+		const ambiguousTokens = sameRevision ? new Set(existing.ambiguousTokens) : new Set<string>();
 		for (const line of context.lines) {
-			if (!line.textTruncated) lines.set(line.line, { anchor: line.anchor, text: line.text });
+			if (line.textTruncated) continue;
+			const info = { anchor: line.anchor, text: line.text };
+			lines.set(line.line, info);
 		}
-		if (lines.size > 0) this.files.set(path, { revision, lines, renames });
-		else this.files.delete(path);
+		const nextAmbiguousTokens = this.addTokenReuseAmbiguities(lines, renames, ambiguousTokens);
+		if (tokensNeedingDisambiguation) {
+			// 目标行可能在更晚的编辑中才重新产生旧 token；不能只检查本次 anchor window。
+			for (const token of tokensNeedingDisambiguation) nextAmbiguousTokens.add(token);
+		}
+		const next: FileReadEvidence = {
+			revision,
+			lines,
+			renames,
+			// updatedAnchors 不能消歧；模型仍可能持有编辑前或已消费行的同 token。
+			ambiguousTokens: nextAmbiguousTokens,
+		};
+		// updatedAnchors 不是显式重读；容量超限时 storeEvidence 已清空该文件，
+		// 不能丢弃 ambiguity 后把局部窗口重新解释成 fresh evidence。
+		this.storeEvidence(path, next);
 	}
 
 	// 成功编辑后把变更区间之外的证据行平移到新行号：内容未变，行号由 editDeltas
 	// 唯一确定；锚点用本地 hash 复刻重算，且必须先重现旧锚点（自校验）才可信。
-	// 同时维护旧锚点 -> 新锚点的更名表，供 selectProof 的失败恢复提示使用。
-	private remapEvidenceForApply(path: string, newRevision: string, deltas: HleditEditDelta[] | undefined): void {
+	private remapEvidenceForApply(
+		path: string,
+		newRevision: string,
+		deltas: HleditEditDelta[] | undefined,
+	): { tokensNeedingDisambiguation: Set<string>; capacityExceeded: boolean } {
 		const evidence = this.files.get(path);
-		if (!evidence || evidence.revision === newRevision) return;
+		if (!evidence) return { tokensNeedingDisambiguation: new Set(), capacityExceeded: false };
+		if (evidence.revision === newRevision) {
+			this.touch(path);
+			return { tokensNeedingDisambiguation: new Set(), capacityExceeded: false };
+		}
+		const tokensNeedingDisambiguation = new Set(evidence.ambiguousTokens);
 		if (!deltas) {
+			for (const line of evidence.lines.values()) tokensNeedingDisambiguation.add(line.anchor);
+			for (const older of evidence.renames.keys()) tokensNeedingDisambiguation.add(older);
 			this.files.delete(path);
-			return;
+			return { tokensNeedingDisambiguation, capacityExceeded: false };
 		}
 		const lines = new Map<number, EvidenceLine>();
 		const renames = new Map<string, string>();
 		for (const [line, info] of evidence.lines) {
 			const newLine = remapLineNumber(line, deltas);
-			if (newLine === undefined) continue;
+			if (newLine === undefined) {
+				tokensNeedingDisambiguation.add(info.anchor);
+				continue;
+			}
 			if (newLine === line) {
 				lines.set(newLine, info);
 				continue;
@@ -441,17 +579,23 @@ export class ReadEvidenceStore {
 			lines.set(newLine, { anchor, text: info.text });
 			if (anchor !== info.anchor) renames.set(info.anchor, anchor);
 		}
-		// 别名链：更早的名字指向最新名字；目标行消失则丢弃对应别名。
+		// [喵喵喵]: 别名最终目标被消费后保留旧身份歧义，防止后续编辑延迟复用旧 token。(2026-07-30)
 		const survivingAnchors = new Set([...lines.values()].map((line) => line.anchor));
 		for (const [older, previous] of evidence.renames) {
 			const latest = renames.get(previous) ?? (survivingAnchors.has(previous) ? previous : undefined);
 			if (latest && latest !== older) renames.set(older, latest);
+			else if (!latest) tokensNeedingDisambiguation.add(older);
 		}
-		if (lines.size === 0) {
-			this.files.delete(path);
-			return;
-		}
-		this.files.set(path, { revision: newRevision, lines, renames });
+		const remappedAmbiguousTokens = this.addTokenReuseAmbiguities(lines, renames, evidence.ambiguousTokens);
+		// 被消费或失联的 token 失去原身份；持续保留到显式 read，捕获延迟重新占用。
+		for (const token of tokensNeedingDisambiguation) remappedAmbiguousTokens.add(token);
+		const retained = this.storeEvidence(path, {
+			revision: newRevision,
+			lines,
+			renames,
+			ambiguousTokens: remappedAmbiguousTokens,
+		});
+		return { tokensNeedingDisambiguation, capacityExceeded: !retained };
 	}
 
 	private recordApplyResult(path: string, details: HleditDetails): void {
@@ -461,25 +605,47 @@ export class ReadEvidenceStore {
 				this.invalidate(path);
 				return;
 			}
-			this.remapEvidenceForApply(path, details.revision, parseEditDeltas(details.editDeltas));
-			this.recordUpdatedAnchors(path, details.revision, updatedAnchors);
+			const remap = this.remapEvidenceForApply(path, details.revision, parseEditDeltas(details.editDeltas));
+			// remap 容量超限时必须保持无 evidence；updatedAnchors 不能越过淘汰重建身份。
+			if (remap.capacityExceeded) return;
+			this.recordUpdatedAnchors(path, details.revision, updatedAnchors, remap.tokensNeedingDisambiguation);
 			return;
 		}
 
-		// unavailable = CLI 未启动、前置读取失败或 ok:false 的不兼容拒绝，目标从未被本次调用写入；
-		// 即使证据碰巧过期，提交时的 revision 校验也会兜底，保留证据可省一轮重读。
-		if (details.disposition === "unavailable") {
-			return;
-		}
 		const code = details.error?.code;
-		if (details.disposition === "rejected" && code !== "stale" && code !== "source_changed_before_commit") {
+		if (details.disposition === "outcome_unknown" || code === "source_changed_before_commit") {
+			this.invalidate(path);
 			return;
 		}
-		this.invalidate(path);
-		if (code !== "stale" || !validRevision(details.error?.currentRevision)) return;
-		const currentAnchors = parseAnchorContext(details.error.currentAnchors);
-		if (!currentAnchors || currentAnchors.truncated || currentAnchors.lines.some((line) => line.textTruncated)) return;
-		this.recordUpdatedAnchors(path, details.error.currentRevision, currentAnchors);
+
+		const currentRevision = validRevision(details.error?.currentRevision)
+			? details.error.currentRevision
+			: undefined;
+		const existing = this.files.get(path);
+		if (currentRevision && existing && existing.revision !== currentRevision) this.invalidate(path);
+
+		if (details.disposition === "unavailable") {
+			this.touch(path);
+			return;
+		}
+		if (details.disposition !== "rejected") {
+			this.invalidate(path);
+			return;
+		}
+		if (code !== "stale") {
+			this.touch(path);
+			return;
+		}
+		if (!currentRevision) {
+			this.invalidate(path);
+			return;
+		}
+		const currentAnchors = parseAnchorContext(details.error?.currentAnchors);
+		if (!currentAnchors || currentAnchors.truncated || currentAnchors.lines.some((line) => line.textTruncated)) {
+			this.touch(path);
+			return;
+		}
+		this.recordUpdatedAnchors(path, currentRevision, currentAnchors);
 	}
 
 	selectProof(path: string, changes: FileChangeParams["changes"]): ReadProofSelection {
@@ -515,6 +681,18 @@ export class ReadEvidenceStore {
 			};
 		}
 
+		const ambiguousEndpoint = requested.endpointAnchors.find((endpoint) => evidence.ambiguousTokens.has(endpoint.anchor));
+		if (ambiguousEndpoint) {
+			return {
+				failure: {
+					code: "insufficient_read_proof",
+					message: `Change ${ambiguousEndpoint.changeNumber} (${ambiguousEndpoint.operation}) submitted anchor token ${ambiguousEndpoint.anchor}, but that token lost its unique identity after a verified edit. It may refer to a consumed or moved pre-edit target, or to a different current line. Explicitly reread the target before resubmitting; the plugin will not guess.`,
+					reportedMissingLines: [ambiguousEndpoint.line],
+					suggestedReadRange: { start: ambiguousEndpoint.line, end: ambiguousEndpoint.line },
+				},
+			};
+		}
+
 		const direct = evaluateProofAgainstEvidence(requested, evidence.lines, evidence.renames);
 		if ("anchors" in direct) {
 			const consumedLines = new Map<number, ConsumedEvidenceLine>();
@@ -533,13 +711,8 @@ export class ReadEvidenceStore {
 			...(direct.failure.suggestedReadRange ? { suggestedReadRange: direct.failure.suggestedReadRange } : {}),
 			...(direct.failure.proofGap ? { proofGap: direct.failure.proofGap } : {}),
 		};
-		if (renamedAnchors.length === 0) {
-			return { failure };
-		}
+		if (renamedAnchors.length === 0) return { failure };
 
-		// what-if：把已验证更名替换进请求后重评。全部恢复 → 纯更名指引（一次重提交
-		// 即可）；仍有缺口 → 复合指引，且定向重读指向替换后的剩余缺口，而不是已被
-		// 更名解释的旧区间。
 		const substituted = requestedChangeEvidence(substituteRenamedAnchors(changes, evidence.renames));
 		const substitutedEvaluation = substituted && substituted.ranges.length > 0
 			? evaluateProofAgainstEvidence(substituted, evidence.lines, evidence.renames)
@@ -574,15 +747,17 @@ export class ReadEvidenceStore {
 			if (!path) continue;
 
 			if (entry.message.toolName === HLEDIT_READ_ANCHORS_TOOL) {
-				// [喵喵喵]: 读取失败没有写入副作用；保留旧 evidence，由最终 revision proof
-				// 安全兜底，避免一次越界或临时 I/O 失败迫使目标整段重读。(2026-07-28)
-				if (details.disposition !== "succeeded") continue;
-				const read = parsePersistedRead(details.read);
-				if (read) this.recordRead(path, read);
+				if (details.disposition === "succeeded") {
+					const read = parsePersistedRead(details.read);
+					if (read) this.recordRead(path, read);
+					else this.touch(path);
+				} else {
+					this.touch(path);
+				}
 				continue;
 			}
 
-			if (entry.message.toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL && entry.message.toolName !== HLEDIT_REPLACE_ONCE_TOOL) continue;
+			if (entry.message.toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) continue;
 			this.recordApplyResult(path, details as HleditDetails);
 		}
 	}
@@ -594,12 +769,11 @@ export class ReadEvidenceStore {
 		if (!path) return;
 
 		if (toolName === HLEDIT_READ_ANCHORS_TOOL) {
-			// 与 branch replay 使用同一无写入副作用规则。
 			if (details.disposition === "succeeded" && details.read) this.recordRead(path, details.read);
+			else this.touch(path);
 			return;
 		}
-		if (toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL && toolName !== HLEDIT_REPLACE_ONCE_TOOL) return;
-
+		if (toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) return;
 		this.recordApplyResult(path, details);
 	}
 }

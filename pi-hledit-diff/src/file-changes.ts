@@ -1,4 +1,4 @@
-import type { FileChangeParams, ReplaceOnceParams } from "./schema.ts";
+import type { FileChangeParams } from "./schema.ts";
 
 export const ANCHOR_HASH_PATTERN = "[A-Za-z0-9_-]{3}";
 export const ANCHOR_PATTERN = `^\\d+#${ANCHOR_HASH_PATTERN}$`;
@@ -69,12 +69,6 @@ export function buildFileChangeCheckRequest(params: FileChangeParams, proof?: Hl
 	return { args: ["batch", "--check", params.path], stdin: serializeCliBatchRequest(params, proof) };
 }
 
-export function buildReplaceOnceRequest(params: ReplaceOnceParams): { args: string[]; stdin: string } {
-	return {
-		args: ["replace-once", params.path],
-		stdin: JSON.stringify({ old_lines: params.old_lines, new_lines: params.new_lines }),
-	};
-}
 
 export function lineFromAnchor(anchor: unknown): number | undefined {
 	if (typeof anchor !== "string") {

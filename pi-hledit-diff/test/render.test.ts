@@ -296,8 +296,13 @@ test("renderFileChangesResult gives added and removed code rows distinct tinted 
 
 test("renderFileChangesResult caches expanded anchors without mutating the diff result", () => {
 	const result: TextResult = {
-		content: [{ type: "text", text: "修改已应用。\n\n更新后的锚点：\n2#ZZZ:BETA" }],
-		details: { disposition: "succeeded", diff: "-2 beta\n+2 BETA", editsApplied: 1 },
+		content: [{ type: "text", text: "正文格式与锚点窗口无关。" }],
+		details: {
+			disposition: "succeeded",
+			diff: "-2 beta\n+2 BETA",
+			editsApplied: 1,
+			updatedAnchors: { lines: [{ line: 2, anchor: "2#ZZZ", text: "BETA", textTruncated: false }], offset: 2, limit: 1, desiredLimit: 1, truncated: false },
+		},
 	};
 	const component = renderFileChangesResult(result, options(true), theme, { args: { path: "notes.txt" } });
 	const first = component.render(72);
@@ -315,13 +320,69 @@ test("renderFileChangesResult caches expanded anchors without mutating the diff 
 
 test("renderFileChangesResult keeps updated anchors whose hash contains URL-safe symbols", () => {
 	const result: TextResult = {
-		content: [{ type: "text", text: "修改已应用。\n\n更新后的锚点：\n7#a-_:gamma\n8#_x-:delta" }],
-		details: { disposition: "succeeded", diff: "-7 old\n+7 gamma", editsApplied: 1 },
+		content: [{ type: "text", text: "Changes applied." }],
+		details: {
+			disposition: "succeeded",
+			diff: "-7 old\n+7 gamma",
+			editsApplied: 1,
+			updatedAnchors: {
+				lines: [
+					{ line: 7, anchor: "7#a-_", text: "gamma", textTruncated: false },
+					{ line: 8, anchor: "8#_x-", text: "delta", textTruncated: false },
+				],
+				offset: 7,
+				limit: 2,
+				desiredLimit: 2,
+				truncated: false,
+			},
+		},
 	};
 	const output = render(renderFileChangesResult(result, options(true), theme, { args: { path: "notes.txt" } }), 72);
 
 	assert.ok(output.includes("7#a-_ │ gamma"));
 	assert.ok(output.includes("8#_x- │ delta"));
+});
+
+
+test("renderFileChangesResult shows structured updated anchors even when no diff is available", () => {
+	const result: TextResult = {
+		content: [{ type: "text", text: "Changes applied without a preview." }],
+		details: {
+			disposition: "succeeded",
+			editsApplied: 1,
+			linesAdded: 1,
+			linesDeleted: 1,
+			updatedAnchors: {
+				lines: [{ line: 3, anchor: "3#ABC", text: "current", textTruncated: false }],
+				offset: 3,
+				limit: 1,
+				desiredLimit: 1,
+				truncated: false,
+			},
+		},
+	};
+	const output = render(renderFileChangesResult(result, options(true), theme, { args: { path: "notes.txt" } }), 72);
+
+	assert.ok(output.includes("3#ABC │ current"));
+	assert.equal(output.filter((line) => line.includes("更新后的锚点")).length, 1);
+});
+
+
+test("renderFileChangesResult uses CLI counts for a truncated structured preview", () => {
+	const result: TextResult = {
+		content: [{ type: "text", text: "Changes applied." }],
+		details: {
+			disposition: "succeeded",
+			changePreview: { lines: [{ kind: "add", newLine: 1, text: "局部" }], truncated: true },
+			linesAdded: 12,
+			linesDeleted: 7,
+			editsApplied: 2,
+		},
+	};
+	const output = render(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }), 72);
+
+	assert.equal(output[0], "↳ 差异 +12 -7 • 局部预览 • 统一");
+	assert.doesNotMatch(output[0] ?? "", /变更块/);
 });
 
 test("renderFileChangesResult folds failures unless expanded", () => {

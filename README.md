@@ -1,62 +1,43 @@
-# Snapline
+# hledit-toolkit
 
-Snapline 是面向 AI 编程代理的 snapshot-coordinate 文本编辑工具集。它把模型看到的行号坐标、插件内部的完整读取证据和 CLI 的原子提交组合为一个 fail-closed 工作流。
+面向 AI 编程代理的哈希锚点安全编辑工具集。仓库同时包含 `hledit` CLI 与对应的 Pi 编辑增强插件。
 
-GitHub 仓库：[`Qihuanxishini/snapline`](https://github.com/Qihuanxishini/snapline)。
+## 项目组成
 
-本仓库包含两个同步发布的组件：
+| 目录 | 用途 |
+| --- | --- |
+| [`cli/`](./cli/) | Go 编写的 `hledit` CLI：校验 v2 `LN#HASH`（三位 URL-safe Base64）锚点，原子执行单项或批量锚点修改，并返回受限的新锚点窗口。 |
+| [`pi-hledit-diff/`](./pi-hledit-diff/) | Pi 插件：注册严格的 `hledit_read_anchors` 与 `hledit_apply_file_changes` 工具，并提供 evidence 管理和 diff 渲染。 |
 
-| 目录 | 组件 | 用途 |
-| --- | --- | --- |
-| [`cli/`](./cli/) | Snapline CLI 1.0.0 | Go 编写的严格 wire-protocol-1 读取与事务提交后端。 |
-| [`pi-snapline/`](./pi-snapline/) | pi-snapline 1.0.0 | Pi 扩展；提供统一读取、snapshot lineage、坐标迁移、恢复与 TUI diff。 |
+插件当前面向 Windows x64，仓库内附带 `pi-hledit-diff/bin/hledit.exe`。
 
-Windows x64 bundled binary 位于 `pi-snapline/bin/snapline.exe`。
+## 文档
 
-## 工作流
+- [`cli/README.md`](./cli/README.md)：CLI 安装、命令和使用说明。
+- [`cli/SPEC.md`](./cli/SPEC.md)：CLI 的当前实现与协议契约。
+- [`pi-hledit-diff/README.md`](./pi-hledit-diff/README.md)：Pi 插件工作流和安装说明。
+- [`pi-hledit-diff/MAINTENANCE.md`](./pi-hledit-diff/MAINTENANCE.md)：插件与 bundled CLI 的维护约束。
+- [`cli/CHANGELOG.md`](./cli/CHANGELOG.md)：CLI 版本变更记录。
 
-健康模式下，Pi 使用两个模型工具：
+## 核心特点
 
-- `snapline_read_file`：读取文本并返回普通 `LINE:TEXT` 行，同时在结构化结果中建立 path-bound snapshot 和完整行证据；默认 160 行。
-- `snapline_apply_changes`：以读取时的 snapshot 坐标提交 grouped replacements、deletions、insertions_before 和 insertions_after。
+- 使用 v2 `LN#HASH`（三位 URL-safe Base64 hash）锚点检测读取后发生的文件变化，拒绝 stale 修改。
+- 一次 batch 原子提交同一文件中的多个非冲突修改，并在原子替换前复检原始字节 revision。
+- 单次重建文件，避免多 edit 场景下反复复制整份内容。
+- batch 成功后直接返回 `updatedAnchors` 与 `editDeltas`，无需再次启动 `read-range`；插件用 `editDeltas` 把未受影响行的读取证据平移到新行号，顺序多次编辑同一文件通常不再需要中间重读。
+- 模型提交编辑前的旧锚点时，插件会对持续存活的平移目标给出 verified rename；若旧 token 被当前行重新占用，或其源行/alias 目标被消费失联，则在显式重读前拒绝立即与延迟复用。
+- JSON 读取返回基于原始字节的 SHA-256 revision；插件在 canonical file queue 内维护有界 evidence，并将完整消费行 proof 注入 anchored batch。公开 change 只需复制首尾或依附行的 `LN#HASH` token。
+- CLI 健康时，两个专用工具替代内置 `edit`；apply 始终独立检查当前 branch 的读取证据，CLI 缺失或不兼容时恢复内置 `edit`。
+- 插件工具参数采用严格 schema 并启用 provider 侧 constrained sampling（`strict: prefer`，不支持的模型自动回落）；`insufficient_read_proof` 作为可恢复补读结果返回，其他失败继续转换为真正的 Pi 工具错误。
+- `read` / `read-range` / `anchors` 支持 `--ignore-case` 子串过滤；插件 `hledit_read_anchors` 暴露 `ignore_case` 参数。
+- replace/delete 范围的前后物理边界上允许位置确定的 insert（内容依附其锚点行）；落入范围内部边界的 insert 仍整批拒绝。
+- 插件内置主题自适应的锚点预览与统一/双栏 diff 渲染；结构化 preview 按 UTF-8 字节限制，截断时显示 CLI 校验的完整增删统计。
 
-第一次成功的文本 snapshot read 后，apply 工具才会以纯 additive activation 方式启用。读取图片时，插件委托 Pi 原生图片处理，不建立文本 proof，也不启用 apply。
+### 行尾与编码行为
 
-`write` 在健康模式下只可独占创建不存在的路径。任何已存在文件（包括零字节和仅 BOM 文件）都必须先读取，再通过 snapshot transaction 修改。CLI 不可用或不兼容时，插件恢复 Pi 原生 `read`、`edit` 和普通 `write`。
-
-## 安全模型
-
-- snapshot id 同时绑定 canonical path、raw-byte revision 和随机 occurrence nonce；它不是磁盘文件副本。
-- 模型只能编辑提交 snapshot 自己暴露且在同一 typed tool result 中持久化的精确行。
-- 插件仅沿自身已验证、未触碰的 lineage 迁移坐标；不使用模糊匹配，不猜测重复文本。
-- CLI 再次验证 expected revision、完整 source-line proof、所有 group 冲突、目标与父目录身份，并在 commit 前复读 revision。
-- 同一文件的 read/apply/recovery/create 持有 canonical `withFileMutationQueue` 覆盖整个事务；不同文件仍可并行。
-- 任一 stale、proof gap、lineage conflict、容量淘汰或身份变化均停止原请求。插件可在同一队列内返回当前 bounded recovery snapshot，但不会自动重放旧修改。
-- 已启动进程的异常结果按 `outcome_unknown` 处理；必须审阅新 snapshot，禁止原样重试。
-- batch 中任一 change 失败时零 partial write；changed apply 使用 sibling temporary、sync、revision recheck 和 atomic replace。
-
-## 字节与存储行为
-
-- raw revision 是目标原始字节的 SHA-256；UTF-8 BOM、CRLF/LF 混合状态和末尾换行都会参与。
-- 未修改行保留原 terminator；新行继承局部行尾策略；BOM 和 trailing-newline 状态保持。
-- SnapshotLedger 仅保存在扩展内存和 Pi 已有的 tool-result JSONL details 中，不创建 snapshot 文件或缓存数据库。
-- changed apply 临时使用一个 `.snapline-*` 同目录文件；正常 success/rejection 会清理。强制终止可能留下当前 invocation 的一个临时文件，不能仅凭前缀或 mtime 自动删除。
-- no-op、read 和 rejected apply 不写目标文件。
-
-## 协议边界
-
-CLI 的唯一集成面是：
-
-```text
-snapline --version
-snapline capabilities
-snapline read     # one strict JSON document on stdin
-snapline apply    # one strict JSON document on stdin
-```
-
-`capabilities` 必须报告 product `snapline`、1.x 版本和 wire protocol 1 的完整正 capability。CLI 没有旧名称 alias、anchor 命令或 standalone content-matching edit。
-
-完整 wire 契约见 [`cli/SPEC.md`](./cli/SPEC.md)；Pi 生命周期、Ledger 和部署约束见 [`pi-snapline/MAINTENANCE.md`](./pi-snapline/MAINTENANCE.md)。
+- revision 基于原始字节，BOM、CRLF/LF 与末尾换行差异都会改变 revision。
+- 写入时逐行保留 terminator：未修改行的行尾字节保持原样，混合行尾文件不再被整体规范化，也不再产生 mixed line ending warning。编辑产生的新行使用编辑位置附近的局部行尾，replacement 最后一行继承被替换范围末行的 terminator。
+- 孤立 `\r`（无 `\n`）属于行文本，不是行分隔符；UTF-8 BOM 与末尾换行的有无在写入时保持原状；删除全部逻辑行会生成真正的空文件。
 
 ## 开发验证
 
@@ -64,40 +45,48 @@ CLI：
 
 ```bash
 cd cli
-gofmt -l *.go
-go vet ./...
 go test ./...
+go vet ./...
 ```
 
-Pi 扩展：
+Pi 插件：
 
 ```bash
-cd pi-snapline
+cd pi-hledit-diff
 npm ci
 npm run check
-npm run test:bundled
 ```
 
-重建 Windows bundled CLI：
+## CLI 与插件契约
 
-```bash
-cd cli
-go build -trimpath -ldflags="-s -w" -o ../pi-snapline/bin/snapline.exe .
+插件要求 bundled CLI 的 `capabilities` 至少包含：
+
+```json
+{
+  "version": "3.0.0",
+  "anchorProtocolV2": true,
+  "readRangeMetadata": true,
+  "batchInsertAfter": true,
+  "batchCheck": true,
+  "batchUpdatedAnchors": true,
+  "batchStaleContext": true,
+  "batchWireV3": true,
+  "batchReadProof": true,
+  "batchEditDeltas": true,
+  "readIgnoreCase": true
+}
 ```
 
-## Breaking migration
+读取结果必须携带 `revision`、`totalLines` 和严格截断元数据。连续范围或完整返回的 grep 行都可形成局部写入证据；revision 与已读 anchors 保持在内部，不加入模型工具 schema。batch wire v3 中 `delete` 必须省略 `lines`，旧 `delete.lines:[]` 形状直接拒绝。成功 batch 响应必须携带新 `revision`、合法的 `updatedAnchors` 与非空且与请求一致的 `editDeltas`（插件逐项互核，内部矛盾按结果未知处理）；失败可按需返回 `currentRevision` 和同一快照的 `currentAnchors`。插件要求 CLI 3.x、拒绝已删除的 `contentReplaceOnce` 字段，并且不保留旧 CLI、旧 wire、无 proof batch 写入、内容匹配替换或自动 stale 重试路径。
 
-Snapline 1.0 是一次单向迁移：
+## 开发仓库与运行目录
 
-- 扩展目录/包名改为 `pi-snapline`；工具改为 `snapline_read_file` 和 `snapline_apply_changes`；binary 改为 `snapline.exe`。
-- 旧 anchor CLI、旧 Pi 工具、兼容 wrapper 和双注册均已删除。
-- 旧 Pi session 的 anchor evidence 不会转换为 snapshot lineage；升级后必须重新读取目标文件。
-- 依赖旧 CLI 的第三方 MCP 集成不兼容；应固定旧版本，或独立迁移到 wire protocol 1。
-- 部署前先删除 Pi 实际扩展目录中的旧 `pi-hledit-diff`，再安装 `pi-snapline`，避免两套扩展同时注册。
-- 若 Pi 中仍注册旧扩展工具，Snapline 会 fail closed 并进入原生 fallback，直到移除冲突并执行 `/snapline-status` 或重新加载。
+本仓库是独立开发工作区。Pi 的实际插件加载目录可以位于其他位置；克隆或更新本仓库不会自动改变 Pi 当前使用的插件目录。
 
-仓库开发副本不会自动更新 Pi 实际加载目录。部署说明见 [`pi-snapline/README.md`](./pi-snapline/README.md)。
+## 上游与致谢
 
-## 许可证与来源
+CLI 基于 [`dabito/hledit`](https://github.com/dabito/hledit) 修改并保留 MIT 许可证。本仓库增加了 patched batch 协议、内联新锚点响应、单次批处理重建，以及配套的 Pi 插件。
 
-MIT，见 [`LICENSE`](./LICENSE)。早期实现源自 [`dabito/hledit`](https://github.com/dabito/hledit)；历史版本保留在 [`cli/CHANGELOG.md`](./cli/CHANGELOG.md)。
+## 许可证
+
+MIT，详见 [`LICENSE`](./LICENSE)。

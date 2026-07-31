@@ -1,314 +1,383 @@
-# Snapline CLI — Wire Protocol 1 规范
+# hledit — Spec
 
-本文是 Snapline 1.x 的规范性契约。JSON 属性名和枚举值区分大小写。除非另有说明，行坐标从 1 开始，范围末端包含在范围内。
+## 1. Binary & Invocation
 
-## 1. 进程接口
-
-```text
-snapline --version
-snapline capabilities
-snapline read
-snapline apply
+```
+hledit <verb> [arguments]
 ```
 
-- `snapline --version` 输出 `Snapline 1.0.0\n`。
-- `capabilities`、`read` 和 `apply` 向 stdout 输出一个 JSON 对象及末尾换行。
-- `read` 与 `apply` 从 stdin 接收且只接收一个 UTF-8 JSON 对象。
-- 逻辑成功和可确认零提交的拒绝退出 0。
-- 基础设施失败或提交状态不确定退出 1。
-- 命令行形状错误退出 2，并向 stderr 输出 usage。
+- Logical outcomes (success, stale anchors, invalid anchors/content, binary/encoding/range/io errors) exit 0 and are reported on stdout.
+- CLI misuse exits 2 with usage on stderr; unrecoverable infrastructure failures exit 1.
 
-不存在命令别名、anchor command、内容匹配操作、check mode 或兼容 wire。
+### 1.1 `capabilities`
 
-## 2. Capability 门禁
+```
+hledit capabilities
+```
 
-兼容的 1.0.0 实现精确报告：
+Outputs one JSON object describing behavior that integrations may require:
+
+```json
+{ "ok": true, "version": "3.0.0", "anchorProtocolV2": true, "readRangeMetadata": true, "batchInsertAfter": true, "batchCheck": true, "batchUpdatedAnchors": true, "batchStaleContext": true, "batchWireV3": true, "batchReadProof": true, "batchEditDeltas": true, "readIgnoreCase": true }
+```
+
+The bundled Pi extension requires version 3.x and every capability shown above. The removed `contentReplaceOnce` field must be absent; a successful `help` command alone is not a compatibility guarantee.
+
+## 2. Verbs
+
+### 2.1 `read`
+
+```
+hledit read <file> [--grep <pattern>] [--context N] [--json]
+```
+
+Reads the entire file. Each line is emitted as:
+
+```
+<LN>#<HHH>:<content>
+```
+
+- `LN` — 1-indexed line number.
+- `HHH` — 3-character URL-safe Base64 hash (see §3).
+- `:` — literal separator.
+- Content includes the original line without trailing `\n` or `\r`.
+- `--grep` — substring match; only matching lines are emitted.
+- `--context` — include N lines before/after each match; overlapping windows merge.
+- `--json` — emit JSON `{ok, revision, totalLines, lines:[{line,anchor,text,textTruncated?}], truncated, nextOffset?}`. `revision` is `sha256:<64 lowercase hex digits>` over the exact original bytes, including UTF-8 BOM, line endings, and trailing newline.
+
+**Truncation:** Stop at 50 KB of output or 2,000 lines, whichever is first. Append a trailing line:
+
+```
+-- truncated: use read-range --offset <next> --
+```
+
+**Binary detection:** If the file is detected as binary (contains NUL byte in first 8 KB), emit:
+
+```json
+{ "ok": false, "error": "binary", "message": "file appears to be binary" }
+```
+
+**Text encoding:** Non-binary input must be valid UTF-8. Invalid UTF-8 emits:
+
+```json
+{ "ok": false, "error": "encoding", "message": "file is not valid UTF-8" }
+```
+
+An existing UTF-8 BOM is excluded from line text and hashes, then restored on write.
+
+### 2.2 `read-range`
+
+```
+hledit read-range <file> [--offset <N>] [--limit <M>] [--grep <pattern>] [--context N] [--json]
+```
+
+- `--offset` — 1-indexed starting line (default 1).
+- `--limit` — max lines to return (default 2000).
+- `--grep` — substring match; only matching lines are emitted.
+- `--context` — include N lines before/after each match; overlapping windows merge.
+
+Same output format as `read`. Same truncation behavior at 50 KB / 2,000 lines from the offset.
+- `--json` — same JSON shape.
+
+If `--offset` exceeds file length, emit:
+
+```json
+{ "ok": false, "error": "range", "message": "offset 500 exceeds file length 120", "requestedOffset": 500, "totalLines": 120 }
+```
+
+### 2.3 `anchors`
+
+```
+hledit anchors <file> [--offset <N>] [--limit <M>] [--grep <pattern>] [--context N] [--json]
+```
+
+- Same flags and filtering as `read-range`.
+- Emits `ANCHOR<TAB>TEXT` instead of `LN#HHH:TEXT`.
+- Same truncation behavior at 50 KB / 2,000 lines from the offset.
+- `--json` — same JSON shape.
+
+If `--offset` exceeds file length, emit:
+
+```json
+{ "ok": false, "error": "range", "message": "offset 500 exceeds file length 120", "requestedOffset": 500, "totalLines": 120 }
+```
+
+### 2.4 `replace`
+
+```
+hledit replace <file> <anchor> <content-source>
+```
+
+- `anchor` — `LN#HHH` targeting a single line.
+- `content-source` — `-` for stdin, or a file path.
+- Reads replacement content from the source (one or more lines).
+- If content is empty, the line is **deleted**.
+- If content has multiple lines, the single targeted line is replaced with all of them (net insert).
+
+**Behavior:**
+
+1. Validate anchor against current file.
+2. If hash mismatches, return stale error (see §5).
+3. Replace the line at `LN` with the new content.
+4. Write atomically (temp + rename).
+
+### 2.5 `replace-range`
+
+```
+hledit replace-range <file> <anchor> <end-anchor> <content-source>
+```
+
+- `anchor` — start `LN#HHH` (inclusive).
+- `end-anchor` — end `LN#HHH` (inclusive).
+- Replaces all lines from `anchor.Line` through `end-anchor.Line` with the new content.
+- If content is empty, the range is **deleted**.
+
+**Validation:**
+
+- `anchor.Line <= end-anchor.Line`.
+- Both anchors must match current file hashes.
+
+### 2.6 `insert`
+
+```
+hledit insert [--before|--after] <file> <anchor> <content-source>
+```
+
+- `--before` (default) — insert lines before the anchored line.
+- `--after` — insert lines after the anchored line.
+- Anchor is used **only for validation**, not for replacement. The anchored line stays untouched.
+- Content must be non-empty.
+
+**Behavior:**
+
+1. Validate anchor against current file.
+2. Insert new lines at the specified position.
+3. Write atomically.
+
+### 2.7 `batch`
+
+```
+hledit batch [--check] <file>
+```
+
+Reads a JSON `BatchEditRequest` from stdin:
+`--check` validates stdin JSON, anchors, and ops without writing; success adds `checked:true`.
+
+```json
+{
+  "edits": [
+    { "op": "replace", "pos": "2#rT4", "lines": ["new line"] },
+    { "op": "replace", "pos": "12#aB3", "end_pos": "18#xY7", "lines": ["new block"] },
+    { "op": "delete", "pos": "5#nK2" },
+    { "op": "insert", "pos": "8#Qw_", "after": true, "lines": ["inserted"] }
+  ],
+  "proof": {
+    "revision": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "anchors": ["2#rT4", "5#nK2", "8#Qw_", "12#aB3", "13#Ab1", "14#Ab2", "15#Ab3", "16#Ab4", "17#Ab5", "18#xY7"]
+  }
+}
+```
+
+Validation:
+
+- All anchors are validated against the original file state before any write.
+- The JSON decoder rejects unknown fields and any additional top-level JSON value; protocol typos never degrade into a different edit.
+- `proof` is optional for standalone CLI use. When present, it must contain a valid raw-byte SHA-256 `revision` and unique, strictly increasing anchors.
+- Proof must cover every original line consumed by each replace/delete range and the anchor line used by each insert. Missing coverage returns `error:"insufficient_read_proof"`; revision or proof-anchor changes return `error:"stale"`.
+- Batch wire v3 has one canonical shape: `replace` requires `lines` (an empty array deletes the range), while `delete` must omit `lines`.
+- `replace` and `delete` use optional `end_pos` as an inclusive range end; if omitted, they target only `pos`.
+- `replace` and `delete` require `pos.Line <= end_pos.Line` when `end_pos` is provided.
+- `replace` and `delete` reject `after`; `delete` also rejects any present `lines` field.
+- `insert` requires non-empty `lines`, rejects `end_pos`, and inserts before `pos` unless `after:true` is set; a present `after` must be `true`.
+- Inserts that map to the same physical boundary (including `insert_after(N)` and `insert_before(N+1)`) return `error: "invalid"`. An insert whose boundary falls strictly inside a replace/delete range's consumed interior also returns `error: "invalid"`; inserts at a range's leading or trailing physical boundary are deterministic (the inserted lines stay attached to their anchor line, emitted before or after the range output) and are accepted.
+- Unknown operations or invalid anchors return `error: "invalid"`; stale anchors return `error: "stale"` with remaps.
+
+Application:
+
+- Check and apply share the same pure planner: strict request decoding, proof validation, edit-anchor validation, physical conflict detection, statistics, and one cursor-based rebuild.
+- `--check` returns the loaded revision without writing. Apply prepares and syncs one temporary replacement, rechecks the target's raw-byte revision, and then performs one atomic replacement.
+- A detectable change between planning and commit returns `error:"source_changed_before_commit"` with `currentRevision`; the temporary file is removed and external content is preserved.
+
+
+## 3. Hash Algorithm
+
+```
+computeLineHash(lineNum, line):
+  1. line = trimRight(line, '\r')
+  2. line = trimRight(line, whitespace)
+  3. h = FNV-1a-32()
+  4. if line has NO letter AND NO digit:
+       mix lineNum into h before content
+  5. h.write(line)
+  6. sum = h.sum32()
+  7. low18 = sum & 0x3FFFF
+  8. return base64url((low18 >> 12) & 0x3F) + base64url((low18 >> 6) & 0x3F) + base64url(low18 & 0x3F)
+```
+
+**URL-safe Base64 alphabet:** `ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_` (index 0–63)
+
+**Anchor grammar:** `LN#HHH` has no internal whitespace. CLI parsing additionally permits either a direct `:source-text` annotation from rendered output or trailing whitespace; the Pi tool schema accepts only the bare anchor.
+
+**Line-number mixing** (step 4): Write the line number as a varint-style sequence of bytes (little-endian, stopping at first zero high byte) into the hash state before the line content. This ensures structurally identical non-significant lines (e.g. two blank lines, or `}` at different positions) produce different hashes.
+
+**Detection of "significant" lines:** A line is significant if it contains at least one Unicode letter (`IsLetter`) or one Unicode digit (`IsDigit`). Blank lines, `{`, `}`, `),` etc. are non-significant.
+
+### 3.1 Raw-byte file revision
+
+JSON reads and batch results identify a file snapshot as `sha256:<64 lowercase hex digits>`. The digest is computed before BOM removal or newline parsing, so BOM, CRLF/LF, trailing newline, and all other byte changes produce a different revision. Revision is a conservative concurrency precondition; it does not replace line anchors.
+
+## 4. Edit Application
+
+### 4.1 Batch semantics
+
+Every write invocation validates all anchors and content before writing. If any anchor is stale or any operation is invalid, nothing is written.
+
+### 4.2 Application order
+
+Single-edit verbs apply one operation. `batch` sorts non-overlapping edits by original-file boundary and rebuilds the output once with a forward cursor. This preserves all original anchor references without repeatedly copying the file.
+
+### 4.3 No-op detection
+
+After rebuilding a validated edit, compare its logical lines with the loaded lines. If they are identical, return `contentChanged:false` and do not create, sync, rename, or otherwise touch a filesystem entry. Operation counts and attempted line metadata remain available for diagnostics.
+
+### 4.4 Line terminators
+
+Files are parsed into per-line terminators (`LF`, `CRLF`, or none for an unterminated last line). A lone `\r` not followed by `\n` is line text, not a terminator. Rebuild rules:
+
+- Untouched source lines keep their own terminator bytes; mixed CRLF/LF files are never normalized as a whole.
+- New lines from an edit use the local terminator style near the consumed interval (first real terminator scanning backward from the interval end, then forward); the last replacement line inherits the terminator of the last replaced line. Pure inserts use the local style for every inserted line.
+- When content is added after an unterminated last line, that line receives the local terminator and the new last line stays unterminated.
+- The presence or absence of the original trailing newline is preserved; deleting every logical line produces a truly empty file (plus BOM if the original had one).
+- The UTF-8 BOM is preserved.
+
+### 4.5 Atomic writes
+
+1. Resolve an existing symlink to its real target so replacement preserves the symlink entry.
+2. Reject non-regular targets and files with more than one hard link. Preserving hard-link identity would require a non-atomic in-place write.
+3. Create a unique temporary sibling, preserve existing permission bits, write all content, sync, and close it.
+4. For every content-changing write, re-read the resolved target and compare its exact raw-byte revision with the revision loaded for planning. Mismatch or read failure rejects before replacement and removes the temporary file.
+5. Replace the real target with the temporary sibling. POSIX implementations rename then sync the parent directory; Windows uses `MoveFileExW` with replace-existing and write-through flags.
+6. A post-rename parent-sync failure is returned as a successful write with a durability warning, never as a zero-change rejection.
+
+The revision recheck substantially narrows the external-writer window, but a very short race remains between recheck and rename. The CLI does not claim linearizable compare-and-swap against arbitrary non-cooperating processes.
+
+## 5. Stale Detection & Error Response
+
+When any anchor's hash doesn't match the current file content:
+
+```json
+{
+  "ok": false,
+  "error": "stale",
+  "remaps": [
+    { "requested": "5#nK2", "current": "5#nK3" },
+    { "requested": "8#Qw_", "current": "9#xY7" }
+  ],
+  "currentRevision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "currentAnchors": {
+    "lines": [{ "line": 5, "anchor": "5#nK3", "text": "current line" }],
+    "offset": 3, "limit": 5, "desiredLimit": 5, "truncated": false
+  },
+  "message": "anchor 5#nK2: expected hash nK2, got nK3"
+}
+```
+
+- `remaps` helps locate the current content; `currentAnchors` is a bounded window captured from the same file snapshot that rejected the batch.
+- Inspect `currentAnchors` before an explicit retry. It may supply the new anchors only when its complete window still covers the intended target and range; otherwise re-read. It must never trigger automatic retry or overwrite concurrent changes.
+- The whole edit is rejected — no partial writes.
+- `source_changed_before_commit` is a confirmed zero-write rejection for any content-changing write; it reports `currentRevision` when available and does not overwrite the externally changed target.
+
+## 6. Success Response
+
+Single writes include `contentChanged`; successful writes may also include `lastChangedLine` and `warnings`:
+
+```json
+{ "ok": true, "contentChanged": true, "firstChangedLine": 5, "lastChangedLine": 5 }
+```
+
+Batch writes include the resulting raw-byte `revision`, `contentChanged`, changed-line statistics, `editsApplied`, `editDeltas`, and a bounded `updatedAnchors` object. `editDeltas` lists, in physical output order (boundary ascending, insert before range at the same boundary), each edit's consumed original-line interval and line-count delta; a pure insert is the empty interval `oldEnd == oldStart-1`. `--check` returns the current revision with `checked:true`, does not write, and omits `updatedAnchors`. A no-op batch returns the unchanged revision and fresh `updatedAnchors`, but does not touch the target file.
 
 ```json
 {
   "ok": true,
-  "product": "snapline",
-  "version": "1.0.0",
-  "wireProtocol": 1,
-  "rawRevision": "sha256",
-  "multiWindowRead": true,
-  "boundedBinaryPreflight": true,
-  "groupedAtomicApply": true,
-  "completeReadProof": true,
-  "preCommitRevisionCheck": true,
-  "structuredEditEffects": true,
-  "structuredRecoveryContexts": true
+  "revision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "contentChanged": true,
+  "firstChangedLine": 5,
+  "lastChangedLine": 5,
+  "editsApplied": 1,
+  "editDeltas": [{"oldStart":5,"oldEnd":5,"delta":0}],
+  "updatedAnchors": {
+    "lines": [{"line":5,"anchor":"5#aB3","text":"updated"}],
+    "offset": 3,
+    "limit": 5,
+    "desiredLimit": 5,
+    "truncated": false
+  }
 }
 ```
 
-集成方必须拒绝未审阅的 major version、缺失或为 false 的 capability、未知字段以及 malformed output。
+## 7. Content Source
 
-## 3. 严格 JSON 规则
+The `<content-source>` argument:
 
-每个请求对象及嵌套对象：
+| Value | Meaning |
+|---|---|
+| `-` | Read content from stdin |
+| Any other path | Read content from that file |
 
-- 必须包含其 shape 定义的全部字段；
-- 拒绝 unknown、duplicate、missing 和 null fields；
-- 拒绝第二个或 trailing JSON value；
-- integer field 必须能解码为平台 `int`；
-- path 必须非空且不含 NUL；
-- 必须使用 `protocolVersion:1`。
+Content is read as-is, split by `\n`. Trailing `\n` on the last line is stripped (does not introduce an extra empty line). `\r\n` is normalized to `\n`.
 
-Read stdin 上限为 1 MiB，apply stdin 上限为 32 MiB。无效 UTF-8 以逻辑 `invalid_request` 或 `size_limit` 拒绝。
+For `replace` / `replace-range` with empty content, the effect is deletion.
 
-## 4. 原始文本模型
+For `insert`, content must be non-empty. Empty content returns:
 
-目标被解析为：
-
-- 可选 UTF-8 BOM；
-- 零个或多个 UTF-8 逻辑行；
-- 每行一个 terminator：LF、CRLF，或末尾未终止行的 none。
-
-未跟随 LF 的孤立 CR 属于行文本。Revision 为 `sha256:` 加 64 个小写十六进制字符，哈希对象是 BOM 或换行解析前的精确原始字节。
-
-零字节或仅 BOM 文件包含零个逻辑行。完整目标任意位置出现 NUL 都拒绝文本处理；无效 UTF-8 同样拒绝。
-
-## 5. Read 请求
-
-```ts
-{
-  protocolVersion: 1,
-  path: string,
-  windows: Array<{ offset: integer >= 1, limit: integer >= 1 }>
-}
+```json
+{ "ok": false, "error": "invalid", "message": "insert requires non-empty content" }
 ```
 
-`windows` 包含 1 至 64 项。窗口会被截到当前文件范围，随后排序，并在重叠或相邻时合并。EOF 之后的请求定位到当前最后一行；零行目标定位到虚拟区间 `start:1,end:0`。
+## 8. Anchor Parsing
 
-### 5.1 Read 成功结果
+Anchors match the regex:
 
-```ts
-{
-  ok: true,
-  protocolVersion: 1,
-  path: string,                  // canonical target path
-  revision: "sha256:<64 hex>",
-  totalLines: integer >= 0,
-  bom: boolean,
-  contexts: Array<{
-    offset: integer,
-    limit: integer,
-    start: integer,
-    end: integer,
-    complete: boolean,
-    nextOffset: integer,
-    lines: string[],
-    truncatedLine?: {
-      line: integer,
-      prefix: string,
-      originalUtf8Bytes: integer
-    }
-  }>,
-  omittedRanges: Array<{
-    start: integer,
-    end: integer,
-    reason: "line_limit" | "byte_budget" | "line_too_long"
-  }>
-}
+```
+^(\d+)#([A-Za-z0-9_-]{3})(?::.*)?\s*$
 ```
 
-对完整行，`end = start + lines.length - 1`，`nextOffset = end + 1`。`complete:true` 表示归一化窗口末端之前的每个请求行均完整返回；否则 `nextOffset` 标识第一个不完整行。
+The parser accepts an exact `LN#HHH` anchor, with either a direct colon-delimited rendered annotation such as `5#aB3:func main() {` or trailing whitespace. It rejects whitespace inside the anchor, legacy two-character anchors, and trailing text without a colon delimiter.
 
-所有窗口共享以下收集上限：
+Invalid anchors return:
 
-- 2,000 个完整行；
-- 50 KiB 未转义 UTF-8 行内容；
-- 每个 context 最多一个 UTF-8 安全截断前缀，且不超过 4,096 字节。
-
-截断前缀绝不构成 source proof。省略后缀必须显式报告，不得静默丢弃。
-
-### 5.2 文件分类
-
-完整文本解析前，Snapline 只读取足以识别 Pi 支持图片家族的前缀：排除 JPEG-LS 的 JPEG、非动画 PNG、GIF、WebP 和经验证的 BMP。候选图片返回逻辑 code `image_candidate`；Pi 插件负责原生 MIME 确认与图片处理。
-
-非图片目标会完整扫描。NUL 返回 `unsupported_file`，无效 UTF-8 返回 `invalid_utf8`。Apply 把图片候选映射为 `unsupported_file`，因为图片不能作为文本修改。
-
-## 6. Apply 请求
-
-```ts
-{
-  protocolVersion: 1,
-  path: string,
-  expectedRevision: "sha256:<64 lowercase hex>",
-  proof: Array<{ start: integer >= 1, lines: string[] }>,
-  replacements: Array<{ start: integer >= 1, end: integer >= 1, text: string }>,
-  deletions: Array<{ start: integer >= 1, end: integer >= 1 }>,
-  insertionsBefore: Array<{ line: integer >= 1, text: string }>,
-  insertionsAfter: Array<{ line: integer >= 1, text: string }>
-}
+```json
+{ "ok": false, "error": "invalid", "message": "invalid anchor \"foo\": expected LN#HHH" }
 ```
 
-所有 group array 都是必需字段，且至少包含一个 change。
+## 9. Exit Codes
 
-限制：
+| Code | Meaning |
+|---|---|
+| 0 | Normal command outcome — check JSON `ok` for success vs logical error |
+| 1 | Unrecoverable process/infrastructure failure, such as failure to emit the JSON response |
+| 2 | CLI misuse or invalid command-line shape — usage is written to stderr |
 
-- 每组最多 100 项，总计最多 200 项；
-- UTF-8 change text 合计最多 1 MiB；
-- 最多产出 20,000 个逻辑行；
-- proof 最多 10,000 行和 4 MiB 文本。
+Command-level failures, including `stale`, `invalid`, `binary`, `encoding`, `range`, `io`, file-not-found, and permission errors, return exit 0 with `ok:false` in JSON. Exit code 1 is reserved for failures that prevent the CLI from reporting a normal protocol outcome.
 
-与目标内容无关的 shape 和 payload 限制必须在目标 I/O 前完成验证。
+## 10. File Layout
 
-### 6.1 Replacement text
-
-Text 用 LF 分隔逻辑行，并拒绝 CR 与 NUL。若 text 以 LF 结尾，split 后精确移除一个末尾 segment：
-
-| Text | 逻辑行 |
-| --- | --- |
-| `""` | 一个空行 |
-| `"a"` | `a` |
-| `"a\n"` | `a` |
-| `"a\n\n"` | `a`、一个空行 |
-
-删除只能由 `deletions` 表达；空 replacement text 不是删除。源文件非空时，text 的末尾 LF 不单独控制目标 trailing-newline 状态。
-
-零行目标只接受 line 1 的一个 insertion-before，不接受其他 change，且 proof 为空。其原始 insertion text 不得为空；只有此场景由末尾 LF 决定新文件 trailing newline。
-
-### 6.2 Source-snapshot 同时语义
-
-所有 change 都引用同一 source snapshot：
-
-- replacement/deletion 必须满足 `start <= end <= oldLineCount`；
-- 消费范围不得重叠；
-- insertion 必须依附现有源行；
-- 两个 insertion 不得映射到同一物理 boundary；
-- insertion boundary 严格落入消费范围内部时冲突；
-- 消费范围首尾 boundary 上的 insertion 位置确定，可以接受。
-
-如果单行 replacement 把原行重复为多行输出的首行，则按 `suspicious_range_expansion` 拒绝；只有显式相邻 insertion 能消除该意图歧义。
-
-### 6.3 完整 proof
-
-Proof range 必须非空、位于文件内且互不重叠；proof text 必须与当前逻辑源文本完全相同。
-
-- Replacement/deletion 消费的每一行都需要 proof。
-- Insertion-before 需要依附行 proof。
-- Insertion-after 需要依附行 proof。
-- 零行 insertion 要求空 proof。
-
-缺少覆盖返回 `insufficient_read_proof`，文本不同返回 `proof_mismatch`；两者均不写目标。
-
-## 7. Apply effects 与统计
-
-每个请求项返回一个 effect，顺序固定为 `replacement`、`deletion`、`insertion_before`、`insertion_after`，同组内按 input index：
-
-```ts
-{
-  group: string,
-  groupIndex: integer,
-  changed: boolean,
-  oldStart: integer,
-  oldEnd: integer,
-  newLineCount: integer,
-  lineDelta: integer,
-  newStart: integer,
-  newEnd: integer
-}
 ```
-
-Insertion 使用 `oldEnd = oldStart - 1` 的空源区间。`changed:false` 的 `lineDelta` 为零。对 changed effect：
-
-```text
-consumed       = max(0, oldEnd - oldStart + 1)
-lineDelta      = newLineCount - consumed
-newEnd         = newStart + newLineCount - 1
-newLineCount'  = oldLineCount + insertedLines - deletedLines
+.
+├── main.go               # Entry point and explicit check/apply dispatch
+├── batch_request.go      # Strict batch wire v3 and optional proof decoding
+├── batch_plan.go         # Pure proof/edit validation, conflict detection, and rebuild plan
+├── batch_command.go      # Shared plan loading with separate check/apply commit paths
+├── read.go               # read + read-range + anchors verbs and revision output
+├── edit.go               # replace, replace-range, insert verbs
+├── textfile.go           # UTF-8/BOM/newline parsing and raw-byte revision
+├── hash.go               # FNV-1a line hash and Base64url anchor format
+├── types.go              # Shared response types
+├── anchor.go             # Anchor parsing + validation
+├── write.go              # Atomic replacement and pre-commit revision recheck
+├── go.mod
+├── CHANGELOG.md
+├── README.md
+└── SPEC.md
 ```
-
-`newStart` 只累计 source-simultaneous 输出中物理位于该 effect 之前的 changed effect delta。消费 effect 计入满足 `oldEnd < oldStart` 的先前消费区间及 boundary `< oldStart` 的 insertion；boundary 为 `b` 的 insertion 计入满足 `oldEnd <= b` 的消费区间及 boundary `< b` 的 insertion。
-
-除 `requestedChanges` 外，统计只计算 changed effects：
-
-```ts
-{
-  requestedChanges: integer,
-  effectiveChanges: integer,
-  oldLineCount: integer,
-  newLineCount: integer,
-  insertedLines: integer,
-  deletedLines: integer
-}
-```
-
-## 8. Apply 成功结果
-
-```ts
-{
-  ok: true,
-  protocolVersion: 1,
-  path: string,
-  outcome: "applied" | "no_op",
-  sourceRevision: string,
-  newRevision: string,
-  contentChanged: boolean,
-  stats: ApplyStats,
-  effects: EditEffect[],
-  warnings: Array<{ code: string, message: string }>
-}
-```
-
-`applied` 要求至少一个 changed effect、不同且合法的两个 revision，以及 `contentChanged:true`。`no_op` 要求所有 effect 均 unchanged、revision 相同、`contentChanged:false`、无 warning，并且没有临时写入。
-
-原子替换已提交后若父目录 durability 同步失败，结果仍为 `applied`，并携带 warning code `post_commit_durability`。
-
-## 9. 逻辑失败结果
-
-可信的非提交 outcome 使用：
-
-```ts
-{
-  ok: false,
-  protocolVersion: 1,
-  path?: string,
-  code: string,
-  message: string,
-  targetCommitted: false,
-  currentRevision?: string,
-  requiredRanges?: Array<{ start: integer, end: integer }>,
-  contexts?: ReadContext[],
-  omittedRanges?: OmittedRange[],
-  group?: string,
-  groupIndex?: integer,
-  conflictsWith?: { group: string, groupIndex: integer }
-}
-```
-
-Message 按 UTF-8 限制为 4,096 字节。常见 code 包括 `invalid_request`、`size_limit`、`target_not_regular`、`unsupported_file`、`invalid_utf8`、`snapshot_stale`、`range_out_of_bounds`、`overlapping_changes`、`duplicate_insertion_boundary`、`suspicious_range_expansion`、`insufficient_read_proof`、`proof_mismatch`、`hardlink_target`、`source_changed_before_commit` 和 `write_failed_before_replace`。
-
-目标被删除、不可读、属于 binary，或 context 无法安全放入预算时，恢复 context 可以缺失。Stale 请求的 context 是 approximate，绝不能授权自动重放。
-
-如果已经调用 replacement 却无法证明 commit 状态，Snapline 不会伪造 `targetCommitted:false` envelope，而是退出 1，让调用方按 outcome unknown 处理。
-
-## 10. 原子提交与身份
-
-Changed apply 依次执行：
-
-1. 解析现有目标和 canonical parent，拒绝非常规文件与 hardlink。
-2. 读取时捕获目标身份、父目录身份和 raw revision。
-3. 在保留 BOM 与逐行 terminator 的前提下构建输出。
-4. 创建唯一 `.snapline-*` 同目录文件，保留权限，写入、sync 并关闭。
-5. 再次验证 canonical target、目标身份、父目录身份和 raw revision。
-6. 原子替换真实目标。Windows 使用 replace-existing/write-through；受支持的 POSIX 系统执行 rename 后 sync 父目录。
-7. 所有确认的提交前失败都删除本次调用拥有的临时文件。
-
-因此，即使内容相同的 inode swap 或父目录替换也会 fail closed。未知的前缀匹配临时文件绝不会被扫描删除。
-
-未触碰源行与 unchanged replacement effect 不参与重建，避免 mixed-EOL 被归一化。新行继承局部 terminator；BOM 与 trailing-newline 状态保持。删除所有逻辑行会产生零行文件，同时保留原有 BOM。
-
-## 11. 源码布局
-
-| 文件 | 职责 |
-| --- | --- |
-| `main.go` | 版本、capability、命令路由与退出码。 |
-| `snapline_wire.go` | 严格 protocol-1 请求/结果类型与 JSON 解码。 |
-| `snapline_file.go` | Canonical 目标读取、身份复核和图片/文本分类。 |
-| `snapline_read.go` | 窗口归一化、收集预算、omission 与恢复 context。 |
-| `snapline_apply.go` | Payload、proof、冲突规划、effects 与重建。 |
-| `textfile.go` | BOM、逻辑行、逐行行尾、精确编码与 revision。 |
-| `write.go` / `write_platform_*.go` | Revision-bound 原子替换。 |
-| `*_test.go` | 单元、集成、property、fuzz、mixed-EOL、竞态边界与 benchmark 覆盖。 |

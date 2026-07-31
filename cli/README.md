@@ -1,200 +1,323 @@
-# Snapline CLI
+# hledit
 
-Snapline 是面向编程代理集成的严格 snapshot-bound 文本读取与提交后端。它在一个原始字节版本上提供行坐标，要求修改携带完整源行 proof，并把同一批 grouped changes 原子提交。
+`hledit` is a tiny hash-anchored line editor for AI coding agents.
 
-CLI 是 [`pi-snapline`](../pi-snapline/) 使用的后端。它不创建磁盘 snapshot、不维护缓存数据库、不做模糊匹配，也不为旧锚点协议提供兼容别名。
+Instead of asking an agent to reproduce old text exactly, `hledit read` annotates each line with a stable anchor:
 
-## 环境要求
+```text
+5#aB3:func main() {
+6#xY7:    fmt.Println("hello")
+7#Qw_:}
+```
 
-- 从源码构建需要 Go 1.21 或更高版本。
-- 操作系统必须受原子替换实现支持。
-- 目标必须是已存在的常规 UTF-8 文件；CLI 不创建缺失文件。
+Write commands reference anchors such as `6#xY7`. Before changing the file, `hledit` recomputes the hash at that line. If the file changed since it was read, the anchor is rejected and no write happens.
 
-Pi 随附的 Windows x64 binary 位于 `../pi-snapline/bin/snapline.exe`。
+## Why
 
-## 构建与验证
+Traditional text-matching edits fail silently when a file shifts between read and write. `hledit` fails loud on stale anchors so agents patch the right line or stop.
+
+Built for AI coding agents: small local tools, typed inputs, deterministic text output, bounded context, and explicit failure modes.
+
+## Demo
+
+![hledit stale-edit demo](docs/demo/hledit.gif)
+
+Recorded terminal demo source: [`docs/demo/hledit.cast`](docs/demo/hledit.cast)
+
+Play locally:
 
 ```bash
-go build -o snapline .
-./snapline --version
+asciinema play docs/demo/hledit.cast
+```
+
+The demo shows:
+
+- `hledit read` producing `LN#ANCHOR` references
+- another actor changing the target line
+- stale edit rejection with `{"ok":false,"error":"stale"}`
+- re-read with fresh anchor
+- successful edit after anchor refresh
+
+## Install
+
+`hledit` is a standalone CLI. You do not need Pi or the bundled extension to use it.
+
+## Requirements
+
+- Go 1.21+
+- A POSIX-like shell for the examples
+- Pi is optional; only needed for the extension in [`../pi-hledit-diff`](../pi-hledit-diff/)
+
+### Option 1: install with Go
+
+```bash
+go install github.com/Qihuanxishini/hledit-toolkit/cli@latest
+```
+
+Go installs the binary into `$GOBIN`, or `$GOPATH/bin` when `GOBIN` is unset. For a default Go setup, that is usually:
+
+```text
+$HOME/go/bin/hledit
+```
+
+Recommended: add Go's bin directory to your shell `PATH`:
+
+```bash
+export PATH="$HOME/go/bin:$PATH"
+hledit --version
+```
+
+To make that persistent, add it to your shell startup file, for example:
+
+```bash
+# zsh (macOS default)
+echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.zshrc
+
+# bash
+echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.bashrc
+```
+
+Optional: if an integration specifically looks in `~/.local/bin`, create a compatibility symlink. The `mkdir -p` line is only there to create the directory if it does not already exist:
+
+```bash
+mkdir -p "$HOME/.local/bin"
+ln -sf "$HOME/go/bin/hledit" "$HOME/.local/bin/hledit"
+```
+
+You do not need the symlink for normal CLI use when `$HOME/go/bin` is on `PATH`.
+
+### Option 2: build from source
+
+For local development, build into `dist/` and symlink into `~/.local/bin`:
+
+```bash
+make install
+```
+
+Override the target bin directory if needed:
+
+```bash
+make install LOCAL_BIN="$HOME/bin"
+```
+
+Build without installing:
+
+```bash
+make build
+# writes dist/hledit
+```
+
+## Development
+
+```bash
 go test ./...
 go vet ./...
+make check
 ```
 
-POSIX 系统也可使用 `make build`、`make check` 和 `make install`。Go module 路径为 `github.com/Qihuanxishini/snapline/cli`，构建产物和公开命令均名为 `snapline`。
+## Optional Pi integration
 
-## 命令
+This monorepo includes the [`pi-hledit-diff`](../pi-hledit-diff/) extension. It bundles this CLI and exposes two strict tools:
+
+- `hledit_read_anchors`
+- `hledit_apply_file_changes`
+
+The extension requires CLI 3.x with `anchorProtocolV2:true`, `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, `batchUpdatedAnchors:true`, `batchStaleContext:true`, `batchWireV3:true`, `batchReadProof:true`, `batchEditDeltas:true`, and `readIgnoreCase:true`. The removed `contentReplaceOnce` field must be absent. It consumes revision-bearing structured reads and requires complete hidden read proof for anchored batches; it does not use content matching, the legacy single-tool `op` protocol, or an edits-only write path.
+
+After installing the extension in Pi, reload it:
 
 ```text
-snapline --version
-snapline capabilities
-snapline read     # stdin 接收一个严格 JSON 请求
-snapline apply    # stdin 接收一个严格 JSON 请求
+/reload
 ```
 
-`snapline --version` 精确输出：
+## Optional MCP integration
+
+The MCP server is a separate package: [`hledit-mcp`](https://github.com/dabito/hledit-mcp). It wraps this CLI for MCP-compatible clients such as Claude Code, Claude Desktop, and Cursor.
+
+Install after installing the CLI:
+
+```bash
+claude mcp add hledit npx hledit-mcp
+```
+
+## Commands
 
 ```text
-Snapline 1.0.0
+hledit capabilities
+hledit read <file> [--grep pattern] [--context N] [--json] [--pretty]
+hledit read-range <file> [--offset N] [--limit M] [--grep pattern] [--context N] [--json] [--pretty]
+hledit anchors <file> [--offset N] [--limit M] [--grep pattern] [--context N] [--json] [--pretty]
+hledit replace <file> <anchor> <content-source>
+hledit replace-range <file> <anchor> <end-anchor> <content-source>
+hledit insert [--before|--after] <file> <anchor> <content-source>
+hledit batch [--check] <file>
 ```
 
-`capabilities` 输出一个 JSON 对象。集成方必须要求 product `snapline`、经过审阅的 1.x 版本、wire protocol 1，以及全部安全 capability：
+`--grep` matches substrings. `--context N` adds N lines before/after each match. `--pretty` adds ANSI styling for human reading; `--json` stays machine-readable and unstyled.
+`<content-source>` is either `-` for stdin or a file path.
+
+`hledit capabilities` emits machine-readable JSON for integrations. This tree reports version `3.0.0` and the complete positive capability set listed above; integrations must reject 2.x, unreviewed future major versions, missing capability fields, and the removed `contentReplaceOnce` field.
+
+## Examples
+
+Read a file:
+
+```bash
+hledit read main.go
+```
+
+Read a window of a large file:
+
+```bash
+hledit read-range main.go --offset 40 --limit 20
+```
+
+Read styled output for humans:
+
+```bash
+hledit read main.go --pretty
+```
+
+Replace one line using stdin:
+
+```bash
+printf '    fmt.Println("hello world")\n' | hledit replace main.go 6#xY7 -
+```
+
+Replace a range using a prepared file:
+
+```bash
+hledit replace-range main.go 12#aB3 18#xY7 /tmp/new-block.txt
+```
+
+Insert before or after an anchor:
+
+```bash
+cat header.txt | hledit insert --before main.go 1#Qw_ -
+printf '// done\n' | hledit insert --after main.go 99#nK2 -
+```
+Apply multiple edits atomically with JSON on stdin:
+
+```bash
+printf '%s\n' '{"edits":[{"op":"replace","pos":"12#aB3","end_pos":"18#xY7","lines":["new block"]},{"op":"insert","pos":"22#Qw_","after":true,"lines":["// inserted"]}]}' | hledit batch main.go
+echo '{"edits":[{"op":"replace","pos":"12#aB3","lines":["fixed"]}]}' | hledit batch --check main.go
+```
+
+Batch `insert` places lines before its anchor by default. Set `"after": true` to place them after it.
+
+Batch wire v3 has one canonical shape: `replace` requires `lines` (an empty array deletes), `delete` omits `lines`, and `insert` requires non-empty `lines`; only insert may carry `after:true`. An optional `proof` object supplies a lowercase raw-byte SHA-256 `revision` and strictly increasing `anchors` covering every consumed or insertion-anchor line.
+Delete a line or range by piping empty stdin and using `-` as the content source:
+
+```bash
+printf '' | hledit replace main.go 6#xY7 -
+printf '' | hledit replace-range main.go 12#aB3 18#xY7 -
+```
+
+## Output
+
+Read emits `LN#HHH:TEXT`; anchors emits `ANCHOR<TAB>TEXT`.
+`--json` emits `{ok, revision, totalLines, lines:[{line,anchor,text,textTruncated?}], truncated, nextOffset?}`. `revision` hashes the exact raw bytes, including BOM and newline style; an offset past EOF returns `requestedOffset` and `totalLines`.
+
+```text
+1#aB3:package main
+2#xY7:
+3#Qw_:import "fmt"
+```
+
+Write commands emit JSON:
 
 ```json
-{"ok":true,"product":"snapline","version":"1.0.0","wireProtocol":1,"rawRevision":"sha256","multiWindowRead":true,"boundedBinaryPreflight":true,"groupedAtomicApply":true,"completeReadProof":true,"preCommitRevisionCheck":true,"structuredEditEffects":true,"structuredRecoveryContexts":true}
+{"ok":true,"contentChanged":true,"firstChangedLine":6,"lastChangedLine":6}
 ```
 
-## 读取
-
-请求：
-
-```json
-{
-  "protocolVersion": 1,
-  "path": "C:/work/file.txt",
-  "windows": [
-    {"offset": 1, "limit": 80},
-    {"offset": 500, "limit": 20}
-  ]
-}
-```
-
-成功响应包含 canonical 目标路径、精确原始字节 SHA-256 revision、逻辑行数、BOM 状态、合并后的 contexts 和明确 omissions：
+Batch adds `revision` and `editsApplied`. A successful write also returns a bounded `updatedAnchors` window; `--check` returns the loaded revision with `checked:true` and does not write. A no-op returns the unchanged raw-byte revision with `contentChanged:false` and does not touch the target.
 
 ```json
 {
   "ok": true,
-  "protocolVersion": 1,
-  "path": "C:/work/file.txt",
-  "revision": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-  "totalLines": 3,
-  "bom": false,
-  "contexts": [{
-    "offset": 1,
-    "limit": 3,
-    "start": 1,
-    "end": 3,
-    "complete": true,
-    "nextOffset": 4,
-    "lines": ["one", "two", "three"]
-  }],
-  "omittedRanges": []
-}
-```
-
-读取规则：
-
-- 请求包含 1 至 64 个正整数窗口；重叠或相邻窗口会归一化并合并。
-- 一个响应最多收集 2,000 个完整行，以及 50 KiB 未转义 UTF-8 行内容。
-- 放不下的行只返回最多 4,096 字节的 UTF-8 安全前缀，并标记 `line_too_long` 或 `byte_budget`；该前缀不构成 proof。
-- `complete` 表示归一化窗口末尾之前的请求行全部完整返回；为 false 时，`nextOffset` 指向第一个不完整行。
-- 空文件和仅 BOM 文件具有零个逻辑行，返回 `start:1,end:0` 的虚拟范围。
-- 至多 8 KiB 的签名预检会把受支持图片报告为 `image_candidate`；文本候选仍会完整扫描 NUL、UTF-8 合法性和 raw revision。
-- read stdin 上限为 1 MiB。
-
-## 提交修改
-
-请求：
-
-```json
-{
-  "protocolVersion": 1,
-  "path": "C:/work/file.txt",
-  "expectedRevision": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-  "proof": [{"start": 2, "lines": ["two"]}],
-  "replacements": [{"start": 2, "end": 2, "text": "TWO"}],
-  "deletions": [],
-  "insertionsBefore": [],
-  "insertionsAfter": []
-}
-```
-
-四个 group 都是必需数组。坐标均为 1-based source-snapshot 坐标，replacement/deletion 的 `end` 包含在范围内。所有被消费行和 insertion 依附行都必须精确出现在 `proof` 中。
-
-成功响应按 replacement、deletion、insertion-before、insertion-after 和各自输入顺序，为每个请求项返回一个确定性 effect：
-
-```json
-{
-  "ok": true,
-  "protocolVersion": 1,
-  "path": "C:/work/file.txt",
-  "outcome": "applied",
-  "sourceRevision": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-  "newRevision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
   "contentChanged": true,
-  "stats": {
-    "requestedChanges": 1,
-    "effectiveChanges": 1,
-    "oldLineCount": 3,
-    "newLineCount": 3,
-    "insertedLines": 1,
-    "deletedLines": 1
-  },
-  "effects": [{
-    "group": "replacement",
-    "groupIndex": 0,
-    "changed": true,
-    "oldStart": 2,
-    "oldEnd": 2,
-    "newLineCount": 1,
-    "lineDelta": 0,
-    "newStart": 2,
-    "newEnd": 2
-  }],
-  "warnings": []
+  "firstChangedLine": 2,
+  "lastChangedLine": 4,
+  "editsApplied": 2,
+  "updatedAnchors": {
+    "lines": [{"line":2,"anchor":"2#aB3","text":"updated"}],
+    "offset": 2,
+    "limit": 1,
+    "desiredLimit": 1,
+    "truncated": false
+  }
 }
 ```
 
-提交规则：
-
-- 所有 group 都相对于同一提交 revision 同时解释。消费范围不得重叠；两个 insertion 不得共享同一物理 boundary；insertion 不得落入消费范围内部。
-- 每组最多 100 项；单个请求最多 200 个 change、1 MiB replacement text 和 20,000 个产出逻辑行。
-- Proof 最多 10,000 行和 4 MiB 行文本；apply stdin 上限为 32 MiB。
-- 文本以 LF 分隔，禁止 CR 和 NUL。末尾一个 LF 只移除末尾 split segment，不额外产生空逻辑行。
-- 空 replacement text 表示一个空逻辑行；删除范围必须使用 `deletions`。
-- 零行目标只接受一个 line 1 的 `insertionsBefore`，且 proof 必须为空。仅此场景由 text 的末尾 LF 决定新文件 trailing newline。
-- 单行 replacement 若首行重复源行并继续追加多行，且没有明确相邻 insertion，会按可疑范围扩展拒绝。
-- 未变化 replacement 返回 `outcome:"no_op"`、相同 revision、`contentChanged:false`，且不触碰文件系统。
-
-## 失败与退出契约
-
-可信的逻辑拒绝使用退出码 0，并返回：
+Stale anchors are rejected atomically:
 
 ```json
 {
   "ok": false,
-  "protocolVersion": 1,
-  "code": "snapshot_stale",
-  "message": "expectedRevision does not match the current target",
-  "targetCommitted": false,
-  "currentRevision": "sha256:...",
-  "requiredRanges": [{"start": 2, "end": 2}],
-  "contexts": [],
-  "omittedRanges": []
+  "error": "stale",
+  "message": "anchor 6#xY7: stale",
+  "remaps": [{"requested":"6#xY7","current":"6#xY8"}],
+  "currentRevision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "currentAnchors": {
+    "lines": [{"line":6,"anchor":"6#xY8","text":"current line"}],
+    "offset": 4, "limit": 5, "desiredLimit": 5, "truncated": false
+  }
 }
 ```
 
-响应可附带 `group`、`groupIndex` 和 `conflictsWith`。恢复 context 可能受限或缺失；stale 坐标是 approximate，绝不能触发自动重放。
+## Hash format
 
-| 退出码 | 含义 |
-| --- | --- |
-| 0 | 有效 wire outcome；继续检查 `ok` 和 `outcome`/`code`。 |
-| 1 | 基础设施失败或替换完成状态不确定；调用方必须把已启动 apply 视为 outcome unknown。 |
-| 2 | 命令行使用错误；usage 写入 stderr。 |
+Anchors are `LN#HHH`:
 
-输入对象拒绝 unknown、duplicate、missing、null 和 trailing fields。消息按 UTF-8 限制为 4,096 字节。
+- `LN` is the 1-indexed line number.
+- `HHH` is a 3-character URL-safe Base64 content hash.
+- The hash uses FNV-1a 32-bit, normalized trailing whitespace, and the alphabet `A-Z`, `a-z`, `0-9`, `-`, `_`; it encodes the low 18 hash bits.
+- Blank or punctuation-only lines mix the line number into the hash so identical structural lines are easier for models to distinguish.
 
-## 文件系统与字节保真
+## Behavior notes
 
-- Revision 哈希覆盖精确源字节，包括 UTF-8 BOM、混合 CRLF/LF terminator、作为文本的孤立 CR 和 trailing-newline 状态。
-- 未修改源行保留自己的 terminator；生成行继承局部 terminator 策略；BOM 与 trailing-newline 状态保持稳定。
-- 目标必须是单链接常规文件。symlink 会解析到真实目标并保留链接入口；hardlink 目标被拒绝。
-- Changed apply 创建唯一 `.snapline-*` 同目录临时文件，保留权限、写入并同步，再复核目标/父目录身份及 raw revision，最后原子替换。
-- 替换前检测到的竞态是确认零写入；无法确认替换结果时退出 1；提交后目录 durability 失败仍是 changed success，并带 `post_commit_durability` warning。
-- Read、no-op 和 rejected apply 不创建临时文件；未知旧 `.snapline-*` 文件不会按前缀或时间被删除。
+- Writes resolve symlink targets, use unique temporary siblings, preserve existing permission bits, and atomically replace the real target.
+- Every content-changing write rechecks the target's exact raw-byte revision immediately before replacement and returns `source_changed_before_commit` rather than overwriting a detected external change.
+- All anchors in a write are validated before writing.
+- Input must be valid UTF-8; an existing UTF-8 BOM is hidden from line text and preserved across writes.
+- Batch JSON rejects unknown fields and trailing values so misspelled protocol fields cannot silently change edit semantics.
+- Files with multiple hard links are rejected rather than silently breaking link identity or weakening atomicity.
+- Validated no-op replacements return `contentChanged:false` without touching the filesystem.
+- Batch insert supports `"after": true`; insert and replace/delete operations may not target the same anchor or range.
+- Logical failures (`stale`, `source_changed_before_commit`, `invalid`, `binary`, `encoding`, `range`, `io`) are reported as JSON on stdout.
+- CLI misuse exits `2`; unrecoverable infrastructure failures exit `1`; normal logical outcomes exit `0`.
 
-## 集成与迁移
+## Failure modes
 
-受支持的 Pi 集成是 [`pi-snapline`](../pi-snapline/)。Snapline 1.0 有意移除了旧 anchor commands、旧 binary alias、内容匹配编辑以及旧 standalone/MCP wire contract。现有集成必须迁移到 wire protocol 1，或固定在旧版本。
+- stale anchor -> inspect `currentAnchors`; only explicitly retry when its complete window still covers the intended target and range, otherwise re-read the affected range
+- binary file -> stop and use a text file
+- invalid UTF-8 -> convert the file explicitly before editing; hledit will not rewrite undecodable bytes
+- invalid anchor or CLI misuse -> fix args
+- I/O error -> check path and permissions
+- hard-link rejection -> choose a regular single-link target; hledit will not pick between atomicity and shared-inode updates
+- text `read` output may append a truncation sentinel; use `--json` for machine parsing
 
-规范见 [`SPEC.md`](./SPEC.md)，版本历史见 [`CHANGELOG.md`](./CHANGELOG.md)。
+## When not to use it
+
+- binary files
+- minified or positional-only edits where anchors add no value
+- workflows that need fuzzy matching instead of stale-safe rejection
+
+## Credits and prior art
+
+The core hashline-edit idea comes from Can Bölük / @can1357's work on coding-agent harnesses, especially [“I Improved 15 LLMs at Coding in One Afternoon. Only the Harness Changed.”](https://blog.can.ac/2026/02/12/the-harness-problem/) and [`oh-my-pi`](https://github.com/can1357/oh-my-pi). Read that article for the deeper technical rationale and benchmark discussion.
+
+This version is maintained in the [`hledit-toolkit`](https://github.com/Qihuanxishini/hledit-toolkit) monorepo and is derived from [`dabito/hledit`](https://github.com/dabito/hledit). Its scope remains intentionally narrow:
+
+- standalone stdlib Go CLI, not a full agent harness;
+- stable JSON outputs for agent/tool integration;
+- deterministic stale-checking edits with no fuzzy matching;
+- Pi integration provided by [`pi-hledit-diff`](../pi-hledit-diff/).
+
+Additional prior art: [`aron/hashline`](https://github.com/aron/hashline), a reference Go implementation/spec for hash-anchored line editing.
+
+## Project docs
+
+- [`SPEC.md`](./SPEC.md) — implementation contract
+- [`CHANGELOG.md`](./CHANGELOG.md) — release history

@@ -52,8 +52,20 @@ type LoadedTextFile struct {
 	Revision    string
 }
 
+func loadTextFile(path string) (LoadedTextFile, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return LoadedTextFile{}, err
+	}
+	return parseTextFile(content)
+}
+
 func parseTextFile(content []byte) (LoadedTextFile, error) {
-	if bytes.IndexByte(content, 0x00) >= 0 {
+	searchLimit := len(content)
+	if searchLimit > 8192 {
+		searchLimit = 8192
+	}
+	if bytes.IndexByte(content[:searchLimit], 0x00) >= 0 {
 		return LoadedTextFile{}, errBinaryFile
 	}
 	if !utf8.Valid(content) {
@@ -161,42 +173,36 @@ func localLineEnding(endings []LineEnding, index int) LineEnding {
 	return LFLineEnding
 }
 
-// LineSplice 描述一次有效变更在源文件坐标系中的消费区间与行数变化。
-// 纯插入使用 SourceEnd == SourceStart-1 的空区间；所有 splice 按物理输出顺序
-// 排列，非空消费区间互不重叠。
-type LineSplice struct {
-	SourceStart int
-	SourceEnd   int
-	LineDelta   int
-}
-
-// rebuildLineEndings 为重建后的逻辑行分配 terminator：
+// rebuiltLineEndings 按 Phase 3 规则为重建后的行分配 terminator：
 //
-//   - 未被任何 splice 消费的源行保留自己的 terminator；
-//   - 每个 splice 的新行使用消费区间附近的局部行尾，最后一行继承被替换区间
-//     末行的 terminator（纯插入无消费区间，全部使用边界附近的局部行尾）；
+//   - 未被任何 delta 消费的原始行保留自己的 terminator；
+//   - 每个 delta 的新行使用消费区间附近的局部行尾，最后一行继承被替换区间
+//     末行的 terminator（纯插入无消费区间，全部使用锚点附近的局部行尾）；
 //   - 原 EOF 无 terminator 的行被平移到中间时补局部行尾；
 //   - 原文件 trailing newline 的存在性保持。
-func rebuildLineEndings(source LoadedTextFile, splices []LineSplice, rebuiltCount int) []LineEnding {
+//
+// deltas 必须与 CLI editDeltas 相同：原始 1-based 行坐标、按物理输出顺序排列、
+// 消费区间互不重叠（纯插入是 OldEnd == OldStart-1 的空区间）。
+func rebuiltLineEndings(source LoadedTextFile, deltas []EditDelta, rebuiltCount int) []LineEnding {
 	endings := source.LineEndings
 	rebuilt := make([]LineEnding, 0, rebuiltCount)
 	cursor := 1
-	for _, splice := range splices {
-		rebuilt = append(rebuilt, endings[cursor-1:splice.SourceStart-1]...)
-		consumed := splice.SourceEnd - splice.SourceStart + 1
-		produced := consumed + splice.LineDelta
+	for _, delta := range deltas {
+		rebuilt = append(rebuilt, endings[cursor-1:delta.OldStart-1]...)
+		consumed := delta.OldEnd - delta.OldStart + 1
+		produced := consumed + delta.Delta
 		if produced > 0 {
-			local := localLineEnding(endings, splice.SourceEnd-1)
+			local := localLineEnding(endings, delta.OldEnd-1)
 			for i := 0; i < produced-1; i++ {
 				rebuilt = append(rebuilt, local)
 			}
 			if consumed > 0 {
-				rebuilt = append(rebuilt, endings[splice.SourceEnd-1])
+				rebuilt = append(rebuilt, endings[delta.OldEnd-1])
 			} else {
 				rebuilt = append(rebuilt, local)
 			}
 		}
-		cursor = splice.SourceEnd + 1
+		cursor = delta.OldEnd + 1
 	}
 	rebuilt = append(rebuilt, endings[cursor-1:]...)
 

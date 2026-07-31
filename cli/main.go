@@ -1,93 +1,22 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"os"
 )
 
-const version = "3.0.0"
+const version = "1.0.0"
 
-// splitArgs separates a command's args into flags and positionals so that
-// flags may appear before OR after the positional file argument (e.g.
-// "read-range main.go --offset 4" and "read-range --offset 4 main.go" both
-// work). Go's flag package stops at the first non-flag arg, so we reorder.
-// A bare "-" is treated as a positional (stdin content-source).
-func splitArgs(args []string) (positionals []string, flags []string) {
-	// Flags that take a value ("-x v" form) in our subcommands.
-	valueFlags := map[string]bool{"-offset": true, "--offset": true, "-limit": true, "--limit": true, "-grep": true, "--grep": true, "-context": true, "--context": true}
-	boolFlags := map[string]bool{"--before": true, "--after": true, "--json": true, "-json": true, "--pretty": true, "-pretty": true, "--check": true, "-check": true, "--ignore-case": true, "-ignore-case": true}
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if a == "-" {
-			positionals = append(positionals, a)
-			continue
-		}
-		if valueFlags[a] {
-			flags = append(flags, a)
-			if i+1 < len(args) {
-				flags = append(flags, args[i+1])
-				i++
-			}
-			continue
-		}
-		if boolFlags[a] {
-			flags = append(flags, a)
-			continue
-		}
-		if len(a) > 0 && a[0] == '-' {
-			positionals = append(positionals, a)
-			continue
-		}
-		positionals = append(positionals, a)
-	}
-	return positionals, flags
-}
-
-const usage = `hledit — hash-anchored line editor for AI coding agents
+const usage = `Snapline — snapshot-bound transactional text editing
 
 Usage:
-  hledit --version
-  hledit capabilities
-  hledit read <file> [--grep <pattern>] [--context N] [--ignore-case] [--json] [--pretty]
-  hledit read-range <file> [--offset N] [--limit M] [--grep <pattern>] [--context N] [--ignore-case] [--json] [--pretty]
-  hledit anchors <file> [--offset N] [--limit M] [--grep <pattern>] [--context N] [--ignore-case] [--json] [--pretty]
-  hledit replace <file> <anchor> <content-source>
-  hledit replace-range <file> <anchor> <end-anchor> <content-source>
-  hledit insert [--before|--after] <file> <anchor> <content-source>
-  hledit batch [--check] <file>
+  snapline --version
+  snapline capabilities
+  snapline read       # JSON request on stdin; JSON result on stdout
+  snapline apply      # JSON request on stdin; JSON result on stdout
 
-Arguments:
-  <anchor>          LN#HHH from a prior read, e.g. 5#aB3
-  <content-source>  - for stdin, or a file path
-
-Batch input (JSON on stdin):
-  {"edits": [
-    {"op": "replace", "pos": "12#aB3", "lines": ["new line"]},
-    {"op": "replace", "pos": "12#aB3", "end_pos": "18#xY7", "lines": ["new block"]},
-    {"op": "delete", "pos": "5#nK2"},
-    {"op": "insert", "pos": "8#Qw_", "after": true, "lines": ["inserted"]}
-  ]}
-
-Examples:
-  hledit read main.go
-  hledit read-range main.go --offset 40 --limit 20
-  printf '  return nil\n' | hledit replace main.go 12#aB3 -
-  hledit replace-range main.go 12#aB3 18#xY7 /tmp/new-block.txt
-  cat header.txt | hledit insert --before main.go 1#Qw_ -
-  printf '// done\n' | hledit insert --after main.go 99#nK2 -
-  echo '{"edits":[{"op":"replace","pos":"12#aB3","lines":["fixed"]}]}' | hledit batch main.go
-  echo '{"edits":[{"op":"replace","pos":"12#aB3","lines":["fixed"]}]}' | hledit batch --check main.go
-
-Notes:
-  - replace/replace-range with empty content deletes the target line/range.
-  - batch applies multiple edits atomically: all anchors validated first,
-    then the non-overlapping edits rebuild the file once before a single atomic write.
-  - batch insert supports "after": true; omit it or set false to insert before the anchor.
-  - batch --check validates all anchors and ops without writing; result includes checked:true.
-  - All write verbs validate anchors before writing. If any anchor is stale,
-    nothing is written and stdout contains JSON {"ok":false,"error":"stale",...}.
-  - Logical errors exit 0 and are reported as JSON on stdout; CLI misuse exits 2.
+Logical wire results, including safe rejections, use exit code 0.
+Command misuse uses exit code 2. Infrastructure or uncertain failures use exit code 1.
 `
 
 func main() {
@@ -95,143 +24,52 @@ func main() {
 }
 
 func run(argv []string) int {
-	if len(argv) < 1 {
+	if len(argv) == 0 {
 		fmt.Print(usage)
 		return 0
 	}
-
-	// Handle --version globally
-	if argv[0] == "--version" || argv[0] == "-v" {
-		fmt.Printf("hledit %s\n", version)
+	if argv[0] == "--version" {
+		if len(argv) != 1 {
+			fmt.Fprint(os.Stderr, usage)
+			return 2
+		}
+		fmt.Printf("Snapline %s\n", version)
 		return 0
 	}
 
-	verb := argv[0]
-	args := argv[1:]
-
-	switch verb {
-	case "read":
-		positionals, flagArgs := splitArgs(args)
-		fs := flag.NewFlagSet("read", flag.ExitOnError)
-		grep := fs.String("grep", "", "filter lines by substring match")
-		contextN := fs.Int("context", 0, "include N surrounding lines for each grep match")
-		ignoreCase := fs.Bool("ignore-case", false, "match the grep pattern case-insensitively")
-		pretty := fs.Bool("pretty", false, "emit ANSI-styled text for human reading")
-		jsonOut := fs.Bool("json", false, "emit structured JSON instead of annotated text")
-		fs.Parse(flagArgs)
-		if len(positionals) != 1 {
-			fmt.Fprint(os.Stderr, usage)
-			return 2
-		}
-		return mustRun(cmdReadPretty(positionals[0], *grep, *contextN, *ignoreCase, *jsonOut, *pretty))
-
-	case "read-range":
-		positionals, flagArgs := splitArgs(args)
-		fs := flag.NewFlagSet("read-range", flag.ExitOnError)
-		offset := fs.Int("offset", 1, "1-indexed starting line")
-		limit := fs.Int("limit", 2000, "max lines to return")
-		grep := fs.String("grep", "", "filter lines by substring match")
-		contextN := fs.Int("context", 0, "include N surrounding lines for each grep match")
-		ignoreCase := fs.Bool("ignore-case", false, "match the grep pattern case-insensitively")
-		pretty := fs.Bool("pretty", false, "emit ANSI-styled text for human reading")
-		jsonOut := fs.Bool("json", false, "emit structured JSON instead of annotated text")
-		fs.Parse(flagArgs)
-		if len(positionals) != 1 {
-			fmt.Fprint(os.Stderr, usage)
-			return 2
-		}
-		return mustRun(cmdReadRangePretty(positionals[0], *offset, *limit, *grep, *contextN, *ignoreCase, *jsonOut, *pretty))
-
-	case "anchors":
-		positionals, flagArgs := splitArgs(args)
-		fs := flag.NewFlagSet("anchors", flag.ExitOnError)
-		offset := fs.Int("offset", 1, "1-indexed starting line")
-		limit := fs.Int("limit", 2000, "max lines to return")
-		grep := fs.String("grep", "", "filter lines by substring match")
-		contextN := fs.Int("context", 0, "include N surrounding lines for each grep match")
-		ignoreCase := fs.Bool("ignore-case", false, "match the grep pattern case-insensitively")
-		pretty := fs.Bool("pretty", false, "emit ANSI-styled text for human reading")
-		jsonOut := fs.Bool("json", false, "emit structured JSON instead of annotated text")
-		fs.Parse(flagArgs)
-		if len(positionals) != 1 {
-			fmt.Fprint(os.Stderr, usage)
-			return 2
-		}
-		return mustRun(cmdAnchorsPretty(positionals[0], *offset, *limit, *grep, *contextN, *ignoreCase, *jsonOut, *pretty))
-
-	case "replace":
-		if len(args) != 3 {
-			fmt.Fprint(os.Stderr, usage)
-			return 2
-		}
-		return mustRun(cmdReplace(args[0], args[1], args[2]))
-
-	case "replace-range":
-		if len(args) != 4 {
-			fmt.Fprint(os.Stderr, usage)
-			return 2
-		}
-		return mustRun(cmdReplaceRange(args[0], args[1], args[2], args[3]))
-
-	case "insert":
-		positionals, flagArgs := splitArgs(args)
-		fs := flag.NewFlagSet("insert", flag.ExitOnError)
-		before := fs.Bool("before", false, "insert before the anchor (default)")
-		after := fs.Bool("after", false, "insert after the anchor")
-		fs.Parse(flagArgs)
-		if len(positionals) != 3 || (*before && *after) {
-			fmt.Fprint(os.Stderr, usage)
-			return 2
-		}
-		return mustRun(cmdInsert(positionals[0], positionals[1], positionals[2], *after))
-
-	case "batch":
-		positionals, flagArgs := splitArgs(args)
-		fs := flag.NewFlagSet("batch", flag.ExitOnError)
-		check := fs.Bool("check", false, "validate only, do not write")
-		fs.Parse(flagArgs)
-		if len(positionals) != 1 {
-			fmt.Fprint(os.Stderr, usage)
-			return 2
-		}
-		if *check {
-			return mustRun(runBatchCheck(positionals[0]))
-		}
-		return mustRun(runBatchApply(positionals[0]))
-
-	case "version":
-		fmt.Printf("hledit %s\n", version)
-		return 0
-
+	if len(argv) != 1 {
+		fmt.Fprint(os.Stderr, usage)
+		return 2
+	}
+	switch argv[0] {
 	case "capabilities":
-		return mustRun(emitJSON(CLICapabilities{
-			OK:                  true,
-			Version:             version,
-			AnchorProtocolV2:    true,
-			BatchInsertAfter:    true,
-			BatchCheck:          true,
-			BatchUpdatedAnchors: true,
-			BatchStaleContext:   true,
-			ReadRangeMetadata:   true,
-			BatchWireV3:         true,
-			BatchReadProof:      true,
-			BatchEditDeltas:     true,
-			ReadIgnoreCase:      true,
+		return mustRun(emitWireJSON(SnaplineCapabilities{
+			OK:                         true,
+			Product:                    "snapline",
+			Version:                    version,
+			WireProtocol:               snaplineProtocolVersion,
+			RawRevision:                "sha256",
+			MultiWindowRead:            true,
+			BoundedBinaryPreflight:     true,
+			GroupedAtomicApply:         true,
+			CompleteReadProof:          true,
+			PreCommitRevisionCheck:     true,
+			StructuredEditEffects:      true,
+			StructuredRecoveryContexts: true,
 		}))
-
+	case "read":
+		return mustRun(runSnaplineRead())
+	case "apply":
+		return mustRun(runSnaplineApply())
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return 0
-
 	default:
-		fmt.Fprintf(os.Stderr, "unknown verb %q\n\n%s", verb, usage)
+		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", argv[0], usage)
 		return 2
 	}
 }
 
-// mustRun handles the return value of a cmd* function. Per SPEC §9, cmd*
-// functions return nil for all logical errors (they emit JSON themselves);
-// a non-nil return indicates an unrecoverable infrastructure failure → exit 1.
 func mustRun(err error) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -1,221 +1,141 @@
 package main
 
-// [喵喵喵]: 混合行尾逐行保留的回归矩阵 (2026-07-25)。
-// 目标行为：逐行保留 terminator——未修改行的行尾字节保持原样，replacement 最后
-// 一行继承被替换范围末行的 terminator，新行使用编辑位置附近的局部行尾，原文件
-// trailing newline 的存在性保持，不再整文件归一化，也不再返回 mixed warning。
+// [喵喵喵]: Snapline 混合行尾逐行保留回归矩阵 (2026-07-31)。
+// 未修改行保留原 terminator；替换末行继承消费范围末行 terminator；新行使用
+// 编辑位置附近的局部样式；BOM 与 trailing-newline 状态保持。
 
 import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func mixedEOLWriteFile(t *testing.T, dir, name, content string) string {
+func runMixedEOLSnaplineApply(t *testing.T, original string, request SnaplineApplyRequest) (SnaplineApplyResult, string) {
 	t.Helper()
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "mixed.txt")
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return path
-}
-
-func mixedEOLAssertFile(t *testing.T, path, want string) {
-	t.Helper()
-	content, err := os.ReadFile(path)
+	file, err := parseTextFile([]byte(original))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(content) != want {
-		t.Fatalf("file content = %q; want %q", string(content), want)
+	request.ProtocolVersion = 1
+	request.Path = path
+	request.ExpectedRevision = file.Revision
+	request.Proof = []SnaplineProofRange{}
+	if len(file.Lines) > 0 {
+		request.Proof = []SnaplineProofRange{{Start: 1, Lines: append([]string(nil), file.Lines...)}}
 	}
-}
-
-// 成功输出既不得含 mixed 警告，revision 也必须等于最终文件真实字节的 SHA-256。
-func mixedEOLAssertBatchSuccess(t *testing.T, output, path string) {
-	t.Helper()
-	if strings.Contains(output, "line endings") {
-		t.Fatalf("output = %q; must not warn about line endings", output)
+	if request.Replacements == nil {
+		request.Replacements = []SnaplineReplacement{}
 	}
-	var result BatchEditResult
+	if request.Deletions == nil {
+		request.Deletions = []SnaplineDeletion{}
+	}
+	if request.InsertionsBefore == nil {
+		request.InsertionsBefore = []SnaplineInsertion{}
+	}
+	if request.InsertionsAfter == nil {
+		request.InsertionsAfter = []SnaplineInsertion{}
+	}
+	output := snaplineApplyJSON(t, request)
+	var result SnaplineApplyResult
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
-		t.Fatalf("json.Unmarshal: %v (output=%q)", err, output)
+		t.Fatalf("decode apply result: %v (output=%q)", err, output)
 	}
-	if !result.OK {
-		t.Fatalf("batch result ok = false: %q", output)
+	if !result.OK || result.Outcome != "applied" || !result.ContentChanged {
+		t.Fatalf("apply result = %#v", result)
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := rawFileRevision(content); result.Revision != want {
-		t.Fatalf("revision = %q; want raw-byte revision %q", result.Revision, want)
+	if result.NewRevision != rawFileRevision(content) {
+		t.Fatalf("revision = %q; want %q", result.NewRevision, rawFileRevision(content))
 	}
+	return result, string(content)
 }
 
-func TestMixedEOLBatchReplacePreservesUntouchedTerminators(t *testing.T) {
-	dir := t.TempDir()
-	target := mixedEOLWriteFile(t, dir, "mixed.txt", "a\r\nb\nc\r\nd\n")
-
-	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
-		OP: "replace", Pos: formatTag(2, "b"), Lines: []string{"B"},
-	}}}, false)
-
-	mixedEOLAssertBatchSuccess(t, output, target)
-	mixedEOLAssertFile(t, target, "a\r\nB\nc\r\nd\n")
-}
-
-func TestMixedEOLBatchReplaceFirstLineKeepsCRLF(t *testing.T) {
-	dir := t.TempDir()
-	target := mixedEOLWriteFile(t, dir, "mixed.txt", "a\r\nb\nc\r\nd\n")
-
-	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
-		OP: "replace", Pos: formatTag(1, "a"), Lines: []string{"A"},
-	}}}, false)
-
-	mixedEOLAssertBatchSuccess(t, output, target)
-	mixedEOLAssertFile(t, target, "A\r\nb\nc\r\nd\n")
-}
-
-func TestMixedEOLBatchExpansionUsesLocalStyleAndInheritsLast(t *testing.T) {
-	dir := t.TempDir()
-	target := mixedEOLWriteFile(t, dir, "mixed.txt", "a\r\nb\nc\r\nd\n")
-
-	// 被替换范围末行是 LF：中间新行使用局部 LF，最后一行继承 LF。
-	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
-		OP: "replace", Pos: formatTag(2, "b"), Lines: []string{"X", "Y"},
-	}}}, false)
-
-	mixedEOLAssertBatchSuccess(t, output, target)
-	mixedEOLAssertFile(t, target, "a\r\nX\nY\nc\r\nd\n")
-}
-
-func TestMixedEOLBatchRangeReplaceInheritsRangeEndTerminator(t *testing.T) {
-	dir := t.TempDir()
-	target := mixedEOLWriteFile(t, dir, "mixed.txt", "a\r\nb\nc\r\nd\n")
-
-	// 范围 [2,3] 末行是 CRLF：替换后唯一新行继承 CRLF。
-	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
-		OP: "replace", Pos: formatTag(2, "b"), EndPos: formatTag(3, "c"), Lines: []string{"BC"},
-	}}}, false)
-
-	mixedEOLAssertBatchSuccess(t, output, target)
-	mixedEOLAssertFile(t, target, "a\r\nBC\r\nd\n")
-}
-
-func TestMixedEOLBatchInsertBeforeFirstLineUsesForwardLocalStyle(t *testing.T) {
-	dir := t.TempDir()
-	target := mixedEOLWriteFile(t, dir, "mixed.txt", "a\r\nb\nc\r\nd\n")
-
-	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
-		OP: "insert", Pos: formatTag(1, "a"), Lines: []string{"N"},
-	}}}, false)
-
-	mixedEOLAssertBatchSuccess(t, output, target)
-	mixedEOLAssertFile(t, target, "N\r\na\r\nb\nc\r\nd\n")
-}
-
-func TestMixedEOLBatchInsertAfterUsesAnchorLocalStyle(t *testing.T) {
-	dir := t.TempDir()
-	target := mixedEOLWriteFile(t, dir, "mixed.txt", "a\r\nb\nc\r\nd\n")
-
-	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
-		OP: "insert", Pos: formatTag(2, "b"), After: true, Lines: []string{"N"},
-	}}}, false)
-
-	mixedEOLAssertBatchSuccess(t, output, target)
-	mixedEOLAssertFile(t, target, "a\r\nb\nN\nc\r\nd\n")
-}
-
-func TestMixedEOLInsertAfterUnterminatedLastLine(t *testing.T) {
-	dir := t.TempDir()
-	target := mixedEOLWriteFile(t, dir, "tail.txt", "a\r\nb")
-
-	// 原末行无 terminator：追加后原末行获得局部 CRLF，新末行继续无 terminator。
-	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
-		OP: "insert", Pos: formatTag(2, "b"), After: true, Lines: []string{"N"},
-	}}}, false)
-
-	mixedEOLAssertBatchSuccess(t, output, target)
-	mixedEOLAssertFile(t, target, "a\r\nb\r\nN")
-}
-
-func TestMixedEOLDeleteToEOFPreservesMissingTrailingNewline(t *testing.T) {
-	dir := t.TempDir()
-	target := mixedEOLWriteFile(t, dir, "tail.txt", "a\r\nb\nc")
-
-	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
-		OP: "delete", Pos: formatTag(2, "b"), EndPos: formatTag(3, "c"),
-	}}}, false)
-
-	mixedEOLAssertBatchSuccess(t, output, target)
-	mixedEOLAssertFile(t, target, "a")
-}
-
-func TestMixedEOLDeleteLastLineKeepsTrailingNewline(t *testing.T) {
-	dir := t.TempDir()
-	target := mixedEOLWriteFile(t, dir, "tail.txt", "a\r\nb\n")
-
-	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
-		OP: "delete", Pos: formatTag(2, "b"),
-	}}}, false)
-
-	mixedEOLAssertBatchSuccess(t, output, target)
-	mixedEOLAssertFile(t, target, "a\r\n")
-}
-
-func TestMixedEOLDeleteAllLinesLeavesEmptyFile(t *testing.T) {
-	dir := t.TempDir()
-	target := mixedEOLWriteFile(t, dir, "all.txt", "a\r\nb\n")
-
-	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
-		OP: "delete", Pos: formatTag(1, "a"), EndPos: formatTag(2, "b"),
-	}}}, false)
-
-	mixedEOLAssertBatchSuccess(t, output, target)
-	mixedEOLAssertFile(t, target, "")
-}
-
-func TestMixedEOLBatchMultipleEditsPreserveEachRegion(t *testing.T) {
-	dir := t.TempDir()
-	target := mixedEOLWriteFile(t, dir, "multi.txt", "a\r\nb\nc\r\nd\ne\r\n")
-
-	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{
-		{OP: "replace", Pos: formatTag(1, "a"), Lines: []string{"A"}},
-		{OP: "insert", Pos: formatTag(3, "c"), After: true, Lines: []string{"N"}},
-		{OP: "delete", Pos: formatTag(4, "d")},
-	}}, false)
-
-	mixedEOLAssertBatchSuccess(t, output, target)
-	// A 继承 CRLF；N 依附 c（CRLF）；d（LF）删除；b、c、e 行尾原样。
-	mixedEOLAssertFile(t, target, "A\r\nb\nc\r\nN\r\ne\r\n")
-}
-
-func TestMixedEOLBOMPreservedWithPerLineTerminators(t *testing.T) {
-	dir := t.TempDir()
-	target := mixedEOLWriteFile(t, dir, "bom.txt", utf8BOM+"a\r\nb\n")
-
-	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
-		OP: "replace", Pos: formatTag(2, "b"), Lines: []string{"B"},
-	}}}, false)
-
-	mixedEOLAssertBatchSuccess(t, output, target)
-	mixedEOLAssertFile(t, target, utf8BOM+"a\r\nB\n")
-}
-
-func TestMixedEOLSingleVerbReplacePreservesTerminators(t *testing.T) {
-	dir := t.TempDir()
-	target := mixedEOLWriteFile(t, dir, "verb.txt", "a\r\nb\nc\r\n")
-	contentSrc := editTestWriteLinesFile(t, dir, "content.txt", "B")
-
-	output := editTestCaptureStdout(t, func() {
-		_ = cmdReplace(target, formatTag(2, "b"), contentSrc)
-	})
-
-	if strings.Contains(output, "line endings") {
-		t.Fatalf("output = %q; must not warn about line endings", output)
+func TestSnaplineMixedEOLMatrix(t *testing.T) {
+	tests := map[string]struct {
+		original string
+		request  SnaplineApplyRequest
+		want     string
+	}{
+		"replace preserves untouched terminators": {
+			original: "a\r\nb\nc\r\nd\n",
+			request:  SnaplineApplyRequest{Replacements: []SnaplineReplacement{{Start: 2, End: 2, Text: "B"}}},
+			want:     "a\r\nB\nc\r\nd\n",
+		},
+		"replace first line keeps CRLF": {
+			original: "a\r\nb\nc\r\nd\n",
+			request:  SnaplineApplyRequest{Replacements: []SnaplineReplacement{{Start: 1, End: 1, Text: "A"}}},
+			want:     "A\r\nb\nc\r\nd\n",
+		},
+		"expansion uses local style": {
+			original: "a\r\nb\nc\r\nd\n",
+			request:  SnaplineApplyRequest{Replacements: []SnaplineReplacement{{Start: 2, End: 2, Text: "X\nY"}}},
+			want:     "a\r\nX\nY\nc\r\nd\n",
+		},
+		"range replacement inherits range end": {
+			original: "a\r\nb\nc\r\nd\n",
+			request:  SnaplineApplyRequest{Replacements: []SnaplineReplacement{{Start: 2, End: 3, Text: "BC"}}},
+			want:     "a\r\nBC\r\nd\n",
+		},
+		"insert before first uses forward style": {
+			original: "a\r\nb\nc\r\nd\n",
+			request:  SnaplineApplyRequest{InsertionsBefore: []SnaplineInsertion{{Line: 1, Text: "N"}}},
+			want:     "N\r\na\r\nb\nc\r\nd\n",
+		},
+		"insert after uses boundary style": {
+			original: "a\r\nb\nc\r\nd\n",
+			request:  SnaplineApplyRequest{InsertionsAfter: []SnaplineInsertion{{Line: 2, Text: "N"}}},
+			want:     "a\r\nb\nN\nc\r\nd\n",
+		},
+		"insert after unterminated last line": {
+			original: "a\r\nb",
+			request:  SnaplineApplyRequest{InsertionsAfter: []SnaplineInsertion{{Line: 2, Text: "N"}}},
+			want:     "a\r\nb\r\nN",
+		},
+		"delete through EOF preserves absent trailing newline": {
+			original: "a\r\nb\nc",
+			request:  SnaplineApplyRequest{Deletions: []SnaplineDeletion{{Start: 2, End: 3}}},
+			want:     "a",
+		},
+		"delete last line preserves trailing newline": {
+			original: "a\r\nb\n",
+			request:  SnaplineApplyRequest{Deletions: []SnaplineDeletion{{Start: 2, End: 2}}},
+			want:     "a\r\n",
+		},
+		"delete all lines produces empty file": {
+			original: "a\r\nb\n",
+			request:  SnaplineApplyRequest{Deletions: []SnaplineDeletion{{Start: 1, End: 2}}},
+			want:     "",
+		},
+		"multiple edits preserve each region": {
+			original: "a\r\nb\nc\r\nd\ne\r\n",
+			request: SnaplineApplyRequest{
+				Replacements:    []SnaplineReplacement{{Start: 1, End: 1, Text: "A"}},
+				Deletions:       []SnaplineDeletion{{Start: 4, End: 4}},
+				InsertionsAfter: []SnaplineInsertion{{Line: 3, Text: "N"}},
+			},
+			want: "A\r\nb\nc\r\nN\r\ne\r\n",
+		},
+		"BOM is preserved": {
+			original: utf8BOM + "a\r\nb\n",
+			request:  SnaplineApplyRequest{Replacements: []SnaplineReplacement{{Start: 2, End: 2, Text: "B"}}},
+			want:     utf8BOM + "a\r\nB\n",
+		},
 	}
-	mixedEOLAssertFile(t, target, "a\r\nB\nc\r\n")
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, content := runMixedEOLSnaplineApply(t, test.original, test.request)
+			if content != test.want {
+				t.Fatalf("content = %q; want %q", content, test.want)
+			}
+		})
+	}
 }

@@ -3,35 +3,16 @@ package main
 import (
 	"bytes"
 	"errors"
-	"os"
-	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 )
 
-func TestParseTextFileRejectsInvalidUTF8(t *testing.T) {
-	_, err := parseTextFile([]byte{'a', 0xff, 'b'})
-	if !errors.Is(err, errInvalidUTF8) {
-		t.Fatalf("parseTextFile error = %v; want errInvalidUTF8", err)
+func TestParseTextFileRejectsInvalidUTF8AndNUL(t *testing.T) {
+	if _, err := parseTextFile([]byte{'a', 0xff, 'b'}); !errors.Is(err, errInvalidUTF8) {
+		t.Fatalf("invalid UTF-8 error = %v", err)
 	}
-}
-
-func TestReadFileLinesReportsInvalidUTF8(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "invalid.txt")
-	if err := os.WriteFile(target, []byte{'a', 0xff, 'b'}, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	output := readTestCaptureStdout(t, func() {
-		lines, errored := readFileLines(target)
-		if !errored || lines != nil {
-			t.Fatalf("readFileLines = %#v, %v; want nil, true", lines, errored)
-		}
-	})
-	if !strings.Contains(output, `"error":"encoding"`) {
-		t.Fatalf("output = %q; want encoding error", output)
+	if _, err := parseTextFile([]byte{'a', 0, 'b'}); !errors.Is(err, errBinaryFile) {
+		t.Fatalf("NUL error = %v", err)
 	}
 }
 
@@ -39,45 +20,33 @@ func TestLoadedTextFilePreservesUTF8BOM(t *testing.T) {
 	content := append([]byte(utf8BOM), []byte("alpha\r\nbeta\r\n")...)
 	file, err := parseTextFile(content)
 	if err != nil {
-		t.Fatalf("parseTextFile returned error: %v", err)
+		t.Fatal(err)
 	}
-	if !file.HasUTF8BOM {
-		t.Fatal("HasUTF8BOM = false; want true")
+	if !file.HasUTF8BOM || !slices.Equal(file.Lines, []string{"alpha", "beta"}) || file.Revision != rawFileRevision(content) {
+		t.Fatalf("parsed file = %#v", file)
 	}
-	if got, want := file.Lines, []string{"alpha", "beta"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("Lines = %#v; want %#v", got, want)
-	}
-
-	joined := file.EncodeContent([]string{"alpha", "gamma"}, []LineEnding{CRLFLineEnding, CRLFLineEnding})
+	encoded := file.EncodeContent([]string{"alpha", "gamma"}, []LineEnding{CRLFLineEnding, CRLFLineEnding})
 	want := append([]byte(utf8BOM), []byte("alpha\r\ngamma\r\n")...)
-	if !bytes.Equal(joined, want) {
-		t.Fatalf("EncodeContent bytes = %v; want %v", joined, want)
+	if !bytes.Equal(encoded, want) {
+		t.Fatalf("encoded = %q; want %q", encoded, want)
 	}
 }
 
-func TestBatchEditPreservesUTF8BOM(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "bom.txt")
-	original := append([]byte(utf8BOM), []byte("alpha\n")...)
-	if err := os.WriteFile(target, original, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
-		OP: "replace", Pos: formatTag(1, "alpha"), Lines: []string{"beta"},
-	}}}, false)
-	content, err := os.ReadFile(target)
+func TestParseTextFileBOMOnlyHasZeroLogicalLines(t *testing.T) {
+	file, err := parseTextFile([]byte(utf8BOM))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := append([]byte(utf8BOM), []byte("beta\n")...)
-	if !bytes.Equal(content, want) {
-		t.Fatalf("content = %v; want %v", content, want)
+	if !file.HasUTF8BOM || len(file.Lines) != 0 || len(file.LineEndings) != 0 {
+		t.Fatalf("BOM-only file = %#v", file)
+	}
+	if encoded := file.EncodeContent(nil, nil); !bytes.Equal(encoded, []byte(utf8BOM)) {
+		t.Fatalf("encoded BOM-only file = %q", encoded)
 	}
 }
 
 func TestParseTextFileTracksPerLineTerminators(t *testing.T) {
-	cases := []struct {
+	tests := []struct {
 		name    string
 		content string
 		lines   []string
@@ -91,40 +60,18 @@ func TestParseTextFileTracksPerLineTerminators(t *testing.T) {
 		{"trailing lone CR is line text", "a\n b\r", []string{"a", " b\r"}, []LineEnding{LFLineEnding, NoLineEnding}},
 		{"empty", "", []string{}, []LineEnding{}},
 	}
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			file, err := parseTextFile([]byte(testCase.content))
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			file, err := parseTextFile([]byte(test.content))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(file.Lines) != len(file.LineEndings) {
-				t.Fatalf("len(Lines)=%d len(LineEndings)=%d; invariant violated", len(file.Lines), len(file.LineEndings))
+			if !slices.Equal(file.Lines, test.lines) || !slices.Equal(file.LineEndings, test.endings) {
+				t.Fatalf("lines/endings = %#v / %#v; want %#v / %#v", file.Lines, file.LineEndings, test.lines, test.endings)
 			}
-			if !slices.Equal(file.Lines, testCase.lines) {
-				t.Fatalf("Lines = %#v; want %#v", file.Lines, testCase.lines)
-			}
-			if !slices.Equal(file.LineEndings, testCase.endings) {
-				t.Fatalf("LineEndings = %#v; want %#v", file.LineEndings, testCase.endings)
-			}
-			// 无损性：原样编码必须逐字节还原源文本（不含被剥离的 BOM）。
-			if rejoined := string(file.EncodeContent(file.Lines, file.LineEndings)); rejoined != testCase.content {
-				t.Fatalf("EncodeContent round-trip = %q; want %q", rejoined, testCase.content)
+			if encoded := string(file.EncodeContent(file.Lines, file.LineEndings)); encoded != test.content {
+				t.Fatalf("round trip = %q; want %q", encoded, test.content)
 			}
 		})
-	}
-}
-
-func TestBatchEditDoesNotWarnOnUniformLineEndings(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, "uniform.txt")
-	if err := os.WriteFile(target, []byte("a\nb\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	output := batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
-		OP: "replace", Pos: formatTag(1, "a"), Lines: []string{"A"},
-	}}}, false)
-	if strings.Contains(output, "line endings") {
-		t.Fatalf("output = %q; must not warn on uniform line endings", output)
 	}
 }

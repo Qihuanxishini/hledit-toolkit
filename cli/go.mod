@@ -1,3 +1,3 @@
-module github.com/Qihuanxishini/hledit-toolkit/cli
+module github.com/Qihuanxishini/snapline/cli
 
 go 1.21

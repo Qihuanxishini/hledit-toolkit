@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,189 +10,229 @@ import (
 	"time"
 )
 
-func atomicWriteMustSucceed(t *testing.T, path string, content []byte) {
+func snaplineTargetForWrite(t *testing.T, path string) snaplineLoadedTarget {
 	t.Helper()
-	warning, err := atomicWrite(path, content)
+	target, failure := readSnaplineTarget(path)
+	if failure != nil {
+		t.Fatalf("readSnaplineTarget(%q) failed: %#v", path, failure)
+	}
+	return target
+}
+
+func replaceSnaplineTargetMustSucceed(t *testing.T, target snaplineLoadedTarget, content []byte) {
+	t.Helper()
+	warning, err := replaceSnaplineTarget(target, content)
 	if err != nil {
-		t.Fatalf("atomicWrite(%q) failed: %v", path, err)
+		t.Fatalf("replaceSnaplineTarget(%q) failed: %v", target.CanonicalPath, err)
 	}
 	if warning != "" {
-		t.Fatalf("atomicWrite(%q) warning = %q; want none", path, warning)
+		t.Fatalf("replaceSnaplineTarget(%q) warning = %q; want none", target.CanonicalPath, warning)
 	}
 }
 
-func assertNoAtomicTempFiles(t *testing.T, dir string) {
+func assertNoSnaplineTempFiles(t *testing.T, directory string) {
 	t.Helper()
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".hledit-") {
+		if strings.HasPrefix(entry.Name(), ".snapline-") {
 			t.Fatalf("found leftover temporary file %q", entry.Name())
 		}
 	}
 }
 
-func TestAtomicWrite(t *testing.T) {
-	t.Run("creates and overwrites with no temporary residue", func(t *testing.T) {
-		dir := t.TempDir()
-		target := filepath.Join(dir, "test.txt")
-		atomicWriteMustSucceed(t, target, []byte("hello world"))
-		beforeOverwrite, err := os.Stat(target)
-		if err != nil {
-			t.Fatal(err)
-		}
-		atomicWriteMustSucceed(t, target, []byte("new content"))
-
-		got, err := os.ReadFile(target)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytes.Equal(got, []byte("new content")) {
-			t.Fatalf("target content = %q; want %q", got, "new content")
-		}
-		afterOverwrite, err := os.Stat(target)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if afterOverwrite.Mode().Perm() != beforeOverwrite.Mode().Perm() {
-			t.Fatalf("target permissions = %v; want preserved %v", afterOverwrite.Mode().Perm(), beforeOverwrite.Mode().Perm())
-		}
-		assertNoAtomicTempFiles(t, dir)
-	})
-
-	t.Run("does not reuse the legacy fixed temporary path", func(t *testing.T) {
-		dir := t.TempDir()
-		target := filepath.Join(dir, "test.txt")
-		legacyTemp := target + ".hledit.tmp"
-		if err := os.WriteFile(target, []byte("old"), 0644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(legacyTemp, []byte("sentinel"), 0644); err != nil {
-			t.Fatal(err)
-		}
-
-		atomicWriteMustSucceed(t, target, []byte("new"))
-		legacyContent, err := os.ReadFile(legacyTemp)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(legacyContent) != "sentinel" {
-			t.Fatalf("legacy temporary path changed to %q", legacyContent)
-		}
-		assertNoAtomicTempFiles(t, dir)
-	})
-
-	t.Run("preserves a symlink and updates its target", func(t *testing.T) {
-		dir := t.TempDir()
-		target := filepath.Join(dir, "target.txt")
-		link := filepath.Join(dir, "link.txt")
-		if err := os.WriteFile(target, []byte("old"), 0644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(target, link); err != nil {
-			t.Skipf("symlinks are unavailable in this environment: %v", err)
-		}
-
-		atomicWriteMustSucceed(t, link, []byte("new"))
-		linkInfo, err := os.Lstat(link)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if linkInfo.Mode()&os.ModeSymlink == 0 {
-			t.Fatal("atomic write replaced the symlink itself")
-		}
-		targetContent, err := os.ReadFile(target)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(targetContent) != "new" {
-			t.Fatalf("symlink target content = %q; want new", targetContent)
-		}
-	})
-
-	t.Run("rejects files with multiple hard links", func(t *testing.T) {
-		dir := t.TempDir()
-		target := filepath.Join(dir, "target.txt")
-		alias := filepath.Join(dir, "alias.txt")
-		if err := os.WriteFile(target, []byte("old"), 0644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Link(target, alias); err != nil {
-			t.Skipf("hard links are unavailable in this environment: %v", err)
-		}
-
-		warning, err := atomicWrite(target, []byte("new"))
-		if err == nil || !strings.Contains(err.Error(), "hard links") {
-			t.Fatalf("atomicWrite error = %v; want explicit hard-link rejection", err)
-		}
-		if warning != "" {
-			t.Fatalf("hard-link rejection warning = %q; want none", warning)
-		}
-		for _, path := range []string{target, alias} {
-			content, readErr := os.ReadFile(path)
-			if readErr != nil {
-				t.Fatal(readErr)
-			}
-			if string(content) != "old" {
-				t.Fatalf("%s content = %q; want unchanged", path, content)
-			}
-		}
-	})
-}
-
-func TestAtomicWriteErrors(t *testing.T) {
-	dir := t.TempDir()
-	missingParentTarget := filepath.Join(dir, "missing", "test.txt")
-	if _, err := atomicWrite(missingParentTarget, []byte("x")); err == nil {
-		t.Fatal("expected error for missing parent directory")
-	}
-
-	targetDir := filepath.Join(dir, "target-dir")
-	if err := os.Mkdir(targetDir, 0755); err != nil {
+func TestReplaceSnaplineTargetPreservesPermissionsAndCleansTemp(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "target.txt")
+	if err := os.WriteFile(path, []byte("old"), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := atomicWrite(targetDir, []byte("x")); err == nil {
-		t.Fatal("expected error when target is a directory")
-	}
-	assertNoAtomicTempFiles(t, dir)
-}
-
-// 回归测试：写入路径不得按名字清理目录中已存在的 .hledit-* 文件。仅凭前缀与
-// mtime 无法证明文件由本工具创建，曾经的孤儿清理会在编辑前删除名为 .hledit-*
-// 的真实目标与同目录无关文件（数据丢失）。
-func TestAtomicWriteNeverDeletesExistingDotHleditFiles(t *testing.T) {
-	dir := t.TempDir()
-	target := filepath.Join(dir, ".hledit-important")
-	bystander := filepath.Join(dir, ".hledit-notes")
-	if err := os.WriteFile(target, []byte("old"), 0644); err != nil {
+	before, err := os.Stat(path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(bystander, []byte("keep"), 0644); err != nil {
+	replaceSnaplineTargetMustSucceed(t, snaplineTargetForWrite(t, path), []byte("new content"))
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(content, []byte("new content")) {
+		t.Fatalf("content = %q", content)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Mode().Perm() != before.Mode().Perm() {
+		t.Fatalf("permissions = %v; want %v", after.Mode().Perm(), before.Mode().Perm())
+	}
+	assertNoSnaplineTempFiles(t, directory)
+}
+
+func TestReplaceSnaplineTargetResolvesSymlinkOnce(t *testing.T) {
+	directory := t.TempDir()
+	targetPath := filepath.Join(directory, "target.txt")
+	linkPath := filepath.Join(directory, "link.txt")
+	if err := os.WriteFile(targetPath, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	target := snaplineTargetForWrite(t, linkPath)
+	if target.CanonicalPath == linkPath {
+		t.Fatal("snapshot target was not canonicalized")
+	}
+	replaceSnaplineTargetMustSucceed(t, target, []byte("new"))
+	linkInfo, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("canonical write replaced the symlink entry")
+	}
+	content, _ := os.ReadFile(targetPath)
+	if string(content) != "new" {
+		t.Fatalf("symlink target content = %q", content)
+	}
+	assertNoSnaplineTempFiles(t, directory)
+}
+
+func TestReplaceSnaplineTargetRejectsHardlinks(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "target.txt")
+	alias := filepath.Join(directory, "alias.txt")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(path, alias); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	target := snaplineTargetForWrite(t, path)
+	warning, err := replaceSnaplineTarget(target, []byte("new"))
+	if err == nil || !strings.Contains(err.Error(), "hard links") || warning != "" {
+		t.Fatalf("warning/error = %q / %v; want hard-link rejection", warning, err)
+	}
+	for _, currentPath := range []string{path, alias} {
+		content, readErr := os.ReadFile(currentPath)
+		if readErr != nil || string(content) != "old" {
+			t.Fatalf("%s content/error = %q / %v", currentPath, content, readErr)
+		}
+	}
+	assertNoSnaplineTempFiles(t, directory)
+}
+
+func TestReplaceSnaplineTargetRejectsContentRace(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "target.txt")
+	if err := os.WriteFile(path, []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := snaplineTargetForWrite(t, path)
+	originalHook := beforeAtomicRevisionCheck
+	defer func() { beforeAtomicRevisionCheck = originalHook }()
+	beforeAtomicRevisionCheck = func(string) {
+		if err := os.WriteFile(path, []byte("external"), 0o644); err != nil {
+			t.Fatalf("external write: %v", err)
+		}
+	}
+	warning, err := replaceSnaplineTarget(target, []byte("planned"))
+	var changedErr *sourceChangedBeforeCommitError
+	if !errors.As(err, &changedErr) || changedErr.CurrentRevision != rawFileRevision([]byte("external")) || warning != "" {
+		t.Fatalf("warning/error = %q / %#v", warning, err)
+	}
+	content, _ := os.ReadFile(path)
+	if string(content) != "external" {
+		t.Fatalf("race target content = %q", content)
+	}
+	assertNoSnaplineTempFiles(t, directory)
+}
+
+func TestReplaceSnaplineTargetRejectsSameContentIdentitySwap(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "target.txt")
+	oldPath := filepath.Join(directory, "original-inode.txt")
+	if err := os.WriteFile(path, []byte("same bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := snaplineTargetForWrite(t, path)
+	originalHook := beforeAtomicRevisionCheck
+	defer func() { beforeAtomicRevisionCheck = originalHook }()
+	beforeAtomicRevisionCheck = func(string) {
+		if err := os.Rename(path, oldPath); err != nil {
+			t.Fatalf("move original target: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("same bytes"), 0o644); err != nil {
+			t.Fatalf("create replacement target: %v", err)
+		}
+	}
+	warning, err := replaceSnaplineTarget(target, []byte("planned"))
+	var changedErr *sourceChangedBeforeCommitError
+	if !errors.As(err, &changedErr) || !strings.Contains(err.Error(), "identity changed") || warning != "" {
+		t.Fatalf("warning/error = %q / %v", warning, err)
+	}
+	for _, currentPath := range []string{path, oldPath} {
+		content, readErr := os.ReadFile(currentPath)
+		if readErr != nil || string(content) != "same bytes" {
+			t.Fatalf("%s content/error = %q / %v", currentPath, content, readErr)
+		}
+	}
+	assertNoSnaplineTempFiles(t, directory)
+}
+
+func TestReplaceSnaplineTargetRejectsCapturedParentMismatch(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "target.txt")
+	if err := os.WriteFile(path, []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := snaplineTargetForWrite(t, path)
+	otherParentInfo, err := os.Stat(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	target.ParentInfo = otherParentInfo
+	warning, replaceErr := replaceSnaplineTarget(target, []byte("planned"))
+	var changedErr *sourceChangedBeforeCommitError
+	if !errors.As(replaceErr, &changedErr) || !strings.Contains(replaceErr.Error(), "parent identity changed") || warning != "" {
+		t.Fatalf("warning/error = %q / %v", warning, replaceErr)
+	}
+	content, _ := os.ReadFile(path)
+	if string(content) != "source" {
+		t.Fatalf("target content = %q", content)
+	}
+	assertNoSnaplineTempFiles(t, directory)
+}
+
+// 未知 .snapline-* 文件不能按前缀或 mtime 自动清理；它可能是用户文件。
+func TestReplaceSnaplineTargetNeverDeletesUnknownSnaplineFiles(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "target.txt")
+	bystander := filepath.Join(directory, ".snapline-user-notes")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bystander, []byte("keep"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	staleTime := time.Now().Add(-2 * time.Hour)
-	for _, path := range []string{target, bystander} {
-		if err := os.Chtimes(path, staleTime, staleTime); err != nil {
-			t.Fatal(err)
+	if err := os.Chtimes(bystander, staleTime, staleTime); err != nil {
+		t.Fatal(err)
+	}
+	replaceSnaplineTargetMustSucceed(t, snaplineTargetForWrite(t, path), []byte("new"))
+	content, err := os.ReadFile(bystander)
+	if err != nil || string(content) != "keep" {
+		t.Fatalf("bystander content/error = %q / %v", content, err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".snapline-") && entry.Name() != filepath.Base(bystander) {
+			t.Fatalf("found unexpected temporary file %q", entry.Name())
 		}
-	}
-
-	atomicWriteMustSucceed(t, target, []byte("new"))
-
-	got, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("target named like a temp file was deleted: %v", err)
-	}
-	if string(got) != "new" {
-		t.Fatalf("target content = %q; want %q", got, "new")
-	}
-	bystanderContent, err := os.ReadFile(bystander)
-	if err != nil {
-		t.Fatalf("unrelated .hledit-* sibling was deleted: %v", err)
-	}
-	if string(bystanderContent) != "keep" {
-		t.Fatalf("bystander content = %q; want unchanged", bystanderContent)
 	}
 }

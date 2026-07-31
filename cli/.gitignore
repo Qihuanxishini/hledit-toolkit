@@ -1,6 +1,6 @@
 # Local build outputs
 /dist/
-/hledit
+/snapline
 
 # Coverage / profiling
 *.cover
@@ -8,7 +8,7 @@ coverage.out
 *.prof
 
 # Extension dependencies
-/pi-hledit/node_modules/
+/pi-snapline/node_modules/
 
 # Editor / OS noise
 .DS_Store

@@ -40,40 +40,109 @@ func (e *sourceChangedBeforeCommitError) Unwrap() error {
 	return e.err
 }
 
+// writeFailedBeforeReplaceError 保证 replaceFile 尚未被调用，因此可安全报告零提交。
+type writeFailedBeforeReplaceError struct {
+	err error
+}
+
+func (e *writeFailedBeforeReplaceError) Error() string {
+	return fmt.Sprintf("write failed before replace: %v", e.err)
+}
+
+func (e *writeFailedBeforeReplaceError) Unwrap() error {
+	return e.err
+}
+
 func resolveAtomicWriteTarget(path string) (string, error) {
-	resolved, err := filepath.EvalSymlinks(path)
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute target %q: %w", path, err)
+	}
+	resolved, err := filepath.EvalSymlinks(absolutePath)
 	if err == nil {
-		return resolved, nil
+		return filepath.Clean(resolved), nil
 	}
 	if !errors.Is(err, fs.ErrNotExist) {
-		return "", fmt.Errorf("resolve target %q: %w", path, err)
+		return "", fmt.Errorf("resolve target %q: %w", absolutePath, err)
 	}
 
 	// 已存在但目标缺失的 symlink 不能当作普通新文件覆盖，否则会悄悄破坏链接。
-	if _, lstatErr := os.Lstat(path); lstatErr == nil {
-		return "", fmt.Errorf("resolve target %q: %w", path, err)
+	if _, lstatErr := os.Lstat(absolutePath); lstatErr == nil {
+		return "", fmt.Errorf("resolve target %q: %w", absolutePath, err)
 	} else if !errors.Is(lstatErr, fs.ErrNotExist) {
-		return "", fmt.Errorf("inspect target %q: %w", path, lstatErr)
+		return "", fmt.Errorf("inspect target %q: %w", absolutePath, lstatErr)
 	}
 
-	resolvedParent, parentErr := filepath.EvalSymlinks(filepath.Dir(path))
+	resolvedParent, parentErr := filepath.EvalSymlinks(filepath.Dir(absolutePath))
 	if parentErr != nil {
-		return "", fmt.Errorf("resolve parent of %q: %w", path, parentErr)
+		return "", fmt.Errorf("resolve parent of %q: %w", absolutePath, parentErr)
 	}
-	return filepath.Join(resolvedParent, filepath.Base(path)), nil
+	return filepath.Join(resolvedParent, filepath.Base(absolutePath)), nil
 }
 
 type preparedAtomicReplacement struct {
-	targetPath string
-	tempPath   string
+	targetPath   string
+	tempPath     string
+	targetInfo   os.FileInfo
+	parentInfo   os.FileInfo
+	targetExists bool
 }
 
 func (replacement *preparedAtomicReplacement) discard() {
 	_ = os.Remove(replacement.tempPath)
 }
 
+func (replacement *preparedAtomicReplacement) validateIdentity() error {
+	parentPath := filepath.Dir(replacement.targetPath)
+	parentInfo, err := os.Lstat(parentPath)
+	if err != nil {
+		return fmt.Errorf("inspect target parent %q: %w", parentPath, err)
+	}
+	if parentInfo.Mode()&os.ModeSymlink != 0 || !parentInfo.IsDir() || !os.SameFile(replacement.parentInfo, parentInfo) {
+		return fmt.Errorf("target parent identity changed for %q", replacement.targetPath)
+	}
+
+	targetInfo, err := os.Lstat(replacement.targetPath)
+	if !replacement.targetExists {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect target %q: %w", replacement.targetPath, err)
+		}
+		return fmt.Errorf("target was created before commit: %q", replacement.targetPath)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect target %q: %w", replacement.targetPath, err)
+	}
+	if targetInfo.Mode()&os.ModeSymlink != 0 || !targetInfo.Mode().IsRegular() || !os.SameFile(replacement.targetInfo, targetInfo) {
+		return fmt.Errorf("target identity changed for %q", replacement.targetPath)
+	}
+	linkCount, err := fileLinkCount(replacement.targetPath, targetInfo)
+	if err != nil {
+		return fmt.Errorf("inspect hard links for %q: %w", replacement.targetPath, err)
+	}
+	if linkCount > 1 {
+		return fmt.Errorf("target %q gained hard links before commit", replacement.targetPath)
+	}
+	return nil
+}
+
+func (replacement *preparedAtomicReplacement) validateReadIdentity(target snaplineLoadedTarget) error {
+	if !replacement.targetExists || !os.SameFile(target.Info, replacement.targetInfo) {
+		return fmt.Errorf("target identity changed since snapshot read for %q", replacement.targetPath)
+	}
+	if !os.SameFile(target.ParentInfo, replacement.parentInfo) {
+		return fmt.Errorf("target parent identity changed since snapshot read for %q", replacement.targetPath)
+	}
+	return nil
+}
+
+// replaceSnaplineFile 是原子替换结果分类测试 seam；生产环境始终指向平台实现。
+var replaceSnaplineFile = replaceFile
+
 func (replacement *preparedAtomicReplacement) commit() (warning string, err error) {
-	if err := replaceFile(replacement.tempPath, replacement.targetPath); err != nil {
+	if err := replaceSnaplineFile(replacement.tempPath, replacement.targetPath); err != nil {
 		var durabilityErr *postCommitDurabilityError
 		if errors.As(err, &durabilityErr) {
 			return durabilityErr.Error(), nil
@@ -84,22 +153,29 @@ func (replacement *preparedAtomicReplacement) commit() (warning string, err erro
 }
 
 // prepareAtomicReplacement 在真实目标旁完成临时文件写入与同步，但不替换目标。
-// [喵喵喵]: 不清理目录中滞留的 .hledit-* 文件——前缀+mtime 无法证明文件归属，
-// 曾导致名为 .hledit-* 的真实目标在编辑前被误删（数据丢失）；孤儿临时文件残留是
-// 可接受的代价，任何恢复清理的方案都必须能证明文件确由本工具创建。(2026-07-25)
+// [喵喵喵]: 不清理目录中滞留的 .snapline-* 文件；前缀和 mtime 不能证明归属，
+// 自动清理可能删除用户文件。异常终止遗留物只能在确认后由用户处理。(2026-07-31)
 func prepareAtomicReplacement(path string, content []byte) (*preparedAtomicReplacement, error) {
 	targetPath, err := resolveAtomicWriteTarget(path)
 	if err != nil {
 		return nil, err
 	}
+	parentPath := filepath.Dir(targetPath)
+	parentInfo, err := os.Lstat(parentPath)
+	if err != nil {
+		return nil, fmt.Errorf("inspect target parent %q: %w", parentPath, err)
+	}
+	if parentInfo.Mode()&os.ModeSymlink != 0 || !parentInfo.IsDir() {
+		return nil, fmt.Errorf("refusing atomic write through non-directory parent %q", parentPath)
+	}
 
-	targetInfo, statErr := os.Stat(targetPath)
+	targetInfo, statErr := os.Lstat(targetPath)
 	targetExists := statErr == nil
 	if statErr != nil && !errors.Is(statErr, fs.ErrNotExist) {
 		return nil, fmt.Errorf("inspect target %q: %w", targetPath, statErr)
 	}
 	if targetExists {
-		if !targetInfo.Mode().IsRegular() {
+		if targetInfo.Mode()&os.ModeSymlink != 0 || !targetInfo.Mode().IsRegular() {
 			return nil, fmt.Errorf("refusing atomic write to non-regular file %q", targetPath)
 		}
 		linkCount, linkErr := fileLinkCount(targetPath, targetInfo)
@@ -111,7 +187,7 @@ func prepareAtomicReplacement(path string, content []byte) (*preparedAtomicRepla
 		}
 	}
 
-	tempFile, err := os.CreateTemp(filepath.Dir(targetPath), ".hledit-*")
+	tempFile, err := os.CreateTemp(parentPath, ".snapline-*")
 	if err != nil {
 		return nil, fmt.Errorf("create temporary sibling for %q: %w", targetPath, err)
 	}
@@ -139,37 +215,46 @@ func prepareAtomicReplacement(path string, content []byte) (*preparedAtomicRepla
 		return nil, fmt.Errorf("close temporary file for %q: %w", targetPath, err)
 	}
 	removeTemp = false
-	return &preparedAtomicReplacement{targetPath: targetPath, tempPath: tempPath}, nil
-}
-
-// atomicWrite 在完整临时文件准备后原子替换目标。
-func atomicWrite(path string, content []byte) (warning string, err error) {
-	replacement, err := prepareAtomicReplacement(path, content)
-	if err != nil {
-		return "", err
-	}
-	defer replacement.discard()
-	return replacement.commit()
+	return &preparedAtomicReplacement{
+		targetPath: targetPath, tempPath: tempPath, targetInfo: targetInfo,
+		parentInfo: parentInfo, targetExists: targetExists,
+	}, nil
 }
 
 // beforeAtomicRevisionCheck 是 plan/commit 竞争测试 seam；生产环境保持 no-op。
 var beforeAtomicRevisionCheck = func(string) {}
 
-// atomicWriteIfRevision 只在临时文件准备完成后目标仍匹配 expectedRevision 时执行替换。
-func atomicWriteIfRevision(path string, content []byte, expectedRevision string) (warning string, err error) {
-	replacement, err := prepareAtomicReplacement(path, content)
+// replaceSnaplineTarget 将 snapshot read 捕获的文件/父目录身份与 raw revision 一并
+// 绑定到提交；即使外部把路径替换为相同字节的新 inode，也会 fail closed。
+func replaceSnaplineTarget(target snaplineLoadedTarget, content []byte) (warning string, err error) {
+	replacement, err := prepareAtomicReplacement(target.CanonicalPath, content)
 	if err != nil {
-		return "", err
+		return "", &writeFailedBeforeReplaceError{err: err}
 	}
 	defer replacement.discard()
 
+	if err := replacement.validateReadIdentity(target); err != nil {
+		return "", &sourceChangedBeforeCommitError{ExpectedRevision: target.File.Revision, err: err}
+	}
 	beforeAtomicRevisionCheck(replacement.targetPath)
+	if err := replacement.validateIdentity(); err != nil {
+		return "", &sourceChangedBeforeCommitError{ExpectedRevision: target.File.Revision, err: err}
+	}
+	if err := replacement.validateReadIdentity(target); err != nil {
+		return "", &sourceChangedBeforeCommitError{ExpectedRevision: target.File.Revision, err: err}
+	}
 	currentRevision, revisionErr := rawFileRevisionFromPath(replacement.targetPath)
 	if revisionErr != nil {
-		return "", &sourceChangedBeforeCommitError{ExpectedRevision: expectedRevision, err: revisionErr}
+		return "", &sourceChangedBeforeCommitError{ExpectedRevision: target.File.Revision, err: revisionErr}
 	}
-	if currentRevision != expectedRevision {
-		return "", &sourceChangedBeforeCommitError{ExpectedRevision: expectedRevision, CurrentRevision: currentRevision}
+	if currentRevision != target.File.Revision {
+		return "", &sourceChangedBeforeCommitError{ExpectedRevision: target.File.Revision, CurrentRevision: currentRevision}
+	}
+	if err := replacement.validateIdentity(); err != nil {
+		return "", &sourceChangedBeforeCommitError{ExpectedRevision: target.File.Revision, err: err}
+	}
+	if err := replacement.validateReadIdentity(target); err != nil {
+		return "", &sourceChangedBeforeCommitError{ExpectedRevision: target.File.Revision, err: err}
 	}
 	return replacement.commit()
 }

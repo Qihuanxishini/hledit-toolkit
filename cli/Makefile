@@ -1,4 +1,4 @@
-BIN := hledit
+BIN := snapline
 DIST := dist
 LOCAL_BIN ?= $(HOME)/.local/bin
 

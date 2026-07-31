@@ -36,7 +36,7 @@ jobs:
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: pi-hledit-diff
+        working-directory: pi-snapline
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -50,14 +50,14 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: pi-hledit-diff/package-lock.json
+          cache-dependency-path: pi-snapline/package-lock.json
       - name: Install dependencies
         run: npm ci
       - name: Verify tracked bundled CLI
         run: npm run test:bundled
       - name: Build bundled CLI from current source
         working-directory: cli
-        run: go build -trimpath -ldflags="-s -w" -o ../pi-hledit-diff/bin/hledit.exe .
+        run: go build -trimpath -ldflags="-s -w" -o ../pi-snapline/bin/snapline.exe .
       - name: Verify rebuilt bundled CLI
         run: npm run test:bundled
       - name: Check

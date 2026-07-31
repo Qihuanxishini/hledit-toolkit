@@ -9,37 +9,13 @@ import (
 	"testing"
 )
 
-func mainTestCaptureStdout(t *testing.T, fn func()) string {
+func mainTestRunForCode(t *testing.T, stdin string, args ...string) (stdout, stderr string, code int) {
 	t.Helper()
-	old := os.Stdout
-	r, w, err := os.Pipe()
+	oldIn, oldOut, oldErr := os.Stdin, os.Stdout, os.Stderr
+	inR, inW, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Stdout = w
-	fn()
-	_ = w.Close()
-	os.Stdout = old
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(out)
-}
-
-func mainTestRunMain(t *testing.T, args ...string) string {
-	t.Helper()
-	return mainTestCaptureStdout(t, func() {
-		if code := run(args); code != 0 {
-			t.Fatalf("run(%v) exit code = %d, want 0", args, code)
-		}
-	})
-}
-
-func mainTestRunForCode(t *testing.T, args ...string) (stdout, stderr string, code int) {
-	t.Helper()
-	oldOut := os.Stdout
-	oldErr := os.Stderr
 	outR, outW, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -48,220 +24,188 @@ func mainTestRunForCode(t *testing.T, args ...string) (stdout, stderr string, co
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Stdout = outW
-	os.Stderr = errW
+	type pipeResult struct {
+		content []byte
+		err     error
+	}
+	readPipe := func(file *os.File, result chan<- pipeResult) {
+		content, readErr := io.ReadAll(file)
+		result <- pipeResult{content: content, err: readErr}
+	}
+	outResult := make(chan pipeResult, 1)
+	errResult := make(chan pipeResult, 1)
+	go readPipe(outR, outResult)
+	go readPipe(errR, errResult)
+	inputDone := make(chan struct{})
+	go func() {
+		_, _ = inW.WriteString(stdin)
+		_ = inW.Close()
+		close(inputDone)
+	}()
+
+	os.Stdin, os.Stdout, os.Stderr = inR, outW, errW
 	code = run(args)
+	_ = inR.Close()
 	_ = outW.Close()
 	_ = errW.Close()
-	os.Stdout = oldOut
-	os.Stderr = oldErr
-	outBytes, err := io.ReadAll(outR)
-	if err != nil {
-		t.Fatal(err)
+	os.Stdin, os.Stdout, os.Stderr = oldIn, oldOut, oldErr
+	<-inputDone
+	capturedOut := <-outResult
+	capturedErr := <-errResult
+	_ = outR.Close()
+	_ = errR.Close()
+	if capturedOut.err != nil {
+		t.Fatal(capturedOut.err)
 	}
-	errBytes, err := io.ReadAll(errR)
-	if err != nil {
-		t.Fatal(err)
+	if capturedErr.err != nil {
+		t.Fatal(capturedErr.err)
 	}
-	return string(outBytes), string(errBytes), code
+	return string(capturedOut.content), string(capturedErr.content), code
 }
 
-func TestSplitArgs(t *testing.T) {
-	pos, flags := splitArgs([]string{"main.go", "--offset", "4", "--limit", "3", "-"})
-	if got, want := strings.Join(pos, ","), "main.go,-"; got != want {
-		t.Fatalf("positionals = %q, want %q", got, want)
+func mainTestRun(t *testing.T, stdin string, args ...string) string {
+	t.Helper()
+	stdout, stderr, code := mainTestRunForCode(t, stdin, args...)
+	if code != 0 || stderr != "" {
+		t.Fatalf("run(%v) = code %d, stderr %q", args, code, stderr)
 	}
-	if got, want := strings.Join(flags, ","), "--offset,4,--limit,3"; got != want {
-		t.Fatalf("flags = %q, want %q", got, want)
-	}
+	return stdout
+}
 
-	pos, flags = splitArgs([]string{"--after", "file.go", "1#aB3", "-"})
-	if got, want := strings.Join(pos, ","), "file.go,1#aB3,-"; got != want {
-		t.Fatalf("insert positionals = %q, want %q", got, want)
-	}
-	if got, want := strings.Join(flags, ","), "--after"; got != want {
-		t.Fatalf("insert flags = %q, want %q", got, want)
-	}
-
-	pos, flags = splitArgs([]string{"-prefix", "file.go", "1#aB3"})
-	if got, want := strings.Join(pos, ","), "-prefix,file.go,1#aB3"; got != want {
-		t.Fatalf("dash-prefixed path positionals = %q, want %q", got, want)
-	}
-	if got := strings.Join(flags, ","); got != "" {
-		t.Fatalf("dash-prefixed path flags = %q, want empty", got)
+func TestMainVersionGolden(t *testing.T) {
+	stdout, stderr, code := mainTestRunForCode(t, "", "--version")
+	if code != 0 || stderr != "" || stdout != "Snapline 1.0.0\n" {
+		t.Fatalf("version = code %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 }
 
-func TestMainCapabilities(t *testing.T) {
-	out := mainTestRunMain(t, "capabilities")
-	var got CLICapabilities
-	if err := json.Unmarshal([]byte(out), &got); err != nil {
-		t.Fatalf("capabilities output is not JSON: %q: %v", out, err)
+func TestMainCapabilitiesGolden(t *testing.T) {
+	output := mainTestRun(t, "", "capabilities")
+	var capabilities SnaplineCapabilities
+	if err := json.Unmarshal([]byte(output), &capabilities); err != nil {
+		t.Fatalf("decode capabilities: %v (output=%q)", err, output)
 	}
-	if !got.OK || got.Version != version || !got.AnchorProtocolV2 || !got.BatchInsertAfter || !got.BatchCheck || !got.BatchUpdatedAnchors || !got.BatchStaleContext || !got.ReadRangeMetadata || !got.BatchWireV3 || !got.BatchReadProof || !got.BatchEditDeltas || !got.ReadIgnoreCase {
-		t.Fatalf("capabilities = %#v, want current batch and structured recovery capabilities", got)
+	if !capabilities.OK || capabilities.Product != "snapline" || capabilities.Version != version || capabilities.WireProtocol != 1 || capabilities.RawRevision != "sha256" || !capabilities.MultiWindowRead || !capabilities.BoundedBinaryPreflight || !capabilities.GroupedAtomicApply || !capabilities.CompleteReadProof || !capabilities.PreCommitRevisionCheck || !capabilities.StructuredEditEffects || !capabilities.StructuredRecoveryContexts {
+		t.Fatalf("capabilities = %#v", capabilities)
+	}
+	if strings.Contains(output, "anchorProtocol") || strings.Contains(output, "batchWire") {
+		t.Fatalf("capabilities leaked a removed protocol: %s", output)
 	}
 }
 
-func TestMainRejectsRemovedReplaceOnceVerb(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "target.txt")
-	const original = "alpha\nbeta\n"
-	if err := os.WriteFile(path, []byte(original), 0644); err != nil {
+func TestMainReadAndApplyWire(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "target.txt")
+	if err := os.WriteFile(path, []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	readRequest, _ := json.Marshal(SnaplineReadRequest{
+		ProtocolVersion: 1,
+		Path:            path,
+		Windows:         []SnaplineReadWindow{{Offset: 1, Limit: 3}},
+	})
+	readOutput := mainTestRun(t, string(readRequest), "read")
+	var readResult SnaplineReadResult
+	if err := json.Unmarshal([]byte(readOutput), &readResult); err != nil {
+		t.Fatalf("decode read result: %v (output=%q)", err, readOutput)
+	}
+	if !readResult.OK || readResult.TotalLines != 3 || len(readResult.Contexts) != 1 || len(readResult.Contexts[0].Lines) != 3 {
+		t.Fatalf("read result = %#v", readResult)
+	}
 
-	stdout, stderr, code := mainTestRunForCode(t, "replace-once", path)
-	if code != 2 || stdout != "" || !strings.Contains(stderr, `unknown verb "replace-once"`) {
-		t.Fatalf("removed verb result = code %d, stdout %q, stderr %q", code, stdout, stderr)
+	applyRequest, _ := json.Marshal(SnaplineApplyRequest{
+		ProtocolVersion:  1,
+		Path:             path,
+		ExpectedRevision: readResult.Revision,
+		Proof:            []SnaplineProofRange{{Start: 2, Lines: []string{"beta"}}},
+		Replacements:     []SnaplineReplacement{{Start: 2, End: 2, Text: "BETA"}},
+		Deletions:        []SnaplineDeletion{},
+		InsertionsBefore: []SnaplineInsertion{},
+		InsertionsAfter:  []SnaplineInsertion{},
+	})
+	applyOutput := mainTestRun(t, string(applyRequest), "apply")
+	var applyResult SnaplineApplyResult
+	if err := json.Unmarshal([]byte(applyOutput), &applyResult); err != nil {
+		t.Fatalf("decode apply result: %v (output=%q)", err, applyOutput)
+	}
+	if !applyResult.OK || applyResult.Outcome != "applied" || !applyResult.ContentChanged || len(applyResult.Effects) != 1 {
+		t.Fatalf("apply result = %#v", applyResult)
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(content) != original {
-		t.Fatalf("removed verb changed target: %q", content)
+	if string(content) != "alpha\nBETA\ngamma\n" {
+		t.Fatalf("target = %q", content)
 	}
 }
 
-func TestMainHelp(t *testing.T) {
-	out := mainTestRunMain(t, "help")
-	if !strings.Contains(out, "hledit read <file>") || !strings.Contains(out, "Examples:") {
-		t.Fatalf("help output missing expected text:\n%s", out)
-	}
-
-	stdout, stderr, code := mainTestRunForCode(t)
+func TestMainLogicalRequestErrorUsesExitZero(t *testing.T) {
+	stdout, stderr, code := mainTestRunForCode(t, `{ "protocolVersion": 1, "path": null, "windows": [] }`, "read")
 	if code != 0 || stderr != "" {
-		t.Fatalf("run(no args) code/stderr = %d/%q, want 0/empty", code, stderr)
+		t.Fatalf("logical error = code %d, stderr %q", code, stderr)
 	}
-	if !strings.Contains(stdout, "hledit read <file>") || !strings.Contains(stdout, "Examples:") {
-		t.Fatalf("no-args help output missing expected text:\n%s", stdout)
+	var failure SnaplineLogicalFailure
+	if err := json.Unmarshal([]byte(stdout), &failure); err != nil {
+		t.Fatalf("decode logical error: %v", err)
 	}
-}
-
-func TestMainReadAndReadRange(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "main.go")
-	content := "package main\n\nfunc main() {}\n"
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	out := mainTestRunMain(t, "read", path)
-	if !strings.Contains(out, formatTag(1, "package main")+":package main") || !strings.Contains(out, "3#") {
-		t.Fatalf("read output unexpected:\n%s", out)
-	}
-
-	out = mainTestRunMain(t, "read-range", path, "--offset", "3", "--limit", "1")
-	if !strings.HasPrefix(out, "3#") || !strings.Contains(out, "func main() {}") {
-		t.Fatalf("read-range output unexpected:\n%s", out)
-	}
-
-	out = mainTestRunMain(t, "read-range", "--offset", "3", "--limit", "1", path)
-	if !strings.HasPrefix(out, "3#") || !strings.Contains(out, "func main() {}") {
-		t.Fatalf("read-range flags-first output unexpected:\n%s", out)
+	if failure.OK || failure.Code != "invalid_request" || failure.TargetCommitted {
+		t.Fatalf("logical error = %#v", failure)
 	}
 }
 
-func TestMainWriteVerbs(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "main.go")
-	if err := os.WriteFile(path, []byte("package main\n\nfunc main() {\n\tprintln(\"hi\")\n}\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// replace line 4 using a content file.
-	anchor4 := formatTag(4, "\tprintln(\"hi\")")
-	repl := filepath.Join(dir, "replace.txt")
-	if err := os.WriteFile(repl, []byte("\tprintln(\"bye\")\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	out := mainTestRunMain(t, "replace", path, anchor4, repl)
-	if !strings.Contains(out, `"ok":true`) || !strings.Contains(out, `"firstChangedLine":4`) {
-		t.Fatalf("replace result unexpected: %s", out)
-	}
-
-	// insert after line 1. Use flags after positionals to cover splitArgs path.
-	anchor1 := formatTag(1, "package main")
-	ins := filepath.Join(dir, "insert.txt")
-	if err := os.WriteFile(ins, []byte("// generated\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	out = mainTestRunMain(t, "insert", path, anchor1, ins, "--after")
-	if !strings.Contains(out, `"ok":true`) || !strings.Contains(out, `"firstChangedLine":2`) {
-		t.Fatalf("insert result unexpected: %s", out)
-	}
-
-	// replace-range delete the now-empty line 3 through func line 4.
-	current, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSuffix(string(current), "\n"), "\n")
-	start := formatTag(3, lines[2])
-	end := formatTag(4, lines[3])
-	empty := filepath.Join(dir, "empty.txt")
-	if err := os.WriteFile(empty, nil, 0644); err != nil {
-		t.Fatal(err)
-	}
-	out = mainTestRunMain(t, "replace-range", path, start, end, empty)
-	if !strings.Contains(out, `"ok":true`) || !strings.Contains(out, `"firstChangedLine":3`) {
-		t.Fatalf("replace-range result unexpected: %s", out)
+func TestMainReadRejectsOversizedAndInvalidUTF8Input(t *testing.T) {
+	for name, test := range map[string]struct {
+		input string
+		code  string
+	}{
+		"oversized":     {input: strings.Repeat("x", snaplineReadInputLimit+1), code: "size_limit"},
+		"invalid UTF-8": {input: string([]byte{0xff}), code: "invalid_request"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stdout, stderr, exitCode := mainTestRunForCode(t, test.input, "read")
+			if exitCode != 0 || stderr != "" {
+				t.Fatalf("exit/stderr = %d / %q", exitCode, stderr)
+			}
+			var failure SnaplineLogicalFailure
+			if err := json.Unmarshal([]byte(stdout), &failure); err != nil {
+				t.Fatal(err)
+			}
+			if failure.Code != test.code || failure.TargetCommitted {
+				t.Fatalf("failure = %#v", failure)
+			}
+		})
 	}
 }
 
-func TestRunMisuseAndUnknownVerb(t *testing.T) {
-	tests := [][]string{
-		{"read"},
-		{"read-range", "file.go", "extra.go"},
-		{"replace", "file.go", "1#aB3"},
-		{"replace-range", "file.go", "1#aB3", "2#xY7"},
-		{"insert", "--before", "--after", "file.go", "1#aB3", "-"},
-		{"bogus"},
-	}
-	for _, args := range tests {
-		_, stderr, code := mainTestRunForCode(t, args...)
-		if code != 2 {
-			t.Fatalf("run(%v) code = %d, want 2", args, code)
+func TestMainHelpMisuseAndRemovedCommands(t *testing.T) {
+	for _, args := range [][]string{{}, {"help"}, {"--help"}} {
+		stdout, stderr, code := mainTestRunForCode(t, "", args...)
+		if code != 0 || stderr != "" || !strings.Contains(stdout, "snapline read") {
+			t.Fatalf("help %v = code %d, stdout %q, stderr %q", args, code, stdout, stderr)
 		}
-		if !strings.Contains(stderr, "hledit") {
-			t.Fatalf("run(%v) stderr missing usage text: %q", args, stderr)
+	}
+	removed := []string{"version", "read-range", "anchors", "replace", "replace-range", "insert", "batch"}
+	for _, command := range removed {
+		stdout, stderr, code := mainTestRunForCode(t, "", command)
+		if code != 2 || stdout != "" || !strings.Contains(stderr, "unknown command") {
+			t.Fatalf("removed command %q = code %d, stdout %q, stderr %q", command, code, stdout, stderr)
+		}
+	}
+	for _, args := range [][]string{{"--version", "extra"}, {"read", "path"}, {"apply", "path"}, {"capabilities", "extra"}} {
+		stdout, stderr, code := mainTestRunForCode(t, "", args...)
+		if code != 2 || stdout != "" || !strings.Contains(stderr, "Snapline") {
+			t.Fatalf("misuse %v = code %d, stdout %q, stderr %q", args, code, stdout, stderr)
 		}
 	}
 }
 
 func TestMustRun(t *testing.T) {
 	if code := mustRun(nil); code != 0 {
-		t.Fatalf("mustRun(nil) = %d, want 0", code)
+		t.Fatalf("mustRun(nil) = %d", code)
 	}
-	_, stderr, code := mainTestRunForCode(t, "help")
+	_, stderr, code := mainTestRunForCode(t, "", "help")
 	if code != 0 || stderr != "" {
-		t.Fatalf("run(help) code/stderr = %d/%q, want 0/empty", code, stderr)
+		t.Fatalf("help = code %d, stderr %q", code, stderr)
 	}
-	stderr = mainTestCaptureStderr(t, func() {
-		if code := mustRun(os.ErrPermission); code != 1 {
-			t.Fatalf("mustRun(error) = %d, want 1", code)
-		}
-	})
-	if !strings.Contains(stderr, os.ErrPermission.Error()) {
-		t.Fatalf("mustRun(error) stderr = %q", stderr)
-	}
-}
-
-func mainTestCaptureStderr(t *testing.T, fn func()) string {
-	t.Helper()
-	old := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stderr = w
-	fn()
-	_ = w.Close()
-	os.Stderr = old
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(out)
 }

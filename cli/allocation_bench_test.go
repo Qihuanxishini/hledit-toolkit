@@ -1,12 +1,9 @@
 package main
 
-// [喵喵喵]: 10 MiB 编辑路径的永久分配基线 benchmark (2026-07-25)。
-// 覆盖当前 materialization 链路，供后续内存回归对比。
-// 契约：只报告 allocs（b.ReportAllocs），不设受 Go 版本影响的硬阈值断言；
-// B/op 是累计分配，不等于同时驻留内存。
+// [喵喵喵]: 10 MiB Snapline 编辑路径的永久分配基线 benchmark (2026-07-31)。
+// 契约：只报告 allocs，不设置受 Go 版本影响的硬阈值；B/op 是累计分配。
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +12,6 @@ import (
 	"testing"
 )
 
-// 10 MiB 基线语料：每行 80 字符 + LF，行首含行号保证逐行 hash 不同。
 const benchAllocLineBytes = 81
 const benchAllocLineCount = 10 * 1024 * 1024 / benchAllocLineBytes
 
@@ -25,8 +21,7 @@ var (
 	benchAllocFile    LoadedTextFile
 
 	benchSinkFile     LoadedTextFile
-	benchSinkPlan     BatchPlan
-	benchSinkString   string
+	benchSinkChanges  []plannedSnaplineChange
 	benchSinkBytes    []byte
 	benchSinkRevision string
 )
@@ -50,20 +45,17 @@ func benchAllocFixture(b *testing.B) ([]byte, LoadedTextFile) {
 	return benchAllocContent, benchAllocFile
 }
 
-// benchAllocSingleReplaceRequest 构造带完整 proof 的单行 replace，与插件正常写入路径同形。
-func benchAllocSingleReplaceRequest(b *testing.B, file LoadedTextFile) BatchEditRequest {
-	b.Helper()
+func benchAllocSingleReplaceRequest(file LoadedTextFile) SnaplineApplyRequest {
 	targetLine := benchAllocLineCount / 2
-	tag := formatTag(targetLine, file.Lines[targetLine-1])
-	requestJSON := fmt.Sprintf(
-		`{"edits":[{"op":"replace","pos":%q,"lines":["replaced line"]}],"proof":{"revision":%q,"anchors":[%q]}}`,
-		tag, file.Revision, tag,
-	)
-	var request BatchEditRequest
-	if err := json.Unmarshal([]byte(requestJSON), &request); err != nil {
-		b.Fatalf("unmarshal benchmark batch request: %v", err)
+	return SnaplineApplyRequest{
+		ProtocolVersion:  snaplineProtocolVersion,
+		ExpectedRevision: file.Revision,
+		Proof:            []SnaplineProofRange{{Start: targetLine, Lines: []string{file.Lines[targetLine-1]}}},
+		Replacements:     []SnaplineReplacement{{Start: targetLine, End: targetLine, Text: "replaced line"}},
+		Deletions:        []SnaplineDeletion{},
+		InsertionsBefore: []SnaplineInsertion{},
+		InsertionsAfter:  []SnaplineInsertion{},
 	}
-	return request
 }
 
 func BenchmarkParseTextFile10MiB(b *testing.B) {
@@ -79,17 +71,17 @@ func BenchmarkParseTextFile10MiB(b *testing.B) {
 	}
 }
 
-func BenchmarkPlanBatchEditsSingleReplace10MiB(b *testing.B) {
+func BenchmarkPlanSnaplineSingleReplace10MiB(b *testing.B) {
 	_, file := benchAllocFixture(b)
-	request := benchAllocSingleReplaceRequest(b, file)
+	request := benchAllocSingleReplaceRequest(file)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		plan, failure := planBatchEdits(request, file.Lines, file.Revision)
+		changes, failure := planSnaplineChanges(request, file)
 		if failure != nil {
-			b.Fatalf("planBatchEdits failed: %s", failure.Message)
+			b.Fatalf("planSnaplineChanges failed: %s", failure.Message)
 		}
-		benchSinkPlan = plan
+		benchSinkChanges = changes
 	}
 }
 
@@ -112,26 +104,25 @@ func BenchmarkEncodeContentWithRevision10MiB(b *testing.B) {
 	}
 }
 
-// BenchmarkBatchOutputMaterialization10MiB 复现 runBatchApply 成功路径的输出
-// materialization：单次编码，revision 与写入直接消费同一切片（Phase 5 已收敛）。
-func BenchmarkBatchOutputMaterialization10MiB(b *testing.B) {
+func BenchmarkSnaplineOutputMaterialization10MiB(b *testing.B) {
 	_, file := benchAllocFixture(b)
-	request := benchAllocSingleReplaceRequest(b, file)
-	plan, failure := planBatchEdits(request, file.Lines, file.Revision)
+	request := benchAllocSingleReplaceRequest(file)
+	changes, failure := planSnaplineChanges(request, file)
 	if failure != nil {
-		b.Fatalf("planBatchEdits failed: %s", failure.Message)
+		b.Fatalf("planSnaplineChanges failed: %s", failure.Message)
 	}
+	effective := effectiveSnaplineChanges(changes)
+	stats := buildSnaplineStats(changes, effective, len(file.Lines))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		encoded := file.EncodeContent(plan.RebuiltLines, rebuiltLineEndings(file, plan.EditDeltas, len(plan.RebuiltLines)))
+		rebuilt := rebuildSnaplineLines(file.Lines, effective, stats.NewLineCount)
+		encoded := file.EncodeContent(rebuilt, rebuildLineEndings(file, snaplineLineSplices(effective), len(rebuilt)))
 		benchSinkRevision = rawFileRevision(encoded)
 		benchSinkBytes = encoded
 	}
 }
 
-// BenchmarkPreCommitRevisionRecheck10MiB 复现 atomicWriteIfRevision 提交前的
-// 流式 revision 复检（Phase 5 已收敛为 rawFileRevisionFromPath）。
 func BenchmarkPreCommitRevisionRecheck10MiB(b *testing.B) {
 	content, _ := benchAllocFixture(b)
 	path := filepath.Join(b.TempDir(), "recheck-target.txt")

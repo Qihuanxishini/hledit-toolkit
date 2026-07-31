@@ -377,6 +377,7 @@ Command-level failures, including `stale`, `invalid`, `binary`, `encoding`, `ran
 ├── anchor.go             # Anchor parsing + validation
 ├── write.go              # Atomic replacement and pre-commit revision recheck
 ├── go.mod
-├── PRD.md
+├── CHANGELOG.md
+├── README.md
 └── SPEC.md
 ```

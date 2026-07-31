@@ -11,10 +11,13 @@
 
 插件当前面向 Windows x64，仓库内附带 `pi-hledit-diff/bin/hledit.exe`。
 
-## 设计与优化路线
+## 文档
 
-- [`ANCHOR-EDITING-HARDENING-PLAN.md`](./ANCHOR-EDITING-HARDENING-PLAN.md)：CLI 3.0 / 插件 0.2 的协议收敛与安全加固实施记录。
-- [`OPTIMIZATION-ROADMAP.md`](./OPTIMIZATION-ROADMAP.md)、[`IMPLEMENTATION-PLAN.md`](./IMPLEMENTATION-PLAN.md) 及其他 execution plan 保留为历史实施记录；当前运行契约以代码、测试、README 和维护文档为准。
+- [`cli/README.md`](./cli/README.md)：CLI 安装、命令和使用说明。
+- [`cli/SPEC.md`](./cli/SPEC.md)：CLI 的当前实现与协议契约。
+- [`pi-hledit-diff/README.md`](./pi-hledit-diff/README.md)：Pi 插件工作流和安装说明。
+- [`pi-hledit-diff/MAINTENANCE.md`](./pi-hledit-diff/MAINTENANCE.md)：插件与 bundled CLI 的维护约束。
+- [`cli/CHANGELOG.md`](./cli/CHANGELOG.md)：CLI 版本变更记录。
 
 ## 核心特点
 

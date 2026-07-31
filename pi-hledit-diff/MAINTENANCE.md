@@ -1,6 +1,6 @@
 # pi-hledit-diff 维护与升级说明
 
-本文记录 `pi-hledit-diff` 0.2.x 与 patched `hledit` CLI 3.x 之间的硬性契约、验证方式和升级约束。历史设计见仓库根目录 execution plans；当前运行契约以代码、测试、README 和本文为准。
+本文记录 `pi-hledit-diff` 0.2.x 与 patched `hledit` CLI 3.x 之间的硬性契约、验证方式和升级约束。当前运行契约以代码、测试、README 和本文为准；版本变更历史见 [`cli/CHANGELOG.md`](../cli/CHANGELOG.md)。
 
 ## 仓库与部署边界
 

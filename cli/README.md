@@ -319,5 +319,5 @@ Additional prior art: [`aron/hashline`](https://github.com/aron/hashline), a ref
 
 ## Project docs
 
-- [`PRD.md`](./PRD.md) — product requirements
 - [`SPEC.md`](./SPEC.md) — implementation contract
+- [`CHANGELOG.md`](./CHANGELOG.md) — release history

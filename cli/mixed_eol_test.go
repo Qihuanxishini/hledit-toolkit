@@ -1,6 +1,6 @@
 package main
 
-// [喵喵喵]: OPTIMIZATION-ROADMAP Phase 3 回归矩阵 (2026-07-25)。
+// [喵喵喵]: 混合行尾逐行保留的回归矩阵 (2026-07-25)。
 // 目标行为：逐行保留 terminator——未修改行的行尾字节保持原样，replacement 最后
 // 一行继承被替换范围末行的 terminator，新行使用编辑位置附近的局部行尾，原文件
 // trailing newline 的存在性保持，不再整文件归一化，也不再返回 mixed warning。

@@ -1,7 +1,7 @@
 package main
 
-// [喵喵喵]: OPTIMIZATION-ROADMAP Phase 0 的永久分配基线 benchmark (2026-07-25)。
-// 覆盖 10 MiB 编辑路径的当前 materialization 链路，供 Phase 5 收敛前后对比。
+// [喵喵喵]: 10 MiB 编辑路径的永久分配基线 benchmark (2026-07-25)。
+// 覆盖当前 materialization 链路，供后续内存回归对比。
 // 契约：只报告 allocs（b.ReportAllocs），不设受 Go 版本影响的硬阈值断言；
 // B/op 是累计分配，不等于同时驻留内存。
 

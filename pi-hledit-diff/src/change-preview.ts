@@ -2,7 +2,7 @@ import { generateDiffString } from "@earendil-works/pi-coding-agent";
 import { lineFromAnchor } from "./file-changes.ts";
 import type { FileChangeParams } from "./schema.ts";
 
-// 提交绑定的局部 change preview（OPTIMIZATION-ROADMAP Phase 4 / D4）：
+// 提交绑定的局部 change preview：
 // 只由 anchored apply 的同 revision 消费行证据和请求新行构成；外部进程在编辑
 // 间隙的无关修改不会混入，因为这里不读取完整文件前后快照。
 

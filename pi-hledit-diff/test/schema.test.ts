@@ -37,24 +37,9 @@ test("apply file changes rejects anchors outside the CLI hash alphabet", () => {
   }
 });
 
-test("apply file changes accepts only complete explicit operations", () => {
-  assert.equal(
-    Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
-      path: "src/a.ts",
-      changes: [
-        { operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: ["next"] },
-        { operation: "delete_range", start_anchor: "3#BBK", end_anchor: "4#JKL" },
-        { operation: "insert_before", anchor: "6#MNP", lines: ["before"] },
-        { operation: "insert_after", anchor: "8#NPQ", lines: ["after"] },
-      ],
-    }),
-    true,
-  );
-});
-
-test("apply file changes accepts multiline string payloads", () => {
+test("apply file changes accepts newline-delimited text", () => {
   for (const change of [
-    { operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: "first\nsecond" },
+    { operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: "next" },
     { operation: "insert_before", anchor: "2#BBK", lines: "before\nafter" },
     { operation: "insert_after", anchor: "3#JKL", lines: "after\nnext" },
   ]) {
@@ -75,12 +60,10 @@ test("apply file changes rejects old operation shapes", () => {
 
 test("apply file changes rejects mixed and invalid operation-specific fields", () => {
   const invalidChanges = [
-    { operation: "replace_range", start_anchor: "1#BHJ", lines: ["missing end"] },
-    { operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: [] },
-    { operation: "delete_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: ["wrong"] },
-    { operation: "insert_before", anchor: "1#BHJ", end_anchor: "2#BBK", lines: ["wrong"] },
-    { operation: "insert_after", anchor: "1#BHJ", position: "after", lines: ["wrong"] },
-    { operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: ["first\nsecond"] },
+    { operation: "replace_range", start_anchor: "1#BHJ", lines: "missing end" },
+    { operation: "delete_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: "wrong" },
+    { operation: "insert_before", anchor: "1#BHJ", end_anchor: "2#BBK", lines: "wrong" },
+    { operation: "insert_after", anchor: "1#BHJ", position: "after", lines: "wrong" },
   ];
 
   for (const change of invalidChanges) {
@@ -89,7 +72,7 @@ test("apply file changes rejects mixed and invalid operation-specific fields", (
   assert.equal(
     Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
       path: "src/a.ts",
-      changes: [{ operation: "insert_after", anchor: "1#BHJ", lines: ["next"], content: "unknown" }],
+      changes: [{ operation: "insert_after", anchor: "1#BHJ", lines: "next", content: "unknown" }],
     }),
     false,
   );

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -85,15 +85,11 @@ test("registered tool metadata stays concise without losing English safeguards",
 	assert.match(readGuidelines, /ensure current evidence covers every source line[\s\S]*endpoint-only/);
 	assert.match(readGuidelines, /copy only the current LN#HASH token[\s\S]*interior anchors are carried automatically/);
 	assert.match(applyTool.description, /boundary anchors[\s\S]*hidden complete read proof/);
-	assert.match(applyGuidelines, /never overwrite[\s\S]*with write/);
-	assert.match(applyGuidelines, /empty file/);
-	assert.match(applyGuidelines, /newline-delimited strings/);
-	assert.match(applyGuidelines, /do not copy source text or interior proof anchors/);
-	assert.match(applyGuidelines, /complete, untruncated local window/);
-	assert.match(applyGuidelines, /verified renames/);
-	assert.match(applyGuidelines, /targeted reread guidance[\s\S]*continue with hledit_apply_file_changes/);
-	assert.match(JSON.stringify(applyTool.parameters), /interior proof is carried automatically/i);
-	assert.match(JSON.stringify(applyTool.parameters), /complete read or verified updated-anchor line/i);
+	assert.match(applyGuidelines, /Never overwrite a nonempty readable file with write/);
+	assert.match(applyGuidelines, /newline-delimited text/);
+	assert.match(applyGuidelines, /current LN#HASH tokens/);
+	assert.match(applyGuidelines, /review targeted recovery results/);
+	assert.match(JSON.stringify(applyTool.parameters), /New text; use/i);
 
 	const protocolCharacters = [readTool, applyTool].reduce(
 		(total, tool) => total
@@ -102,25 +98,9 @@ test("registered tool metadata stays concise without losing English safeguards",
 			+ (tool.promptGuidelines ?? []).join("").length,
 		0,
 	);
-	assert.ok(protocolCharacters <= 6600, `registered hledit protocol uses ${protocolCharacters} characters; expected at most 6600`);
+	assert.ok(protocolCharacters <= 4200, `registered hledit protocol uses ${protocolCharacters} characters; expected at most 4200`);
 });
 
-test("apply tool exposes JSON-string argument preparation to Pi", () => {
-	const { registeredTools } = registerExtensionForTest();
-	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
-	assert.ok(applyTool?.prepareArguments);
-
-	assert.deepEqual(
-		applyTool.prepareArguments({
-			path: "target.txt",
-			changes: JSON.stringify({ operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: "first\nsecond" }),
-		}),
-		{
-			path: "target.txt",
-			changes: [{ operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: ["first", "second"] }],
-		},
-	);
-});
 
 
 test("read tool returns structured ranges and actionable EOF errors", async (t) => {
@@ -213,7 +193,7 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 	const anchor = renderedAnchor!.split(":", 1)[0]!;
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: ["TWO"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: "TWO" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -249,7 +229,7 @@ test("apply tool reports a no-op without touching the target", async (t) => {
 	assert.ok(anchor);
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: ["two"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: "two" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -280,7 +260,7 @@ test("apply tool accepts byte-truncated updated anchor contexts", async (t) => {
 	assert.ok(anchor);
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: ["CHANGED"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: "CHANGED" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -336,7 +316,7 @@ test("apply tool rejects accidental single-line range expansion with actionable 
 	assert.ok(anchor);
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: ["two", "inserted"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: "two\ninserted" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -383,7 +363,7 @@ test("apply tool rejects an anchor that does not match its read proof before sta
 	const staleAnchor = `${currentAnchor.slice(0, -3)}${staleHash === "AAB" ? "AAC" : "AAB"}`;
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: staleAnchor, end_anchor: staleAnchor, lines: ["two", "inserted"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: staleAnchor, end_anchor: staleAnchor, lines: "two\ninserted" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -391,10 +371,124 @@ test("apply tool rejects an anchor that does not match its read proof before sta
 
 	assert.equal(applyResult.details.disposition, "rejected");
 	assert.equal(applyResult.details.error?.code, "insufficient_read_proof");
+	assert.equal(applyResult.details.recoveredRead?.lines.find((line) => line.line === 2)?.anchor, currentAnchor);
+	assert.equal((applyResult.details.error as Record<string, unknown> | undefined)?.recoveredRead, undefined);
 	assert.match(applyResult.content[0]?.text ?? "", /submitted anchor for line 2 does not match/);
-	assert.match(applyResult.content[0]?.text ?? "", /Call hledit_read_anchors/);
+	assert.match(applyResult.content[0]?.text ?? "", /targeted missing range was read and recorded/);
+	assert.match(applyResult.content[0]?.text ?? "", new RegExp(`${currentAnchor}:two`));
 	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /single_line_range_expansion|Current anchor snapshot/);
 	assert.equal(await readFile(target, "utf8"), original);
+});
+
+test("proof recovery stops on source-line truncation", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-source-truncated-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	const original = `${"x".repeat(60_000)}\n`;
+	await writeFile(target, original, "utf8");
+	const context = { cwd: directory };
+	const read = await readTool.execute("read", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
+	const anchor = read.details.read?.lines[0]?.anchor;
+	assert.ok(anchor);
+
+	const apply = await applyTool.execute(
+		"apply",
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: "short" }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(apply.details.disposition, "rejected");
+	assert.equal(apply.details.error?.code, "source_line_truncated");
+	assert.equal(apply.details.recoveredRead, undefined);
+	assert.match(apply.content[0]?.text ?? "", /Do not resubmit this hledit_apply_file_changes call/);
+	assert.doesNotMatch(apply.content[0]?.text ?? "", /Review the current source.*resubmit the batch/);
+	assert.equal(await readFile(target, "utf8"), original);
+});
+
+test("proof recovery exposes a missing target read error", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-recovery-error-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const result = await applyTool.execute(
+		"apply",
+		{ path: "missing.txt", changes: [{ operation: "replace_range", start_anchor: "1#AAA", end_anchor: "1#AAA", lines: "short" }] } as never,
+		undefined,
+		undefined,
+		{ cwd: directory },
+	);
+	assert.equal(result.details.disposition, "rejected");
+	assert.equal(result.details.error?.code, "proof_recovery_read_failed");
+	assert.ok(result.details.recoveryReadError?.disposition === "rejected" || result.details.recoveryReadError?.disposition === "unavailable");
+	assert.match(result.content[0]?.text ?? "", /Resolve the read error below before resubmitting/);
+	assert.match(result.content[0]?.text ?? "", /file could not be read|Error code: io|requires the bundled Windows/i);
+});
+
+test("multi-page proof recovery requests lightweight read continuation before apply", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-proof-pages-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, `${Array.from({ length: 3_000 }, (_, index) => `line-${index + 1}`).join("\n")}\n`, "utf8");
+	const context = { cwd: directory };
+	const first = await readTool.execute("first", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
+	const last = await readTool.execute("last", { path: "target.txt", offset: 3_000, limit: 1 } as never, undefined, undefined, context);
+	const startAnchor = first.details.read?.lines[0]?.anchor;
+	const endAnchor = last.details.read?.lines[0]?.anchor;
+	assert.ok(startAnchor && endAnchor);
+
+	const apply = await applyTool.execute(
+		"apply",
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: startAnchor, end_anchor: endAnchor, lines: "replacement" }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(apply.details.disposition, "rejected");
+	assert.equal(apply.details.error?.code, "insufficient_read_proof");
+	assert.equal(apply.details.recoveredRead?.nextOffset, 2_001);
+	assert.match(apply.content[0]?.text ?? "", /Call hledit_read_anchors\(\{ path: "target.txt", offset: 2001, limit: 999 \}\)/);
+	assert.match(apply.content[0]?.text ?? "", /Do not resubmit apply before then/);
+	assert.doesNotMatch(apply.content[0]?.text ?? "", /Review the current source.*resubmit the batch/);
+});
+
+test("multi-page proof continuation completes without rereading the payload", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-proof-pages-complete-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, `${Array.from({ length: 3_000 }, (_, index) => `line-${index + 1}`).join("\n")}\n`, "utf8");
+	const context = { cwd: directory };
+	const first = await readTool.execute("first", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
+	const last = await readTool.execute("last", { path: "target.txt", offset: 3_000, limit: 1 } as never, undefined, undefined, context);
+	const startAnchor = first.details.read?.lines[0]?.anchor;
+	const endAnchor = last.details.read?.lines[0]?.anchor;
+	assert.ok(startAnchor && endAnchor);
+	const params = { path: "target.txt", changes: [{ operation: "replace_range", start_anchor: startAnchor, end_anchor: endAnchor, lines: "replacement" }] } as never;
+	const initial = await applyTool.execute("apply-1", params, undefined, undefined, context);
+	assert.equal(initial.details.disposition, "rejected");
+	assert.equal(initial.details.recoveredRead?.nextOffset, 2_001);
+	const continuation = await readTool.execute("continuation", { path: "target.txt", offset: 2_001, limit: 999 } as never, undefined, undefined, context);
+	assert.equal(continuation.details.disposition, "succeeded");
+	const final = await applyTool.execute("apply-2", params, undefined, undefined, context);
+	assert.equal(final.details.disposition, "succeeded");
+	assert.equal(await readFile(target, "utf8"), "replacement\n");
 });
 
 test("apply tool suggests merging a nearby delete range without writing", async (t) => {
@@ -421,7 +515,7 @@ test("apply tool suggests merging a nearby delete range without writing", async 
 		{
 			path: "target.txt",
 			changes: [
-				{ operation: "replace_range", start_anchor: replacementAnchor, end_anchor: replacementAnchor, lines: ["two", "replacement"] },
+				{ operation: "replace_range", start_anchor: replacementAnchor, end_anchor: replacementAnchor, lines: "two\nreplacement" },
 				{ operation: "delete_range", start_anchor: deleteAnchor, end_anchor: deleteEndAnchor },
 			],
 		} as never,
@@ -462,7 +556,7 @@ test("apply tool preserves untouched terminators in a mixed line ending file", a
 
 	const result = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: ["B"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: "B" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -498,7 +592,7 @@ test("queued same-file apply sees the previous apply's remapped evidence", async
 	// 先发起 insert（会把第 3 行平移到第 4 行），随后在其 CLI 仍在运行时排队第二个 apply。
 	const insertPromise = applyTool.execute(
 		"apply-insert",
-		{ path: "target.txt", changes: [{ operation: "insert_after", anchor: anchorAt(1), lines: ["inserted"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "insert_after", anchor: anchorAt(1), lines: "inserted" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -509,7 +603,7 @@ test("queued same-file apply sees the previous apply's remapped evidence", async
 	const staleAnchor = anchorAt(3);
 	const replacePromise = applyTool.execute(
 		"apply-replace",
-		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: staleAnchor, end_anchor: staleAnchor, lines: ["THREE"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: staleAnchor, end_anchor: staleAnchor, lines: "THREE" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -517,18 +611,67 @@ test("queued same-file apply sees the previous apply's remapped evidence", async
 	const [insertResult, replaceResult] = await Promise.all([insertPromise, replacePromise]);
 
 	assert.equal(insertResult.details.disposition, "succeeded");
-	// 第二项必须在插件侧拿到基于新 evidence 的更名指引，而不是把旧 proof 发给 CLI 换回 stale。
-	assert.equal(replaceResult.details.disposition, "rejected");
-	assert.equal(replaceResult.details.error?.code, "insufficient_read_proof");
-	assert.equal(replaceResult.details.error?.renamesRestoreProof, true);
-	const renames = replaceResult.details.error?.renamedAnchors as Array<{ requested: string; current: string }>;
-	assert.equal(renames?.length, 1);
-	assert.equal(renames[0]?.requested, staleAnchor);
-	assert.match(renames[0]?.current ?? "", /^4#/);
-	assert.match(replaceResult.content[0]?.text ?? "", /Resubmit after replacing every renamed anchor/);
-	assert.equal(await readFile(target, "utf8"), "one\ninserted\ntwo\nthree\nfour\n");
+	assert.equal(replaceResult.details.disposition, "succeeded");
+	const resolvedAnchors = replaceResult.details.resolvedAnchors as Array<{ requested: string; current: string }>;
+	assert.deepEqual(resolvedAnchors.map((rename) => rename.requested), [staleAnchor]);
+	assert.match(resolvedAnchors[0]?.current ?? "", /^4#/);
+	assert.equal(await readFile(target, "utf8"), "one\ninserted\ntwo\nTHREE\nfour\n");
 });
 
+
+test("path aliases share the canonical apply queue", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-alias-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	const alias = join(directory, "alias.txt");
+	await writeFile(target, "one\ntwo\nthree\n", "utf8");
+	try {
+		await symlink(target, alias, "file");
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "EPERM" || code === "EACCES" || code === "ENOTSUP") {
+			t.skip(`symlink unavailable: ${code}`);
+			return;
+		}
+		throw error;
+	}
+	const context = { cwd: directory };
+	const read = await readTool.execute("read-alias", { path: "alias.txt" } as never, undefined, undefined, context);
+	assert.equal(read.details.disposition, "succeeded");
+	const anchorAt = (line: number) => {
+		const anchor = read.details.read?.lines.find((entry) => entry.line === line)?.anchor;
+		assert.ok(anchor);
+		return anchor;
+	};
+
+	const insertPromise = applyTool.execute(
+		"apply-target",
+		{ path: "target.txt", changes: [{ operation: "insert_after", anchor: anchorAt(1), lines: "inserted" }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	await new Promise((resolveTick) => setImmediate(resolveTick));
+	const staleAnchor = anchorAt(3);
+	const replacePromise = applyTool.execute(
+		"apply-alias",
+		{ path: "alias.txt", changes: [{ operation: "replace_range", start_anchor: staleAnchor, end_anchor: staleAnchor, lines: "THREE" }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	const [insertResult, replaceResult] = await Promise.all([insertPromise, replacePromise]);
+
+	assert.equal(insertResult.details.disposition, "succeeded");
+	assert.equal(replaceResult.details.disposition, "succeeded");
+	assert.deepEqual(replaceResult.details.resolvedAnchors?.map((rename) => rename.requested), [staleAnchor]);
+	assert.equal(await readFile(target, "utf8"), "one\ninserted\ntwo\nTHREE\n");
+});
 
 test("reused pre-edit anchor tokens are rejected without modifying the newly inserted line", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
@@ -547,7 +690,7 @@ test("reused pre-edit anchor tokens are rejected without modifying the newly ins
 	assert.ok(oldAnchor);
 	const inserted = await applyTool.execute(
 		"insert-identical",
-		{ path: "target.txt", changes: [{ operation: "insert_before", anchor: oldAnchor, lines: ["needle"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "insert_before", anchor: oldAnchor, lines: "needle" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -557,7 +700,7 @@ test("reused pre-edit anchor tokens are rejected without modifying the newly ins
 
 	const ambiguous = await applyTool.execute(
 		"reuse-old-anchor",
-		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: oldAnchor, end_anchor: oldAnchor, lines: ["CHANGED"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: oldAnchor, end_anchor: oldAnchor, lines: "CHANGED" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -572,7 +715,7 @@ test("reused pre-edit anchor tokens are rejected without modifying the newly ins
 	assert.equal(explicitRead.details.read?.lines[0]?.anchor, oldAnchor);
 	const currentEdit = await applyTool.execute(
 		"edit-current-line",
-		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: oldAnchor, end_anchor: oldAnchor, lines: ["CHANGED"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: oldAnchor, end_anchor: oldAnchor, lines: "CHANGED" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -609,7 +752,7 @@ test("consumed anchor tokens reused by a shifted duplicate require an explicit r
 
 	const ambiguous = await applyTool.execute(
 		"reuse-consumed-anchor",
-		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: consumedAnchor, end_anchor: consumedAnchor, lines: ["CHANGED"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: consumedAnchor, end_anchor: consumedAnchor, lines: "CHANGED" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -623,7 +766,7 @@ test("consumed anchor tokens reused by a shifted duplicate require an explicit r
 	assert.equal(explicitRead.details.read?.lines[0]?.anchor, consumedAnchor);
 	const currentEdit = await applyTool.execute(
 		"edit-current-duplicate",
-		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: consumedAnchor, end_anchor: consumedAnchor, lines: ["CHANGED"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: consumedAnchor, end_anchor: consumedAnchor, lines: "CHANGED" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -659,6 +802,28 @@ test("session_before_compact records anchored file operations from structured re
 					toolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, { disposition: "succeeded", contentChanged: false, path: "src/noop.ts" }),
 					toolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, { disposition: "rejected", path: "src/rejected.ts" }),
 					toolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, { disposition: "unavailable", path: "src/unavailable.ts" }),
+					toolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, {
+						disposition: "rejected",
+						path: "src/recovered-read.ts",
+						error: { code: "insufficient_read_proof", message: "read recovered" },
+						recoveredRead: {
+							path: "src/recovered-read.ts",
+							revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+							requested: { offset: 1, limit: 1 },
+							actual: { firstLine: 1, lastLine: 1, lineCount: 1, totalLines: 2 },
+							lines: [{ line: 1, anchor: "1#AAA", text: "read", textTruncated: false }],
+							truncated: true,
+							nextOffset: 2,
+							textTruncated: false,
+							eof: false,
+						},
+					}),
+					toolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, {
+						disposition: "rejected",
+						path: "src/malformed-recovery.ts",
+						error: { code: "insufficient_read_proof", message: "malformed" },
+						recoveredRead: {},
+					}),
 					{ role: "assistant", content: [] },
 				],
 				turnPrefixMessages: [
@@ -670,7 +835,8 @@ test("session_before_compact records anchored file operations from structured re
 		{ cwd: process.cwd() } as never,
 	);
 
-	assert.deepEqual([...fileOps.read].sort(), ["src/noop.ts", "src/read-only.ts"]);
+	assert.deepEqual([...fileOps.read].sort(), ["src/noop.ts", "src/read-only.ts", "src/recovered-read.ts"]);
+	assert.equal(fileOps.read.has("src/malformed-recovery.ts"), false);
 	assert.deepEqual([...fileOps.edited].sort(), ["src/edited.ts", "src/maybe-modified.ts"]);
 	assert.deepEqual([...fileOps.written], []);
 });
@@ -702,8 +868,8 @@ test("apply tool attaches a commit-bound change preview instead of a full-file d
 		{
 			path: "target.txt",
 			changes: [
-				{ operation: "replace_range", start_anchor: anchorAt(2), end_anchor: anchorAt(2), lines: ["TWO", "TWO2"] },
-				{ operation: "insert_after", anchor: anchorAt(4), lines: ["N"] },
+				{ operation: "replace_range", start_anchor: anchorAt(2), end_anchor: anchorAt(2), lines: "TWO\nTWO2" },
+				{ operation: "insert_after", anchor: anchorAt(4), lines: "N" },
 				{ operation: "delete_range", start_anchor: anchorAt(5), end_anchor: anchorAt(5) },
 			],
 		} as never,
@@ -747,7 +913,7 @@ test("no-op apply carries an empty commit-bound preview", async (t) => {
 
 	const noop = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: ["two"] }] } as never,
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: "two" }] } as never,
 		undefined,
 		undefined,
 		context,

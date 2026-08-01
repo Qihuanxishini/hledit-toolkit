@@ -119,7 +119,7 @@ test("anchored editing tools stay active regardless of current read evidence", a
 	assert.ok(currentAnchor);
 	const noOpApplyParams = {
 		path: "target.txt",
-		changes: [{ operation: "replace_range", start_anchor: currentAnchor, end_anchor: currentAnchor, lines: ["two"] }],
+		changes: [{ operation: "replace_range", start_anchor: currentAnchor, end_anchor: currentAnchor, lines: "two" }],
 	} as never;
 
 	branch = [];
@@ -193,7 +193,7 @@ test("grep reads provide partial proof without a second range read", async (t) =
 		"grep-uncovered-range",
 		{
 			path: "partial.txt",
-			changes: [{ operation: "replace_range", start_anchor: "1#AAA", end_anchor: hitAnchor, lines: ["changed"] }],
+			changes: [{ operation: "replace_range", start_anchor: "1#AAA", end_anchor: hitAnchor, lines: "changed" }],
 		} as never,
 		undefined,
 		undefined,
@@ -207,7 +207,7 @@ test("grep reads provide partial proof without a second range read", async (t) =
 		"grep-covered-line",
 		{
 			path: "partial.txt",
-			changes: [{ operation: "replace_range", start_anchor: hitAnchor, end_anchor: hitAnchor, lines: ["changed"] }],
+			changes: [{ operation: "replace_range", start_anchor: hitAnchor, end_anchor: hitAnchor, lines: "changed" }],
 		} as never,
 		undefined,
 		undefined,
@@ -234,7 +234,7 @@ test("grep reads provide partial proof without a second range read", async (t) =
 		"grep-covered-range",
 		{
 			path: "context.txt",
-			changes: [{ operation: "replace_range", start_anchor: firstAnchor, end_anchor: lastAnchor, lines: ["rewritten"] }],
+			changes: [{ operation: "replace_range", start_anchor: firstAnchor, end_anchor: lastAnchor, lines: "rewritten" }],
 		} as never,
 		undefined,
 		undefined,

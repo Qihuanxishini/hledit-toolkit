@@ -6,7 +6,6 @@ import type {
 	ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { resolve } from "node:path";
 import {
 	HLEDIT_APPLY_FILE_CHANGES_TOOL,
 	HLEDIT_READ_ANCHORS_TOOL,
@@ -28,14 +27,20 @@ import {
 	formatSingleLineRangeExpansionIssue,
 } from "./src/file-changes.ts";
 import { formatBatchUpdatedAnchorContext, type BatchAnchorContext } from "./src/post-edit-context.ts";
-import { prepareFileChangeArguments, prepareReadAnchorsArguments } from "./src/prepare-arguments.ts";
-import { formatReadProofFailure, ReadEvidenceStore, resolveReadEvidencePath } from "./src/read-evidence.ts";
-import { normalizeToolPath } from "./src/read-args.ts";
+import { decodeFileChangeInput, prepareReadAnchorsArguments } from "./src/prepare-arguments.ts";
+import {
+	formatReadProofFailure,
+	ReadEvidenceStore,
+	resolveReadEvidencePath,
+	type ReadProofFailure,
+} from "./src/read-evidence.ts";
+import { buildReadArgs, MAX_READ_LIMIT, normalizeReadRequest, normalizeToolPath } from "./src/read-args.ts";
 import { runReadAnchorsTransaction } from "./src/read-transaction.ts";
 import {
 	applyFileChangesResult,
 	fileChangeCheckFailure,
 	shouldMarkHleditResultAsError,
+	readAnchorsResult,
 	parseRunObject,
 	rejectedToolResult,
 	type TextResult,
@@ -44,6 +49,7 @@ import {
 	HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 	HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 	type FileChangeParams,
+	type FileChangeInput,
 	type ReadAnchorsParams,
 } from "./src/schema.ts";
 import {
@@ -123,6 +129,81 @@ function tryBuildChangePreview(result: TextResult, build: () => VerifiedChangePr
 	}
 }
 
+async function recoverMissingReadProof(
+	failure: ReadProofFailure,
+	normalizedPath: string,
+	evidencePath: string,
+	ctx: ExtensionContext,
+	signal: AbortSignal | undefined,
+): Promise<TextResult | undefined> {
+	const range = failure.suggestedReadRange;
+	if (!range) return undefined;
+
+	const offset = Math.max(1, range.start - 2);
+	const limit = Math.min(MAX_READ_LIMIT, Math.max(12, range.end - offset + 3));
+	const request = normalizeReadRequest({ path: normalizedPath, offset, limit });
+	const readResult = readAnchorsResult(await runHledit(buildReadArgs(request), undefined, ctx.cwd, signal), request);
+	const queuedReadResult = attachEvidencePath(readResult, normalizedPath, evidencePath);
+	const base = formatReadProofFailure(normalizedPath, failure).split("\nCall hledit_read_anchors", 1)[0]!;
+	const failureContext = {
+		...(failure.renamedAnchors ? { renamedAnchors: failure.renamedAnchors } : {}),
+		...(failure.proofGap
+			? { changeNumber: failure.proofGap.changeNumber, operation: failure.proofGap.operation }
+			: {}),
+	};
+
+	if (queuedReadResult.details.disposition !== "succeeded" || !queuedReadResult.details.read) {
+		const message = "The targeted recovery read failed before edit proof could be established.";
+		const rejected = rejectedToolResult([
+			base,
+			`${message} Resolve the read error below before resubmitting; no write was attempted.`,
+			queuedReadResult.content[0]?.text ?? "",
+		].filter(Boolean).join("\n"), {
+			code: "proof_recovery_read_failed",
+			message,
+			...failureContext,
+		});
+		return attachEvidencePath({
+			...rejected,
+			details: { ...rejected.details, recoveryReadError: queuedReadResult.details },
+		}, normalizedPath, evidencePath);
+	}
+
+	const recoveredRead = queuedReadResult.details.read;
+	if (recoveredRead.textTruncated) {
+		const message = "The target includes source-line text that was truncated and cannot establish edit proof.";
+		return attachEvidencePath(rejectedToolResult([
+			base,
+			`${message} Do not resubmit this hledit_apply_file_changes call. Use write only if an intentional complete-file rewrite is safe.`,
+			queuedReadResult.content[0]?.text ?? "",
+		].filter(Boolean).join("\n"), {
+			code: "source_line_truncated",
+			message,
+			...failureContext,
+		}), normalizedPath, evidencePath);
+	}
+
+	const nextMissingOffset = recoveredRead.nextOffset !== undefined && recoveredRead.nextOffset <= range.end
+		? recoveredRead.nextOffset
+		: undefined;
+	const instruction = nextMissingOffset === undefined
+		? "The targeted missing range was read and recorded below. Review the current source, replace any mismatched endpoint anchors with the returned current anchors, then resubmit the batch once; no write was attempted."
+		: `Proof is still incomplete through line ${range.end}. Call hledit_read_anchors({ path: ${JSON.stringify(normalizedPath)}, offset: ${nextMissingOffset}, limit: ${Math.min(MAX_READ_LIMIT, range.end - nextMissingOffset + 1)} }) and continue with nextOffset until line ${range.end} is covered. Do not resubmit apply before then; no write was attempted.`;
+	const rejected = rejectedToolResult([
+		base,
+		instruction,
+		queuedReadResult.content[0]?.text ?? "",
+	].filter(Boolean).join("\n"), {
+		code: failure.code,
+		message: failure.message,
+		...failureContext,
+	});
+	return attachEvidencePath(
+		{ ...rejected, details: { ...rejected.details, recoveredRead } },
+		normalizedPath,
+		evidencePath,
+	);
+}
 async function runFileChangesWithDiff(
 	params: FileChangeParams,
 	ctx: ExtensionContext,
@@ -130,20 +211,24 @@ async function runFileChangesWithDiff(
 	evidence: ReadEvidenceStore,
 ): Promise<TextResult> {
 	const normalizedPath = normalizeToolPath(params.path);
-	const absolutePath = resolve(ctx.cwd, normalizedPath);
 	const evidencePath = await resolveReadEvidencePath(ctx.cwd, normalizedPath);
 	const normalizedParams = { ...params, path: normalizedPath };
-	const applyContext = { path: normalizedPath, changes: normalizedParams.changes };
-
 	const applyWithinQueue = async (): Promise<TextResult> => {
 		const proofSelection = evidence.selectProof(evidencePath, normalizedParams.changes);
 		if ("failure" in proofSelection) {
+			const recovered = await recoverMissingReadProof(
+				proofSelection.failure,
+				normalizedPath,
+				evidencePath,
+				ctx,
+				signal,
+			);
+			if (recovered) return recovered;
 			return attachEvidencePath(
 				rejectedToolResult(formatReadProofFailure(normalizedPath, proofSelection.failure), {
 					code: proofSelection.failure.code,
 					message: proofSelection.failure.message,
 					...(proofSelection.failure.renamedAnchors ? { renamedAnchors: proofSelection.failure.renamedAnchors } : {}),
-					...(proofSelection.failure.renamesRestoreProof ? { renamesRestoreProof: true as const } : {}),
 					...(proofSelection.failure.proofGap
 						? {
 							changeNumber: proofSelection.failure.proofGap.changeNumber,
@@ -155,11 +240,18 @@ async function runFileChangesWithDiff(
 				evidencePath,
 			);
 		}
-		const request = buildFileChangeRequest(normalizedParams, proofSelection.proof);
 
-		const singleLineRangeExpansionIssue = findSingleLineRangeExpansionIssue(params, proofSelection.consumedLines);
+		// selectProof 只在唯一、非歧义且替换后完整 proof 再次成立时返回规范化参数。
+		// CLI 仍会验证当前 raw revision、proof 与全部 anchors。
+		const effectiveParams = proofSelection.normalizedChanges
+			? { ...normalizedParams, changes: proofSelection.normalizedChanges }
+			: normalizedParams;
+		const applyContext = { path: normalizedPath, changes: effectiveParams.changes };
+		const request = buildFileChangeRequest(effectiveParams, proofSelection.proof);
+
+		const singleLineRangeExpansionIssue = findSingleLineRangeExpansionIssue(effectiveParams, proofSelection.consumedLines);
 		if (singleLineRangeExpansionIssue) {
-			const checkRequest = buildFileChangeCheckRequest(normalizedParams, proofSelection.proof);
+			const checkRequest = buildFileChangeCheckRequest(effectiveParams, proofSelection.proof);
 			const checkRun = await runHledit(checkRequest.args, checkRequest.stdin, ctx.cwd, signal);
 			const checkFailure = fileChangeCheckFailure(checkRun, applyContext);
 			if (checkFailure) {
@@ -198,13 +290,22 @@ async function runFileChangesWithDiff(
 			return attachEvidencePath(result, normalizedPath, evidencePath);
 		}
 		const changePreview = tryBuildChangePreview(result, () =>
-			buildAnchoredChangePreview(normalizedParams.changes, proofSelection.consumedLines));
-		return finalizeSuccessfulEditResult(result, run, normalizedPath, evidencePath, changePreview);
+			buildAnchoredChangePreview(effectiveParams.changes, proofSelection.consumedLines));
+		const finalized = finalizeSuccessfulEditResult(result, run, normalizedPath, evidencePath, changePreview);
+		if (!proofSelection.renamedAnchors) return finalized;
+		const resolved = proofSelection.renamedAnchors
+			.map((rename) => `${rename.requested} -> ${rename.current}`)
+			.join(", ");
+		return {
+			...finalized,
+			content: appendResultText(finalized, `Resolved verified anchors: ${resolved}.`),
+			details: { ...finalized.details, resolvedAnchors: proofSelection.renamedAnchors },
+		};
 	};
 
 	// D6：evidence 重映射/失效/记录属于同文件 mutation 的完整操作，必须在队列放行前
 	// 完成，保证同文件下一项排队调用的 selectProof 立即看到本次结果。
-	return withFileMutationQueue(absolutePath, async () => {
+	return withFileMutationQueue(evidencePath, async () => {
 		const result = await applyWithinQueue();
 		evidence.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, result.details, ctx.cwd);
 		return result;
@@ -258,12 +359,11 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		label: "Apply File Changes",
 		description: "Atomically apply one complete non-overlapping batch using boundary anchors and hidden complete read proof.",
 		promptGuidelines: [
-			"For a nonempty readable file, use hledit_apply_file_changes once with its complete non-overlapping batch; never overwrite it with write. Use write only for an empty file or when hledit_read_anchors reports source-line truncation. Prefer newline-delimited strings for multiline content.",
-			"Copy only the current LN#HASH tokens required by each change; do not copy source text or interior proof anchors. After success, use updated anchors only inside the returned complete, untruncated local window; unchanged anchors outside it remain valid unless shifted. Apply listed verified renames explicitly. On stale, truncation, incomplete context, or insufficient proof, follow the targeted reread guidance and continue with hledit_apply_file_changes; never invent anchors, retry unchanged, or overwrite concurrent changes.",
+			"Read the target with hledit_read_anchors before editing unless complete proof is already available. Submit only current LN#HASH tokens; range interiors are proven internally.",
+			"Use newline-delimited text in lines. Never overwrite a nonempty readable file with write; review targeted recovery results before resubmitting.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
-		prepareArguments: prepareFileChangeArguments,
 		renderCall(args: unknown, theme: RenderTheme, context: ToolRenderContextLike) {
 			return renderHleditCall("apply_file_changes", args, theme, context);
 		},
@@ -272,13 +372,16 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		},
 		async execute(
 			_toolCallId: string,
-			params: FileChangeParams,
+			params: FileChangeInput,
 			signal: AbortSignal | undefined,
 			_onUpdate: AgentToolUpdateCallback<unknown> | undefined,
 			ctx: ExtensionContext,
 		): Promise<TextResult> {
-			// evidence 由 runFileChangesWithDiff 在 mutation queue 内更新（单一实时 owner）。
-			const result = await runFileChangesWithDiff(params, ctx, signal, readEvidence);
+			const decoded = decodeFileChangeInput(params);
+			if ("error" in decoded) {
+				return rejectedToolResult(decoded.error, { code: "invalid", message: decoded.error });
+			}
+			const result = await runFileChangesWithDiff(decoded.params, ctx, signal, readEvidence);
 			synchronizeAnchoredTools();
 			return result;
 		},

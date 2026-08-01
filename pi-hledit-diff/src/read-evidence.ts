@@ -8,7 +8,14 @@ import {
 import { computeAnchorTag } from "./anchor-hash.ts";
 import { lineFromAnchor, type HleditBatchReadProof } from "./file-changes.ts";
 import { parseAnchorContext, type BatchAnchorContext } from "./post-edit-context.ts";
-import { parseEditDeltas, type HleditDetails, type HleditEditDelta, type HleditReadMetadata } from "./result.ts";
+import {
+	parseEditDeltas,
+	parseHleditReadMetadata,
+	parseRecoveredRead,
+	type HleditDetails,
+	type HleditEditDelta,
+	type HleditReadMetadata,
+} from "./result.ts";
 import { MAX_READ_LIMIT } from "./read-args.ts";
 import type { FileChangeParams } from "./schema.ts";
 
@@ -74,9 +81,6 @@ export type ReadProofFailure = {
 	suggestedReadRange?: ReadProofLineRange;
 	proofGap?: ReadProofGap;
 	renamedAnchors?: RenamedAnchor[];
-	// true 表示把列出的更名全部替换进请求即可恢复完整 proof；缺席时更名之外仍有
-	// 缺口，恢复正文必须同时给出定向重读指引。
-	renamesRestoreProof?: true;
 };
 
 // 本次修改实际消费或依附的、同 revision 完整读取行；只用于插件内部的护栏与
@@ -88,43 +92,20 @@ export type ConsumedEvidenceLine = {
 };
 
 export type ReadProofSelection =
-	| { proof: HleditBatchReadProof; consumedLines: Map<number, ConsumedEvidenceLine> }
+	| {
+		proof: HleditBatchReadProof;
+		consumedLines: Map<number, ConsumedEvidenceLine>;
+		normalizedChanges?: FileChangeParams["changes"];
+		renamedAnchors?: RenamedAnchor[];
+	}
 	| { failure: ReadProofFailure };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function positiveInteger(value: unknown): value is number {
-	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
-}
-
 function validRevision(value: unknown): value is string {
 	return typeof value === "string" && RAW_REVISION_PATTERN.test(value);
-}
-
-function parsePersistedRead(value: unknown): HleditReadMetadata | undefined {
-	if (!isRecord(value) || typeof value.path !== "string" || !validRevision(value.revision) || !Array.isArray(value.lines) || !isRecord(value.requested)) {
-		return undefined;
-	}
-	if (value.requested.grep !== undefined && typeof value.requested.grep !== "string") {
-		return undefined;
-	}
-	const lines = value.lines.flatMap((line) => {
-		if (!isRecord(line) || !positiveInteger(line.line) || typeof line.anchor !== "string" || typeof line.text !== "string") {
-			return [];
-		}
-		return [{
-			line: line.line,
-			anchor: line.anchor,
-			text: line.text,
-			textTruncated: line.textTruncated === true,
-		}];
-	});
-	if (lines.length !== value.lines.length) {
-		return undefined;
-	}
-	return { ...value, lines } as HleditReadMetadata;
 }
 
 function evidencePathFromDetails(details: Record<string, unknown>, cwd: string): string | undefined {
@@ -290,17 +271,33 @@ function renamedEndpointAnchors(renames: Map<string, string>, endpointAnchors: R
 	return renamed;
 }
 
-function substituteRenamedAnchors(changes: FileChangeParams["changes"], renames: Map<string, string>): FileChangeParams["changes"] {
-	return changes.map((change) => {
-		if (change.operation === "insert_before" || change.operation === "insert_after") {
-			return { ...change, anchor: renames.get(change.anchor) ?? change.anchor };
+function replaceRenamedAnchors(
+	changes: FileChangeParams["changes"],
+	renames: Map<string, string>,
+): { changes: FileChangeParams["changes"]; renamedAnchors: RenamedAnchor[] } {
+	const renamedAnchors: RenamedAnchor[] = [];
+	const seen = new Set<string>();
+	const substitute = (anchor: string): string => {
+		const current = renames.get(anchor);
+		if (current && !seen.has(anchor)) {
+			seen.add(anchor);
+			renamedAnchors.push({ requested: anchor, current });
 		}
-		return {
-			...change,
-			start_anchor: renames.get(change.start_anchor) ?? change.start_anchor,
-			end_anchor: renames.get(change.end_anchor) ?? change.end_anchor,
-		};
-	});
+		return current ?? anchor;
+	};
+	return {
+		changes: changes.map((change) => {
+			if (change.operation === "insert_before" || change.operation === "insert_after") {
+				return { ...change, anchor: substitute(change.anchor) };
+			}
+			return {
+				...change,
+				start_anchor: substitute(change.start_anchor),
+				end_anchor: substitute(change.end_anchor),
+			};
+		}),
+		renamedAnchors,
+	};
 }
 
 type EvidenceProofEvaluation =
@@ -358,11 +355,6 @@ export function formatReadProofFailure(path: string, failure: ReadProofFailure):
 			"Verified anchor renames from this file's last edit (content unchanged, line numbers shifted):",
 			...renames.map((rename) => `- ${rename.requested} -> ${rename.current}`),
 		);
-		// 更名足以恢复 proof 时不给重读指引：并列的读取建议会诱导模型放弃廉价重提交。
-		if (failure.renamesRestoreProof) {
-			lines.push("Resubmit after replacing every renamed anchor with its current form, or reread the range if the intended target is unclear.");
-			return lines.join("\n");
-		}
 		lines.push("Replacing the renamed anchors is required but not sufficient; the remaining lines below also need the targeted read before resubmitting.");
 	}
 	const targetLines = failure.reportedMissingLines;
@@ -713,12 +705,23 @@ export class ReadEvidenceStore {
 		};
 		if (renamedAnchors.length === 0) return { failure };
 
-		const substituted = requestedChangeEvidence(substituteRenamedAnchors(changes, evidence.renames));
+		const renamed = replaceRenamedAnchors(changes, evidence.renames);
+		const substituted = requestedChangeEvidence(renamed.changes);
 		const substitutedEvaluation = substituted && substituted.ranges.length > 0
 			? evaluateProofAgainstEvidence(substituted, evidence.lines, evidence.renames)
 			: undefined;
 		if (substitutedEvaluation && "anchors" in substitutedEvaluation) {
-			return { failure: { ...failure, renamedAnchors, renamesRestoreProof: true } };
+			const consumedLines = new Map<number, ConsumedEvidenceLine>();
+			for (const line of substitutedEvaluation.coveredLines) {
+				const info = evidence.lines.get(line)!;
+				consumedLines.set(line, { line, anchor: info.anchor, text: info.text });
+			}
+			return {
+				proof: { revision: evidence.revision, anchors: substitutedEvaluation.anchors },
+				consumedLines,
+				normalizedChanges: renamed.changes,
+				renamedAnchors: renamed.renamedAnchors,
+			};
 		}
 		if (substitutedEvaluation) {
 			return {
@@ -748,7 +751,7 @@ export class ReadEvidenceStore {
 
 			if (entry.message.toolName === HLEDIT_READ_ANCHORS_TOOL) {
 				if (details.disposition === "succeeded") {
-					const read = parsePersistedRead(details.read);
+					const read = parseHleditReadMetadata(details.read);
 					if (read) this.recordRead(path, read);
 					else this.touch(path);
 				} else {
@@ -758,7 +761,10 @@ export class ReadEvidenceStore {
 			}
 
 			if (entry.message.toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) continue;
-			this.recordApplyResult(path, details as HleditDetails);
+			const applyDetails = details as HleditDetails;
+			const recoveredRead = parseRecoveredRead(applyDetails);
+			if (recoveredRead) this.recordRead(path, recoveredRead);
+			this.recordApplyResult(path, applyDetails);
 		}
 	}
 
@@ -774,6 +780,8 @@ export class ReadEvidenceStore {
 			return;
 		}
 		if (toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) return;
+		const recoveredRead = parseRecoveredRead(details);
+		if (recoveredRead) this.recordRead(path, recoveredRead);
 		this.recordApplyResult(path, details);
 	}
 }

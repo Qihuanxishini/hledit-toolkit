@@ -62,7 +62,7 @@ pi-hledit-diff/
 
 两个工具都声明 `constrainedSampling: { type: "json_schema", strict: "prefer" }`。CLI 健康时，active set 始终保留这两个工具、移除内置 `edit` 并保留无关工具；`session_tree` 和 `/reload` 后重新同步同一策略。CLI 不可用时恢复内置 `edit`。不存在 `/tools` 假设、动态 evidence 可见性、Plan Mode 联动或内置 `edit` 名称 override。
 
-当前公开协议按 `JSON.stringify(parameters) + description + promptGuidelines` 计量为 6,098 characters（read 1,312；apply 4,786）；回归上限为 6,600。
+当前公开协议按 `JSON.stringify(parameters) + description + promptGuidelines` 计量，回归上限为 4,200 characters；精确值由测试输出和最终验证记录，不在文档中固化。
 
 ### `hledit_read_anchors`
 
@@ -79,7 +79,7 @@ pi-hledit-diff/
 
 - 编辑现有非空可读文本文件前，使用该工具读取会被消费的全部原始行；普通 `read` 只用于参考或目标未定的探索。
 - 默认 `limit` 为 160，公开上限 2000；`grep` / `context` 可贡献离散局部 proof，`ignore_case` 透传 `--ignore-case`。
-- `prepareArguments` 只宽容转换不改变语义的数字/布尔字符串和边界值；非整数仍由严格 schema 拒绝。
+- `prepareArguments` 仅用于 read：宽容转换不改变语义的数字字符串和边界值；非整数仍由严格 schema 拒绝。apply 不做兼容预处理。
 - 固定调用 `read-range --json`。响应验证 revision、总行数、连续性/递增顺序、锚点格式、分页和 source-line truncation；模型正文和 `details.read` 都由已验证结构生成。
 - CLI 执行、响应验证和 evidence 更新是同一个 canonical file queue 事务。不得在队列外记录晚到 snapshot。
 
@@ -104,8 +104,8 @@ pi-hledit-diff/
   changes: [
     { operation: "replace_range", start_anchor: "12#aB3", end_anchor: "18#xY7", lines: "new line\nanother line" },
     { operation: "delete_range", start_anchor: "24#nK2", end_anchor: "29#Qw_" },
-    { operation: "insert_before", anchor: "30#xY7", lines: ["before"] },
-    { operation: "insert_after", anchor: "31#Qw_", lines: ["after"] }
+    { operation: "insert_before", anchor: "30#xY7", lines: "before" },
+    { operation: "insert_after", anchor: "31#Qw_", lines: "after" }
   ]
 }
 ```
@@ -114,10 +114,11 @@ pi-hledit-diff/
 
 - 一次调用只修改一个文件，并包含该文件全部非冲突 change；
 - 范围包含首尾，单行范围复制同一锚点两次；insert 只复制依附行锚点；
-- `lines` 接受换行分隔字符串或非空单行字符串数组；`delete_range` 不接受 `lines`；
-- 旧 operation、别名和字段不迁移，object 使用严格额外字段拒绝；
+- `lines` 只接受换行分隔字符串；一个末尾换行只终止末行，空字符串代表一行空文本；`delete_range` 不接受 `lines`；
+- apply 不接受数组 `lines`、序列化 `changes`、单 change 自动包装或带源码后缀的 anchor；旧 operation、别名和字段不迁移，object 使用严格额外字段拒绝；
+- 单次 batch 限 1–200 个 changes，replacement 总量限 1 MiB UTF-8，输出总量限 20,000 行；
 - 公开 schema 不含 revision/proof。插件从当前 branch evidence 注入每个消费行或 insert 依附行的完整 hidden proof；
-- proof 不完整时不启动 CLI，返回覆盖同一受影响 change 全部缺口的定向读取建议；
+- proof 不完整时不启动 mutation batch；apply 在同一 canonical file queue 内完成一次定向只读。若仍有 `nextOffset`，只返回下一页 read 指引并禁止提前重提 apply；覆盖完整缺口后才通过顶层 `recoveredRead` 返回当前证据，调用方审阅后显式重提 batch。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；插件不自动重放修改；
 - 高风险单行范围扩展先执行一次 `batch --check`。check 成功只返回字段级修复，不继续真正写入；
 - 普通路径只执行一次非 check `batch`，插件本身不写目标文件。
 
@@ -136,12 +137,12 @@ Evidence 以 resolved canonical path 为 key，每个文件状态包含当前 ra
 
 - 普通范围和 grep 同 revision 按行合并；新 revision 替换旧 state。`textTruncated` 行不建立 proof；
 - apply 成功后，消费区间 evidence 被删除，区间外行按已验证 `editDeltas` 平移并用 `anchor-hash.ts` 自校验重算，再合并 `updatedAnchors`；
-- verified rename 可形成显式“旧锚点 → 新锚点”恢复建议，但插件不自动改写请求；
+- verified rename 仅在目标唯一、非歧义、同 revision，且替换后完整 proof 再次成立时内部规范化；CLI 仍复验 raw revision、proof 和全部 anchors，成功结果通过 `details.resolvedAnchors` 报告映射；
 - 持续存活且可验证平移的目标保留 verified rename；旧 token 被当前行重新占用，或其源行/alias 最终目标被消费失联时进入 ambiguous set 并持续到显式重读，以防立即或延迟复用。`selectProof` 在 CLI 启动前拒绝 ambiguous token；只有直接读取覆盖当前行时才删除同 token 的旧身份并建立当前语义。`updatedAnchors` 不自动消歧；
 - 任一结构化拒绝携带不同合法 `currentRevision` 时淘汰旧 state；同 revision 的确认零写入拒绝保留。`source_changed_before_commit` 与 `outcome_unknown` 总是失效；
 - 只有完整未截断 `currentAnchors` 可建立新 revision evidence；
 - read 与 apply 都持有 `withFileMutationQueue(canonical path)` 覆盖 CLI、校验和 evidence 更新。同文件串行、不同文件可并行；
-- branch/session 恢复只重放当前 branch 的结构化 tool-result details，不解析聊天正文。
+- branch/session 恢复只重放当前 branch 的结构化 tool-result details，包括经过完整 shape、path、proof usability 验证的被拒绝 apply 顶层 `recoveredRead`，不解析聊天正文。
 
 容量限制：
 
@@ -212,7 +213,7 @@ CLI 写入逐行保留未修改 terminator、BOM 和 trailing-newline 状态；�
 - TUI 优先结构化 preview，历史 session 只对 `details.diff` 保留 fallback；preview 截断或没有可渲染 change 行时使用 CLI `linesAdded` / `linesDeleted`，不显示局部推导的完整 hunk 数；
 - expanded updated-anchor rows 只来自 `details.updatedAnchors`，不解析模型正文；
 - diff 在 120 列切换 split/unified，主题色、布局和高亮缓存必须在 `invalidate()` 正确清理；
-- `session_before_compact` 从两个工具的结构化结果补充 fileOps：read 成功 → read；apply content change → modified；apply no-op → read；`outcome_unknown` → modified；确认零写入结果不记录。
+- `session_before_compact` 从两个工具的结构化结果补充 fileOps：read 成功 → read；带严格验证 `recoveredRead` 的零写入 apply → read；apply content change → modified；apply no-op → read；`outcome_unknown` → modified；其余确认零写入结果不记录。
 
 ## 源码结构
 

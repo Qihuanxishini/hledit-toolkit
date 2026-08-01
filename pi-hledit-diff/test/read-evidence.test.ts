@@ -21,6 +21,7 @@ const PATH = "/workspace/target.txt";
 type ReadMetadataOptions = {
 	grep?: string;
 	truncated?: boolean;
+	totalLines?: number;
 };
 
 function readMetadata(
@@ -30,6 +31,8 @@ function readMetadata(
 ): HleditReadMetadata {
 	const firstLine = lines[0]?.line;
 	const lastLine = lines.at(-1)?.line;
+	const grep = options.grep;
+	const totalLines = options.totalLines ?? Math.max(lastLine ?? 0, 10);
 	const truncated = options.truncated === true;
 	return {
 		path: "target.txt",
@@ -37,13 +40,13 @@ function readMetadata(
 		requested: {
 			offset: firstLine ?? 1,
 			limit: Math.max(1, lines.length),
-			...(options.grep ? { grep: options.grep } : {}),
+			...(grep ? { grep } : {}),
 		},
 		actual: {
 			...(firstLine !== undefined ? { firstLine } : {}),
 			...(lastLine !== undefined ? { lastLine } : {}),
 			lineCount: lines.length,
-			totalLines: Math.max(lastLine ?? 0, 10),
+			totalLines,
 		},
 		lines: lines.map((line) => ({
 			line: line.line,
@@ -54,7 +57,7 @@ function readMetadata(
 		truncated,
 		...(truncated && lastLine !== undefined ? { nextOffset: lastLine + 1 } : {}),
 		textTruncated: lines.some((line) => line.textTruncated === true),
-		eof: false,
+		eof: grep === undefined && !truncated && lastLine === totalLines,
 	};
 }
 
@@ -564,6 +567,65 @@ test("branch restoration replays only tool results present on the current branch
 	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: "1#AAA", lines: ["next"] }]));
 });
 
+test("branch restoration replays targeted proof recovered by a rejected apply", () => {
+	const recoveredRead = readMetadata(REVISION_A, [{ line: 2, anchor: "2#BBB" }], { truncated: true });
+	const store = new ReadEvidenceStore();
+	store.restoreFromBranch({
+		cwd: "/workspace",
+		sessionManager: {
+			getBranch: () => [{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL,
+					details: applyDetails("rejected", {
+						path: "target.txt",
+						error: { code: "insufficient_read_proof", message: "read recovered" },
+						recoveredRead,
+					}),
+				},
+			}],
+		},
+	} as never);
+
+	assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: "2#BBB", lines: ["next"] }]), {
+		proof: { revision: REVISION_A, anchors: ["2#BBB"] },
+	});
+});
+
+test("malformed recovered reads do not restore proof", () => {
+	const recoveredRead = readMetadata(REVISION_A, [{ line: 2, anchor: "2#BBB" }], { truncated: true });
+	const store = new ReadEvidenceStore();
+	store.restoreFromBranch({
+		cwd: "/workspace",
+		sessionManager: {
+			getBranch: () => [{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL,
+					details: applyDetails("rejected", {
+						path: "target.txt",
+						error: { code: "insufficient_read_proof", message: "malformed" },
+						recoveredRead: { ...recoveredRead, lines: [{}] },
+					}),
+				},
+			}],
+		},
+	} as never);
+	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: "2#BBB", lines: ["next"] }]));
+});
+
+test("path-mismatched recovered reads do not restore proof", () => {
+	const store = new ReadEvidenceStore();
+	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("rejected", {
+		path: "other.txt",
+		error: { code: "insufficient_read_proof", message: "mismatched" },
+		recoveredRead: readMetadata(REVISION_A, [{ line: 2, anchor: "2#BBB" }], { truncated: true }),
+	}), "/workspace");
+	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: "2#BBB", lines: ["next"] }]));
+});
+
 test("a successful apply remaps out-of-range evidence to shifted line numbers", () => {
 	const store = new ReadEvidenceStore();
 	const texts = new Map<number, string>([
@@ -609,7 +671,7 @@ test("a successful apply remaps out-of-range evidence to shifted line numbers", 
 	});
 });
 
-test("submitting a pre-edit anchor yields a verified rename hint instead of a blind reread", () => {
+test("submitting a pre-edit anchor uses a verified rename without rereading", () => {
 	const store = new ReadEvidenceStore();
 	store.recordRead(PATH, readMetadata(REVISION_A, [
 		{ line: 1, anchor: computeAnchorTag(1, "alpha"), text: "alpha" },
@@ -631,16 +693,14 @@ test("submitting a pre-edit anchor yields a verified rename hint instead of a bl
 		},
 	}), "/workspace");
 
-	// 模型仍提交编辑前的旧行 3 锚点：失败必须直接给出已验证的新锚点。
+	// 模型提交编辑前的旧行 3 锚点：唯一更名且完整 proof 仍成立时直接规范化。
 	const staleAnchor = computeAnchorTag(3, "charlie");
 	const renamedAnchor = computeAnchorTag(4, "charlie");
 	const selection = store.selectProof(PATH, [{ operation: "insert_after", anchor: staleAnchor, lines: ["x"] }]);
-	assert.ok("failure" in selection);
-	assert.deepEqual(selection.failure.renamedAnchors, [{ requested: staleAnchor, current: renamedAnchor }]);
-
-	const formatted = formatReadProofFailure("target.txt", selection.failure);
-	assert.match(formatted, new RegExp(`${staleAnchor} -> ${renamedAnchor}`));
-	assert.match(formatted, /Resubmit after replacing every renamed anchor/);
+	assert.ok("proof" in selection);
+	assert.deepEqual(selection.proof, { revision: REVISION_B, anchors: [renamedAnchor] });
+	assert.deepEqual(selection.normalizedChanges, [{ operation: "insert_after", anchor: renamedAnchor, lines: ["x"] }]);
+	assert.deepEqual(selection.renamedAnchors, [{ requested: staleAnchor, current: renamedAnchor }]);
 });
 
 test("a rename hint does not hide an unrelated proof gap in the same batch", () => {
@@ -675,7 +735,6 @@ test("a rename hint does not hide an unrelated proof gap in the same batch", () 
 	]);
 	assert.ok("failure" in selection);
 	assert.deepEqual(selection.failure.renamedAnchors, [{ requested: staleAnchor, current: renamedAnchor }]);
-	assert.equal(selection.failure.renamesRestoreProof, undefined);
 	// 剩余缺口按更名替换后的坐标计算，不包含已被更名解释的旧区间。
 	assert.deepEqual(selection.failure.reportedMissingLines, [8, 9]);
 	assert.deepEqual(selection.failure.suggestedReadRange, { start: 8, end: 9 });
@@ -688,7 +747,7 @@ test("a rename hint does not hide an unrelated proof gap in the same batch", () 
 	assert.match(formatted, /resubmit the original hledit_apply_file_changes call with every listed anchor rename applied/);
 });
 
-test("rename hints chain across two successive edits back to the oldest anchor", () => {
+test("verified rename chains normalize to the latest anchor", () => {
 	const REVISION_C = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 	const store = new ReadEvidenceStore();
 	store.recordRead(PATH, readMetadata(REVISION_A, [
@@ -724,14 +783,14 @@ test("rename hints chain across two successive edits back to the oldest anchor",
 		},
 	}), "/workspace");
 
-	// 提交最早一轮读取的锚点：更名表必须链到最新名字，替换后即可通过。
+	// 提交最早一轮读取的锚点：唯一更名链直接规范化到最新名字。
 	const oldestAnchor = computeAnchorTag(3, "charlie");
 	const latestAnchor = computeAnchorTag(5, "charlie");
 	const selection = store.selectProof(PATH, [{ operation: "insert_after", anchor: oldestAnchor, lines: ["x"] }]);
-	assert.ok("failure" in selection);
-	assert.deepEqual(selection.failure.renamedAnchors, [{ requested: oldestAnchor, current: latestAnchor }]);
-	assert.equal(selection.failure.renamesRestoreProof, true);
-	assert.match(formatReadProofFailure("target.txt", selection.failure), /Resubmit after replacing every renamed anchor/);
+	assert.ok("proof" in selection);
+	assert.deepEqual(selection.proof, { revision: REVISION_C, anchors: [latestAnchor] });
+	assert.deepEqual(selection.normalizedChanges, [{ operation: "insert_after", anchor: latestAnchor, lines: ["x"] }]);
+	assert.deepEqual(selection.renamedAnchors, [{ requested: oldestAnchor, current: latestAnchor }]);
 
 	assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: latestAnchor, lines: ["x"] }]), {
 		proof: { revision: REVISION_C, anchors: [latestAnchor] },
@@ -920,7 +979,7 @@ test("branch replay reconstructs reused-token ambiguity", () => {
 		{ line: 1, anchor: computeAnchorTag(1, "before"), text: "before" },
 		{ line: 2, anchor: reusedAnchor, text: "needle" },
 		{ line: 3, anchor: computeAnchorTag(3, "after"), text: "after" },
-	]);
+	], { truncated: true });
 	const apply = applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 2, oldEnd: 1, delta: 1 }],
@@ -1076,7 +1135,7 @@ test("session record overflow evicts whole files deterministically in tool-resul
 	const reads = Array.from({ length: 6 }, (_, fileIndex) => {
 		const path = `/workspace/target-${fileIndex}.txt`;
 		const lines = Array.from({ length: lineCount }, (_, index) => ({ line: index + 1, anchor: `${index + 1}#AAA` }));
-		return { path, read: readMetadata(REVISION_A, lines) };
+		return { path, read: readMetadata(REVISION_A, lines, { totalLines: lineCount }) };
 	});
 	const assertEvictionState = (store: ReadEvidenceStore) => {
 		assert.ok("failure" in store.selectProof(reads[0]!.path, [{ operation: "insert_after", anchor: "1#AAA", lines: ["x"] }]));

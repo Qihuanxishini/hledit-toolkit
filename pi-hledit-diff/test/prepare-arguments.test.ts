@@ -2,173 +2,50 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Value } from "typebox/value";
 
-import { prepareFileChangeArguments, prepareReadAnchorsArguments } from "../src/prepare-arguments.ts";
-import { HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, HLEDIT_READ_ANCHORS_PARAMS_SCHEMA } from "../src/schema.ts";
+import { decodeFileChangeInput, prepareReadAnchorsArguments } from "../src/prepare-arguments.ts";
+import { HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, MAX_REPLACEMENT_LINE_COUNT } from "../src/schema.ts";
 
-test("prepareReadAnchorsArguments converts quoted read integers", () => {
-  const prepared = prepareReadAnchorsArguments({ path: "src/a.ts", offset: "3", limit: "20", context: "0", ignore_case: "true" });
-  assert.deepEqual(prepared, { path: "src/a.ts", offset: 3, limit: 20, context: 0, ignore_case: true });
-  assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, prepared), true);
-});
-
-test("prepareReadAnchorsArguments clamps out-of-range integers into the schema domain", () => {
+test("prepareReadAnchorsArguments clamps recoverable numeric mistakes", () => {
   const prepared = prepareReadAnchorsArguments({ path: "src/a.ts", offset: 0, limit: 5000, context: -2 });
-  assert.equal(prepared.offset, 1);
-  assert.equal(prepared.limit, 2000);
-  assert.equal(prepared.context, 0);
+  assert.deepEqual(prepared, { path: "src/a.ts", offset: 1, limit: 2000, context: 0 });
   assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, prepared), true);
-});
 
-test("prepareReadAnchorsArguments drops a meaningless limit and clamps quoted overflow", () => {
-  const dropped = prepareReadAnchorsArguments({ path: "src/a.ts", limit: 0 });
-  assert.equal(dropped.limit, undefined);
-  assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, dropped), true);
-
-  const quoted = prepareReadAnchorsArguments({ path: "src/a.ts", offset: "0", limit: "9999" });
-  assert.equal(quoted.offset, 1);
-  assert.equal(quoted.limit, 2000);
-  assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, quoted), true);
-
-  // 非整数形状不做钳制，仍交给严格 schema 拒绝。
   const fractional = prepareReadAnchorsArguments({ path: "src/a.ts", offset: 1.5 });
-  assert.equal(fractional.offset, 1.5);
   assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, fractional), false);
 });
 
-test("prepareFileChangeArguments parses JSON changes and wraps a single change", () => {
-  const prepared = prepareFileChangeArguments({
-    path: "src/a.ts",
-    changes: JSON.stringify({ operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: "first\nsecond" }),
-  });
-  assert.deepEqual(prepared, {
-    path: "src/a.ts",
-    changes: [{ operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: ["first", "second"] }],
-  });
-  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
-});
-
-test("prepareFileChangeArguments treats one trailing newline as a string terminator", () => {
-  const prepared = prepareFileChangeArguments({
+test("decodeFileChangeInput converts newline-delimited text once at the execute boundary", () => {
+  const decoded = decodeFileChangeInput({
     path: "src/a.ts",
     changes: [
       { operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: "first\r\nsecond\r\n" },
       { operation: "insert_after", anchor: "2#BJL", lines: "first\n\n" },
+      { operation: "insert_before", anchor: "3#BJM", lines: "" },
     ],
   });
 
-  assert.deepEqual(prepared.changes, [
-    { operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: ["first", "second"] },
-    { operation: "insert_after", anchor: "2#BJL", lines: ["first", ""] },
-  ]);
-  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
-});
-
-test("prepareFileChangeArguments treats an empty string as one blank line", () => {
-  const prepared = prepareFileChangeArguments({
-    path: "src/a.ts",
-    changes: [{ operation: "insert_after", anchor: "1#BHJ", lines: "" }],
-  });
-
-  assert.deepEqual(prepared.changes, [{ operation: "insert_after", anchor: "1#BHJ", lines: [""] }]);
-  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
-});
-
-test("prepareFileChangeArguments accepts a serialized changes array from tool callers", () => {
-  const prepared = prepareFileChangeArguments({
-    path: "src/a.ts",
-    changes: JSON.stringify([{ operation: "insert_after", anchor: "1#BHJ", lines: ["inserted"] }]),
-  });
-
-  assert.deepEqual(prepared, {
-    path: "src/a.ts",
-    changes: [{ operation: "insert_after", anchor: "1#BHJ", lines: ["inserted"] }],
-  });
-  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
-});
-
-test("prepareFileChangeArguments unwraps doubly serialized structural arguments", () => {
-  const expected = {
-    path: "src/a.ts",
-    changes: [{ operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: ["first", "second"] }],
-  };
-  const prepared = prepareFileChangeArguments(
-    JSON.stringify({
+  assert.deepEqual(decoded, {
+    params: {
       path: "src/a.ts",
-      changes: JSON.stringify(JSON.stringify(expected.changes[0])),
-    }),
-  );
-
-  assert.deepEqual(prepared, expected);
-  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
+      changes: [
+        { operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: ["first", "second"] },
+        { operation: "insert_after", anchor: "2#BJL", lines: ["first", ""] },
+        { operation: "insert_before", anchor: "3#BJM", lines: [""] },
+      ],
+    },
+  });
 });
 
-test("prepareFileChangeArguments leaves strings inside lines untouched", () => {
-  const sourceLine = JSON.stringify(JSON.stringify({ valid: "source text" }));
-  const prepared = prepareFileChangeArguments({
+test("decodeFileChangeInput enforces aggregate UTF-8 and produced-line limits", () => {
+  const oversizedBytes = decodeFileChangeInput({
     path: "src/a.ts",
-    changes: JSON.stringify(JSON.stringify([{ operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: [sourceLine] }])),
+    changes: [{ operation: "insert_after", anchor: "1#BHJ", lines: "🙂".repeat(300_000) }],
   });
-  assert.deepEqual(prepared, {
-    path: "src/a.ts",
-    changes: [{ operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: [sourceLine] }],
-  });
-  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
-});
+  assert.match("error" in oversizedBytes ? oversizedBytes.error : "", /1 MiB UTF-8/);
 
-test("prepareFileChangeArguments leaves over-nested or invalid JSON for schema rejection", () => {
-  const overNested = prepareFileChangeArguments({
+  const oversizedLines = decodeFileChangeInput({
     path: "src/a.ts",
-    changes: JSON.stringify(JSON.stringify(JSON.stringify(JSON.stringify([{ operation: "delete_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ" }])))),
+    changes: [{ operation: "insert_after", anchor: "1#BHJ", lines: "\n".repeat(MAX_REPLACEMENT_LINE_COUNT + 1) }],
   });
-  const invalid = prepareFileChangeArguments({ path: "src/a.ts", changes: "[{invalid" });
-
-  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, overNested), false);
-  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, invalid), false);
-});
-
-test("prepareFileChangeArguments normalizes rendered anchors without changing operations", () => {
-  const prepared = prepareFileChangeArguments({
-    path: "src/a.ts",
-    changes: [
-      {
-        operation: "replace_range",
-        start_anchor: "10#BJL:old first line",
-        end_anchor: "12#JMN:old last line",
-        lines: ["replacement"],
-      },
-    ],
-  });
-  assert.deepEqual(prepared, {
-    path: "src/a.ts",
-    changes: [{ operation: "replace_range", start_anchor: "10#BJL", end_anchor: "12#JMN", lines: ["replacement"] }],
-  });
-  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), true);
-});
-
-test("prepareFileChangeArguments rejects old operation shapes without migration", () => {
-  const oldShape = prepareFileChangeArguments({
-    path: "src/a.ts",
-    changes: [{ operation: "replace", anchor: "10#BJL", lines: ["replacement"] }],
-  });
-  assert.deepEqual(oldShape, {
-    path: "src/a.ts",
-    changes: [{ operation: "replace", anchor: "10#BJL", lines: ["replacement"] }],
-  });
-  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, oldShape), false);
-});
-
-test("prepareFileChangeArguments preserves unknown fields for schema rejection", () => {
-  const unknown = prepareFileChangeArguments({
-    path: "src/a.ts",
-    changes: [{ operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: ["next"], content: "legacy" }],
-  });
-  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, unknown), false);
-});
-
-test("prepareFileChangeArguments does not split embedded newlines in an existing lines array", () => {
-  const prepared = prepareFileChangeArguments({
-    path: "src/a.ts",
-    changes: [{ operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: ["first\nsecond"] }],
-  });
-  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, prepared), false);
+  assert.match("error" in oversizedLines ? oversizedLines.error : "", /exceeds 20000 lines/);
 });

@@ -2,6 +2,7 @@ import {
 	HLEDIT_APPLY_FILE_CHANGES_TOOL,
 	HLEDIT_READ_ANCHORS_TOOL,
 } from "./active-tools.ts";
+import { parseRecoveredRead } from "./result.ts";
 
 // 与宿主 compaction FileOperations 的结构子集对齐（written 由内置 write 工具独占）。
 type AnchoredCompactionFileOps = {
@@ -16,8 +17,9 @@ type AnchoredCompactionFileOps = {
 // - 读取成功 → read；
 // - apply 成功且内容变更 → edited；
 // - 成功 no-op（contentChanged === false，字节未变）→ read；
+// - apply 拒绝但携带 recoveredRead → read；
 // - outcome_unknown → edited（保守：可能已写入，压缩后必须按已修改重读）；
-// - rejected/unavailable 零写入 → 不记录。
+// - 其余 rejected/unavailable 零写入 → 不记录。
 export function recordAnchoredFileOperations(messages: unknown[], fileOps: AnchoredCompactionFileOps): void {
 	for (const message of messages) {
 		if (typeof message !== "object" || message === null) continue;
@@ -25,7 +27,8 @@ export function recordAnchoredFileOperations(messages: unknown[], fileOps: Ancho
 		if (candidate.role !== "toolResult" || typeof candidate.toolName !== "string") continue;
 		const details = candidate.details;
 		if (typeof details !== "object" || details === null) continue;
-		const { disposition, path, contentChanged } = details as Record<string, unknown>;
+		const record = details as Record<string, unknown>;
+		const { disposition, path, contentChanged } = record;
 		if (typeof path !== "string" || path.length === 0) continue;
 
 		if (candidate.toolName === HLEDIT_READ_ANCHORS_TOOL) {
@@ -33,6 +36,8 @@ export function recordAnchoredFileOperations(messages: unknown[], fileOps: Ancho
 			continue;
 		}
 		if (candidate.toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) continue;
+		const recoveredRead = parseRecoveredRead(record);
+		if (recoveredRead) fileOps.read.add(path);
 		if (disposition === "succeeded") {
 			if (contentChanged === false) fileOps.read.add(path);
 			else fileOps.edited.add(path);

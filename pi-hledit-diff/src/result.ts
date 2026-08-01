@@ -101,7 +101,6 @@ export type HleditErrorMetadata = {
 	currentAnchors?: BatchAnchorContext;
 	currentRevision?: string;
 	renamedAnchors?: Array<{ requested: string; current: string }>;
-	renamesRestoreProof?: true;
 };
 
 type ApplyResultContext = {
@@ -116,7 +115,10 @@ export type HleditDetails = Record<string, unknown> & {
 	revision?: string;
 	updatedAnchors?: BatchAnchorContext;
 	read?: HleditReadMetadata;
+	recoveredRead?: HleditReadMetadata;
+	recoveryReadError?: { disposition: HleditDisposition; error?: HleditErrorMetadata };
 	error?: HleditErrorMetadata;
+	resolvedAnchors?: Array<{ requested: string; current: string }>;
 };
 
 export type TextResult = {
@@ -127,6 +129,58 @@ export type TextResult = {
 const READ_ANCHOR_PATTERN = new RegExp(`^(\\d+)#${ANCHOR_HASH_PATTERN}$`);
 const RAW_REVISION_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
+
+export function parseHleditReadMetadata(value: unknown): HleditReadMetadata | undefined {
+	if (!isRecord(value) || typeof value.path !== "string" || !isRecord(value.requested) || !isRecord(value.actual) || !Array.isArray(value.lines)) return undefined;
+	const requested = value.requested;
+	if (!isIntegerAtLeast(requested.offset, 1) || !isIntegerAtLeast(requested.limit, 1)) return undefined;
+	if (requested.grep !== undefined && (typeof requested.grep !== "string" || requested.grep.length === 0)) return undefined;
+	if (requested.context !== undefined && !isIntegerAtLeast(requested.context, 0)) return undefined;
+	if (requested.ignoreCase !== undefined && requested.ignoreCase !== true) return undefined;
+	if (!value.lines.every((line) => isRecord(line) && typeof line.textTruncated === "boolean")) return undefined;
+	const actual = value.actual;
+	if (!isIntegerAtLeast(actual.lineCount, 0) || !isIntegerAtLeast(actual.totalLines, 0)) return undefined;
+	if (actual.firstLine !== undefined && !isIntegerAtLeast(actual.firstLine, 1)) return undefined;
+	if (actual.lastLine !== undefined && !isIntegerAtLeast(actual.lastLine, 1)) return undefined;
+	if (typeof value.truncated !== "boolean" || typeof value.textTruncated !== "boolean" || typeof value.eof !== "boolean") return undefined;
+
+	const request: NormalizedReadRequest = {
+		path: value.path,
+		offset: requested.offset,
+		limit: requested.limit,
+		...(requested.grep !== undefined ? { grep: requested.grep } : {}),
+		...(requested.context !== undefined ? { context: requested.context } : {}),
+		...(requested.ignoreCase === true ? { ignoreCase: true } : {}),
+	};
+	const parsed = parseReadMetadata({
+		ok: true,
+		revision: value.revision,
+		totalLines: actual.totalLines,
+		lines: value.lines,
+		truncated: value.truncated,
+		...(value.nextOffset !== undefined ? { nextOffset: value.nextOffset } : {}),
+	}, request);
+	if (!parsed) return undefined;
+	if (
+		parsed.actual.firstLine !== actual.firstLine ||
+		parsed.actual.lastLine !== actual.lastLine ||
+		parsed.actual.lineCount !== actual.lineCount ||
+		parsed.textTruncated !== value.textTruncated ||
+		parsed.eof !== value.eof
+	) return undefined;
+	return parsed;
+}
+
+export function parseUsableHleditReadMetadata(value: unknown): HleditReadMetadata | undefined {
+	const read = parseHleditReadMetadata(value);
+	return read && !read.textTruncated && read.requested.limit <= MAX_READ_LIMIT ? read : undefined;
+}
+
+export function parseRecoveredRead(value: unknown): HleditReadMetadata | undefined {
+	if (!isRecord(value) || value.disposition !== "rejected" || typeof value.path !== "string" || !isRecord(value.error) || value.error.code !== "insufficient_read_proof") return undefined;
+	const read = parseUsableHleditReadMetadata(value.recoveredRead);
+	return read?.path === value.path ? read : undefined;
+}
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

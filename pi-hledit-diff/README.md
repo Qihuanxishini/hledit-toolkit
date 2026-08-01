@@ -12,15 +12,16 @@
 编辑语义：
 
 - 编辑现有非空文本文件前，使用 `hledit_read_anchors` 完整读取会被消费的原始行；普通 `read` 只用于参考文件或尚未确定修改目标的探索。`write` 只用于新文件、空文件或读取工具报告 source-line truncation 的例外场景。
-- 规范锚点是 `LN#[A-Za-z0-9_-]{3}` token。公开 change 只复制范围首尾或 insert 依附行；区间内部 proof 由插件从 evidence 注入。`prepareArguments` 仍可剥离非 constrained caller 粘贴的 `LN#HASH:text` 后缀。
+- 规范锚点是 `LN#[A-Za-z0-9_-]{3}` token。公开 change 只复制范围首尾或 insert 依附行；区间内部 proof 由插件从 evidence 注入。apply 使用严格输入，不剥离带源码后缀的 anchor，也不迁移旧字段或包装形状。
 - 公开修改协议只有 `replace_range`、`delete_range`、`insert_before` 和 `insert_after`。范围操作同时提供 `start_anchor` 与 `end_anchor`；单行范围使用同一锚点。旧 operation 与内容匹配替换不迁移。
-- `replace_range`、`insert_before` 和 `insert_after` 的 `lines` 接受换行分隔字符串或单行字符串数组；字符串末尾一个换行不额外生成空行，数组元素不得包含换行。`delete_range` 不接受 `lines`。
-- batch 是原子的：任一 change 非法、冲突、proof 不完整或 stale 时均不写入。`insufficient_read_proof` 是可恢复的补读结果；其他拒绝、不可用和结果未知按工具错误处理。
+- `replace_range`、`insert_before` 和 `insert_after` 的 `lines` 只接受换行分隔字符串；一个末尾换行仅终止末行，空字符串表示一行空文本。`delete_range` 不接受 `lines`。
+- 单次 batch 限 1–200 个 changes、1 MiB replacement UTF-8 bytes 和 20,000 个输出行。batch 是原子的：任一 change 非法、冲突、proof 不完整或 stale 时均不写入。
+- `insufficient_read_proof` 会在同一 canonical file queue 内执行一次定向只读。若返回 `nextOffset`，只提供下一页 `hledit_read_anchors` 指引并禁止提前重提 apply；完整覆盖后才通过顶层 `details.recoveredRead` 返回 evidence，供审阅后显式重提。source-line truncation 返回终止性指导，读取失败通过 `recoveryReadError` 暴露；不会启动 mutation batch 或自动重放修改。
 - 单行 `replace_range` 输出多行且首行重复原行时，插件先用 `batch --check` 验证整个请求，再返回字段级范围修复指引，不自动扩大或执行范围。
 - CLI 在临时文件同步后、原子替换前复检原始字节 revision。`source_changed_before_commit` 是确认零写入；已启动进程的取消、超时、输出超限或异常响应属于 `outcome_unknown`，必须重新读取。
-- 成功 apply 使用 `editDeltas` 重映射未消费 evidence，再合并新 revision 的 `updatedAnchors`。持续存活的平移目标保留 verified rename；旧 token 被当前行重新占用，或其源行/alias 最终目标被消费失联时，身份会保持 ambiguous 直到覆盖当前行的显式读取。
+- 成功 apply 使用 `editDeltas` 重映射未消费 evidence，再合并新 revision 的 `updatedAnchors`。唯一、非歧义、同 revision 且替换后完整 proof 仍成立的 verified rename 会被内部规范化并报告在 `details.resolvedAnchors`；旧 token 被当前行重新占用，或其源行/alias 最终目标被消费失联时，身份会保持 ambiguous 直到覆盖当前行的显式读取。
 - 读取、proof 选择、CLI mutation 与 evidence 更新按 canonical real path 使用同一 file mutation queue。同文件状态事务串行，不同文件仍可并行。
-- evidence 有界：单文件最多 10,000 records / 4 MiB logical UTF-8 payload，session 最多 50,000 records / 16 MiB；超限按完整文件淘汰并安全降级为补读。branch replay 使用相同顺序与容量规则。
+- evidence 有界：单文件最多 10,000 records / 4 MiB logical UTF-8 payload，session 最多 50,000 records / 16 MiB；超限按完整文件淘汰并安全降级为补读。branch replay 使用相同顺序与容量规则，只恢复经过严格验证的 apply `recoveredRead`。
 - 仅接受有效 UTF-8 文本；revision 基于原始字节，BOM、CRLF/LF 与末尾换行差异都会改变 revision。写入逐行保留未修改 terminator、UTF-8 BOM 与末尾换行状态。
 
 CLI 3.x capability 健康时，插件始终启用这两个专用工具并替换 Pi 内置 `edit`。`session_tree` 重建当前 branch evidence，但不隐藏工具。若 bundled CLI 缺失、版本不在 3.x、缺少正 capability、残留已删除的 `contentReplaceOnce` 字段或响应 malformed，则恢复内置 `edit`。

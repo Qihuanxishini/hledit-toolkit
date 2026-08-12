@@ -1,7 +1,7 @@
 import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
 import { ANCHOR_HASH_PATTERN, lineFromAnchor } from "./file-changes.ts";
-import { parseAnchorContext, parseBatchUpdatedAnchorContext, type BatchAnchorContext } from "./post-edit-context.ts";
-import { MAX_READ_LIMIT, type NormalizedReadRequest } from "./read-args.ts";
+import { parseAnchorContext, parseBatchUpdatedAnchorContext, type BatchAnchorContext, type ProducedLineRange } from "./post-edit-context.ts";
+import { MAX_READ_LIMIT, suggestedReadWindow, type NormalizedReadRequest } from "./read-args.ts";
 import type { FileChangeParams } from "./schema.ts";
 
 export type HleditToolKind = "read_anchors" | "apply_file_changes";
@@ -82,6 +82,18 @@ export function parseEditDeltas(value: unknown): HleditEditDelta[] | undefined {
 		deltas.push({ oldStart, oldEnd, delta });
 	}
 	return deltas;
+}
+
+// 把 editDeltas 换算成新文件坐标下的产出区间：区间内的行是本次编辑新写入的，
+// 模型没有任何旧锚点可用；纯删除产出空区间。parseEditDeltas 已保证升序不重叠。
+export function producedLineRangesFromEditDeltas(deltas: HleditEditDelta[]): ProducedLineRange[] {
+	let shift = 0;
+	return deltas.map((delta) => {
+		const start = delta.oldStart + shift;
+		const producedCount = delta.oldEnd - delta.oldStart + 1 + delta.delta;
+		shift += delta.delta;
+		return { start, end: start + producedCount - 1 };
+	});
 }
 
 export type HleditErrorMetadata = {
@@ -554,14 +566,15 @@ function staleReadInstruction(result: Record<string, unknown>, path: string | un
 		} else if (typeof remap.requested === "string") {
 			anchor = remap.requested;
 		}
-		const match = anchor ? new RegExp(`^(\\d+)#${ANCHOR_HASH_PATTERN}$`).exec(anchor) : undefined;
+		const match = anchor ? READ_ANCHOR_PATTERN.exec(anchor) : undefined;
 		return match ? [Number(match[1])] : [];
 	});
 	if (remappedLineNumbers.length === 0) {
 		return genericInstruction;
 	}
-	const offset = Math.max(1, Math.min(...remappedLineNumbers) - 2);
-	return `Before retrying, call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: 12 }). Do not reuse anchors from before the change.`;
+	const firstRemappedLine = Math.min(...remappedLineNumbers);
+	const { offset, limit } = suggestedReadWindow(firstRemappedLine, firstRemappedLine);
+	return `Before retrying, call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: ${limit} }). Do not reuse anchors from before the change.`;
 }
 
 function localizeInvalidApplyMessage(rawMessage: string, failedChange: number | undefined): string {
@@ -688,9 +701,7 @@ function appendInsufficientReadProofRecovery(
 	}
 
 	const changeNumber = failedIndex + 1;
-	const offset = Math.max(1, start - 2);
-	const limit = Math.min(MAX_READ_LIMIT, Math.max(12, end - offset + 3));
-	const lastSuggestedLine = offset + limit - 1;
+	const { offset, limit, lastLine: lastSuggestedLine } = suggestedReadWindow(start, end);
 	lines.push(lastSuggestedLine < end
 		? `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, offset: ${offset}, limit: ${limit} }) first, continue with nextOffset until line ${end} is covered, then resubmit the original ${resubmitTool} call.`
 		: `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, offset: ${offset}, limit: ${limit} }) to reread every source line required by change ${changeNumber}, then resubmit the original ${resubmitTool} call.`);

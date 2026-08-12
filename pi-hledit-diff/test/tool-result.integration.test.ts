@@ -86,10 +86,10 @@ test("registered tool metadata stays concise without losing English safeguards",
 	assert.match(readGuidelines, /copy only the current LN#HASH token[\s\S]*interior anchors are carried automatically/);
 	assert.match(applyTool.description, /boundary anchors[\s\S]*hidden complete read proof/);
 	assert.match(applyGuidelines, /Never overwrite a nonempty readable file with write/);
-	assert.match(applyGuidelines, /newline-delimited text/);
+	assert.match(applyGuidelines, /\\n separates lines[\s\S]*one blank line/);
 	assert.match(applyGuidelines, /current LN#HASH tokens/);
 	assert.match(applyGuidelines, /review targeted recovery results/);
-	assert.match(JSON.stringify(applyTool.parameters), /New text; use/i);
+	assert.match(JSON.stringify(applyTool.parameters), /New text; \\\\n separates lines\./i);
 
 	const protocolCharacters = [readTool, applyTool].reduce(
 		(total, tool) => total
@@ -267,10 +267,63 @@ test("apply tool accepts byte-truncated updated anchor contexts", async (t) => {
 	);
 
 	assert.equal(applyResult.details.disposition, "succeeded");
-	assert.match(applyResult.content[0]?.text ?? "", /Anchor window truncated/);
+	// 字节截断只砍掉上下文行；产出行完整可得时模型正文不得报不完整，
+	// 同时 details 仍保留 CLI 的完整截断窗口供 evidence 与 TUI 使用。
+	const updatedLine = applyResult.details.updatedAnchors?.lines.find((line) => line.line === 5);
+	assert.ok(updatedLine);
+	assert.equal(applyResult.content[0]?.text ?? "", `Applied 1 change; line delta: +1 -1.\n\nUpdated anchors:\n${updatedLine.anchor}:CHANGED`);
+	assert.equal(applyResult.details.updatedAnchors?.truncated, true);
+	assert.ok((applyResult.details.updatedAnchors?.lines.length ?? 0) > 1);
 	assert.equal((await readFile(target, "utf8")).split(/\r?\n/)[4], "CHANGED");
 });
 
+test("apply tool lists only produced lines for a wide multi-change batch", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-wide-batch-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, `${Array.from({ length: 200 }, (_, index) => `line ${index + 1}`).join("\n")}\n`, "utf8");
+	const context = { cwd: directory };
+
+	const readResult = await readTool.execute("read", { path: "target.txt", offset: 1, limit: 200 } as never, undefined, undefined, context);
+	const anchorAt = (line: number) => readResult.details.read?.lines.find((entry) => entry.line === line)?.anchor;
+	const first = anchorAt(10);
+	const last = anchorAt(180);
+	assert.ok(first && last);
+
+	const applyResult = await applyTool.execute(
+		"apply",
+		{
+			path: "target.txt",
+			changes: [
+				{ operation: "replace_range", start_anchor: first, end_anchor: first, lines: "FIRST" },
+				{ operation: "replace_range", start_anchor: last, end_anchor: last, lines: "LAST" },
+			],
+		} as never,
+		undefined,
+		undefined,
+		context,
+	);
+
+	assert.equal(applyResult.details.disposition, "succeeded");
+	const resultText = applyResult.content[0]?.text ?? "";
+	// CLI 窗口从 firstChanged 起取一整段，跨度大时只能覆盖首个变更：
+	// 模型正文只得到该变更的产出行，不得混入任何未变更的上下文行。
+	assert.match(resultText, /^Applied 2 changes; line delta: \+2 -2\.\n\nUpdated anchors:\n10#[A-Za-z0-9_-]{3}:FIRST\n/);
+	assert.match(resultText, /Updated anchors are incomplete/);
+	assert.doesNotMatch(resultText, /:line \d+/);
+	assert.ok(resultText.length < 250);
+
+	// details 仍保留 CLI 完整窗口（含上下文行）供 evidence 与 TUI 使用。
+	assert.ok((applyResult.details.updatedAnchors?.lines.length ?? 0) > 1);
+	const written = (await readFile(target, "utf8")).split(/\r?\n/);
+	assert.equal(written[9], "FIRST");
+	assert.equal(written[179], "LAST");
+});
 test("apply tool deleting the only line leaves an empty file", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);

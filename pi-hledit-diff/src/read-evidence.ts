@@ -16,7 +16,7 @@ import {
 	type HleditEditDelta,
 	type HleditReadMetadata,
 } from "./result.ts";
-import { MAX_READ_LIMIT } from "./read-args.ts";
+import { suggestedReadWindow } from "./read-args.ts";
 import type { FileChangeParams } from "./schema.ts";
 
 const RAW_REVISION_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -344,7 +344,9 @@ function evaluateProofAgainstEvidence(
 	return { anchors: coverage.coveredLines.map((line) => evidenceLines.get(line)!.anchor), coveredLines: coverage.coveredLines };
 }
 
-export function formatReadProofFailure(path: string, failure: ReadProofFailure): string {
+// 诊断段：失败原因与已验证的锚点更名。补读成功与未补读两条路径共用同一段诊断，
+// 各自追加自己的后续指令；调用方不得再从完整正文里切割这一段。
+export function formatReadProofDiagnosis(failure: ReadProofFailure): string {
 	const lines = [
 		"Valid read proof does not cover every source line required by this change. Batch was not started and no content was written.",
 		`Reason: ${failure.message}`,
@@ -355,15 +357,20 @@ export function formatReadProofFailure(path: string, failure: ReadProofFailure):
 			"Verified anchor renames from this file's last edit (content unchanged, line numbers shifted):",
 			...renames.map((rename) => `- ${rename.requested} -> ${rename.current}`),
 		);
+	}
+	return lines.join("\n");
+}
+
+export function formatReadProofFailure(path: string, failure: ReadProofFailure): string {
+	const lines = [formatReadProofDiagnosis(failure)];
+	const renames = failure.renamedAnchors ?? [];
+	if (renames.length > 0) {
 		lines.push("Replacing the renamed anchors is required but not sufficient; the remaining lines below also need the targeted read before resubmitting.");
 	}
 	const targetLines = failure.reportedMissingLines;
 	const firstLine = failure.suggestedReadRange?.start ?? targetLines[0] ?? 1;
 	const lastLine = failure.suggestedReadRange?.end ?? targetLines[targetLines.length - 1] ?? firstLine;
-	const offset = Math.max(1, firstLine - 2);
-	const preferredLimit = Math.max(12, lastLine - offset + 3);
-	const limit = Math.min(MAX_READ_LIMIT, preferredLimit);
-	const lastSuggestedLine = offset + limit - 1;
+	const { offset, limit, lastLine: lastSuggestedLine } = suggestedReadWindow(firstLine, lastLine);
 	const completionTarget = failure.proofGap
 		? `all required source lines for change ${failure.proofGap.changeNumber} through line ${lastLine}`
 		: firstLine === lastLine ? "the target line" : "the complete target range";

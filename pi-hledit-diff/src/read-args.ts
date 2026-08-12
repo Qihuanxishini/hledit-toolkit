@@ -82,3 +82,18 @@ export function buildReadArgs(request: NormalizedReadRequest): string[] {
 
 	return args;
 }
+
+export type SuggestedReadWindow = {
+	offset: number;
+	limit: number;
+	lastLine: number;
+};
+
+// 补读窗口：目标区间前后各留 2 行上下文，最少 12 行，并受 MAX_READ_LIMIT 约束。
+// 插件实际执行的补读与给模型的补读建议必须共用这一份计算；两者不一致时，模型
+// 按建议读完仍可能 proof 不足，多出一轮 apply 往返。
+export function suggestedReadWindow(start: number, end: number): SuggestedReadWindow {
+	const offset = Math.max(1, start - 2);
+	const limit = Math.min(MAX_READ_LIMIT, Math.max(12, end - offset + 3));
+	return { offset, limit, lastLine: offset + limit - 1 };
+}

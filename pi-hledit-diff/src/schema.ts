@@ -13,7 +13,9 @@ const PATH_SCHEMA = Type.String({ minLength: 1, description: "Text file path." }
 const ANCHOR_SCHEMA = Type.String({ pattern: ANCHOR_PATTERN });
 const REPLACEMENT_TEXT_SCHEMA = Type.String({
 	maxLength: MAX_REPLACEMENT_TEXT_BYTES,
-	description: "New text; use \\n between lines. One final \\n terminates the last line; an empty string is one blank line.",
+	// 完整换行语义只在 apply 的 promptGuidelines 里定义一次；这里保留最短就近提示，
+	// 因为该 description 会在 3 个 union 分支各内联一次，直接抬高每次请求的协议开销。
+	description: "New text; \\n separates lines.",
 });
 
 const REPLACE_RANGE_CHANGE_SCHEMA = Type.Object(

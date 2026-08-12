@@ -18,19 +18,25 @@ export type HleditRun = {
 	started?: boolean;
 };
 
+// 校验通过的 CLI 只有 version 会被消费：能力字段全部是必须为 true 的常量，
+// 回显它们不携带任何调用方需要的信息。
 export type HleditCapabilities = {
 	version: string;
-	anchorProtocolV2: true;
-	readRangeMetadata: true;
-	batchInsertAfter: true;
-	batchCheck: true;
-	batchUpdatedAnchors: true;
-	batchStaleContext: true;
-	batchWireV3: true;
-	batchReadProof: true;
-	batchEditDeltas: true;
-	readIgnoreCase: true;
 };
+
+// 单一来源：新增协议能力只需在这里追加一项，校验不可能漏写。
+const REQUIRED_CAPABILITIES = [
+	"anchorProtocolV2",
+	"readRangeMetadata",
+	"batchInsertAfter",
+	"batchCheck",
+	"batchUpdatedAnchors",
+	"batchStaleContext",
+	"batchWireV3",
+	"batchReadProof",
+	"batchEditDeltas",
+	"readIgnoreCase",
+] as const;
 
 const SUPPORTED_CLI_VERSION_PATTERN = /^3\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
@@ -48,33 +54,13 @@ export function parseHleditCapabilities(run: HleditRun): HleditCapabilities | un
 			record.ok !== true ||
 			typeof record.version !== "string" ||
 			!SUPPORTED_CLI_VERSION_PATTERN.test(record.version) ||
+			// contentReplaceOnce 是已移除的能力：仍然声明它说明这是降级回来的旧 CLI。
 			Object.prototype.hasOwnProperty.call(record, "contentReplaceOnce") ||
-			record.readRangeMetadata !== true ||
-			record.batchInsertAfter !== true ||
-			record.batchCheck !== true ||
-			record.batchUpdatedAnchors !== true ||
-			record.batchStaleContext !== true ||
-			record.batchReadProof !== true ||
-			record.batchWireV3 !== true ||
-			record.batchEditDeltas !== true ||
-			record.readIgnoreCase !== true ||
-			record.anchorProtocolV2 !== true
+			REQUIRED_CAPABILITIES.some((name) => record[name] !== true)
 		) {
 			return undefined;
 		}
-		return {
-			version: record.version,
-			anchorProtocolV2: true,
-			readRangeMetadata: true,
-			batchInsertAfter: true,
-			batchCheck: true,
-			batchUpdatedAnchors: true,
-			batchStaleContext: true,
-			batchWireV3: true,
-			batchReadProof: true,
-			batchEditDeltas: true,
-			readIgnoreCase: true,
-		};
+		return { version: record.version };
 	} catch {
 		return undefined;
 	}

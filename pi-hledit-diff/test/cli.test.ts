@@ -9,7 +9,8 @@ import { HLEDIT_MAX_OUTPUT_BYTES, parseHleditCapabilities, resolveHleditBin, run
 import { parseBatchUpdatedAnchorContext } from "../src/post-edit-context.ts";
 import { applyFileChangesResult } from "../src/result.ts";
 
-const EXPECTED_CAPABILITIES = {
+// CLI 声明的完整能力集；解析结果只保留 version，其余字段仅用于构造被校验的输入。
+const DECLARED_CAPABILITIES = {
 	version: "3.0.0",
 	anchorProtocolV2: true,
 	readRangeMetadata: true,
@@ -33,7 +34,7 @@ test("resolveHleditBin uses the fixed bundled CLI path", () => {
 test("runHledit executes the fixed bundled CLI", async () => {
 	const run = await runHledit(["capabilities"], undefined, process.cwd(), undefined);
 
-	assert.deepEqual(parseHleditCapabilities(run), EXPECTED_CAPABILITIES);
+	assert.deepEqual(parseHleditCapabilities(run), { version: DECLARED_CAPABILITIES.version });
 });
 
 test("runHledit reports an already-aborted invocation", async () => {
@@ -50,15 +51,28 @@ test("runHledit reports an already-aborted invocation", async () => {
 
 test("parseHleditCapabilities requires the reviewed CLI 3.x two-tool contract", () => {
 	assert.deepEqual(
-		parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...EXPECTED_CAPABILITIES }), stderr: "", exitCode: 0 }),
-		EXPECTED_CAPABILITIES,
+		parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...DECLARED_CAPABILITIES }), stderr: "", exitCode: 0 }),
+		{ version: DECLARED_CAPABILITIES.version },
 	);
-	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...EXPECTED_CAPABILITIES, version: "2.3.1" }), stderr: "", exitCode: 0 }), undefined);
-	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...EXPECTED_CAPABILITIES, version: "4.0.0" }), stderr: "", exitCode: 0 }), undefined);
-	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...EXPECTED_CAPABILITIES, contentReplaceOnce: true }), stderr: "", exitCode: 0 }), undefined);
-	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...EXPECTED_CAPABILITIES, contentReplaceOnce: false }), stderr: "", exitCode: 0 }), undefined);
-	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...EXPECTED_CAPABILITIES, batchReadProof: false }), stderr: "", exitCode: 0 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...DECLARED_CAPABILITIES, version: "2.3.1" }), stderr: "", exitCode: 0 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...DECLARED_CAPABILITIES, version: "4.0.0" }), stderr: "", exitCode: 0 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...DECLARED_CAPABILITIES, contentReplaceOnce: true }), stderr: "", exitCode: 0 }), undefined);
+	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...DECLARED_CAPABILITIES, contentReplaceOnce: false }), stderr: "", exitCode: 0 }), undefined);
 	assert.equal(parseHleditCapabilities({ stdout: "not json", stderr: "", exitCode: 0 }), undefined);
+});
+
+// 单一 REQUIRED_CAPABILITIES 列表必须真的逐项生效：任何一项缺失都要拒绝整个 CLI。
+test("parseHleditCapabilities rejects a CLI missing any single required capability", () => {
+	const capabilities = Object.keys(DECLARED_CAPABILITIES).filter((name) => name !== "version");
+	assert.equal(capabilities.length, 10);
+	for (const capability of capabilities) {
+		const declaration = { ok: true, ...DECLARED_CAPABILITIES, [capability]: false };
+		assert.equal(
+			parseHleditCapabilities({ stdout: JSON.stringify(declaration), stderr: "", exitCode: 0 }),
+			undefined,
+			`${capability} must be enforced`,
+		);
+	}
 });
 
 test("bundled read-range emits structured range metadata", async (t) => {

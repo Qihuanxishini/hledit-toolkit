@@ -29,17 +29,20 @@ import {
 import { formatBatchUpdatedAnchorContext, type BatchAnchorContext } from "./src/post-edit-context.ts";
 import { decodeFileChangeInput, prepareReadAnchorsArguments } from "./src/prepare-arguments.ts";
 import {
+	formatReadProofDiagnosis,
 	formatReadProofFailure,
 	ReadEvidenceStore,
 	resolveReadEvidencePath,
 	type ReadProofFailure,
 } from "./src/read-evidence.ts";
-import { buildReadArgs, MAX_READ_LIMIT, normalizeReadRequest, normalizeToolPath } from "./src/read-args.ts";
+import { buildReadArgs, MAX_READ_LIMIT, normalizeReadRequest, normalizeToolPath, suggestedReadWindow } from "./src/read-args.ts";
 import { runReadAnchorsTransaction } from "./src/read-transaction.ts";
 import {
 	applyFileChangesResult,
+	producedLineRangesFromEditDeltas,
 	fileChangeCheckFailure,
 	shouldMarkHleditResultAsError,
+	parseEditDeltas,
 	readAnchorsResult,
 	parseRunObject,
 	rejectedToolResult,
@@ -95,7 +98,10 @@ function finalizeSuccessfulEditResult(
 ): TextResult {
 	const parsed = parseRunObject(run)!;
 	const updatedAnchorContext = parsed.updatedAnchors as BatchAnchorContext;
-	const postEditContext = formatBatchUpdatedAnchorContext(updatedAnchorContext);
+	const postEditContext = formatBatchUpdatedAnchorContext(
+		updatedAnchorContext,
+		producedLineRangesFromEditDeltas(parseEditDeltas(parsed.editDeltas) ?? []),
+	);
 	const modelPostEditContext = result.details.contentChanged === false ? undefined : postEditContext.text;
 
 	return {
@@ -139,12 +145,11 @@ async function recoverMissingReadProof(
 	const range = failure.suggestedReadRange;
 	if (!range) return undefined;
 
-	const offset = Math.max(1, range.start - 2);
-	const limit = Math.min(MAX_READ_LIMIT, Math.max(12, range.end - offset + 3));
+	const { offset, limit } = suggestedReadWindow(range.start, range.end);
 	const request = normalizeReadRequest({ path: normalizedPath, offset, limit });
 	const readResult = readAnchorsResult(await runHledit(buildReadArgs(request), undefined, ctx.cwd, signal), request);
 	const queuedReadResult = attachEvidencePath(readResult, normalizedPath, evidencePath);
-	const base = formatReadProofFailure(normalizedPath, failure).split("\nCall hledit_read_anchors", 1)[0]!;
+	const base = formatReadProofDiagnosis(failure);
 	const failureContext = {
 		...(failure.renamedAnchors ? { renamedAnchors: failure.renamedAnchors } : {}),
 		...(failure.proofGap
@@ -156,7 +161,7 @@ async function recoverMissingReadProof(
 		const message = "The targeted recovery read failed before edit proof could be established.";
 		const rejected = rejectedToolResult([
 			base,
-			`${message} Resolve the read error below before resubmitting; no write was attempted.`,
+			`${message} Resolve the read error below before resubmitting.`,
 			queuedReadResult.content[0]?.text ?? "",
 		].filter(Boolean).join("\n"), {
 			code: "proof_recovery_read_failed",
@@ -187,8 +192,9 @@ async function recoverMissingReadProof(
 		? recoveredRead.nextOffset
 		: undefined;
 	const instruction = nextMissingOffset === undefined
-		? "The targeted missing range was read and recorded below. Review the current source, replace any mismatched endpoint anchors with the returned current anchors, then resubmit the batch once; no write was attempted."
-		: `Proof is still incomplete through line ${range.end}. Call hledit_read_anchors({ path: ${JSON.stringify(normalizedPath)}, offset: ${nextMissingOffset}, limit: ${Math.min(MAX_READ_LIMIT, range.end - nextMissingOffset + 1)} }) and continue with nextOffset until line ${range.end} is covered. Do not resubmit apply before then; no write was attempted.`;
+		// 只有 diagnosis 真的列出了 rename 时才要求应用；renamedAnchors 为空数组时 diagnosis 不输出列表。
+		? `The targeted missing range was read and recorded below. Review the current source, ${failure.renamedAnchors?.length ? "apply every listed anchor rename, " : ""}replace any mismatched endpoint anchors with the returned current anchors, then resubmit the batch once.`
+		: `Proof is still incomplete through line ${range.end}. Call hledit_read_anchors({ path: ${JSON.stringify(normalizedPath)}, offset: ${nextMissingOffset}, limit: ${Math.min(MAX_READ_LIMIT, range.end - nextMissingOffset + 1)} }) and continue with nextOffset until line ${range.end} is covered. Do not resubmit apply before then.`;
 	const rejected = rejectedToolResult([
 		base,
 		instruction,
@@ -360,7 +366,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		description: "Atomically apply one complete non-overlapping batch using boundary anchors and hidden complete read proof.",
 		promptGuidelines: [
 			"Read the target with hledit_read_anchors before editing unless complete proof is already available. Submit only current LN#HASH tokens; range interiors are proven internally.",
-			"Use newline-delimited text in lines. Never overwrite a nonempty readable file with write; review targeted recovery results before resubmitting.",
+			"In lines, \\n separates lines; one trailing \\n only terminates the last line, and an empty string is one blank line. Never overwrite a nonempty readable file with write; review targeted recovery results before resubmitting.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },

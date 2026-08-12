@@ -211,6 +211,7 @@ CLI 写入逐行保留未修改 terminator、BOM 和 trailing-newline 状态；�
 - `details.changePreview` 只由同 revision 消费行 evidence、请求 payload 和已验证 delta 构成；不读取全文件 before/after snapshot，也不注入模型正文；
 - preview 上限 2000 行 / 256 KiB，所有计数使用 UTF-8 bytes。超长单行保留首尾及 `textTruncated:true`；
 - TUI 优先结构化 preview，历史 session 只对 `details.diff` 保留 fallback；preview 截断或没有可渲染 change 行时使用 CLI `linesAdded` / `linesDeleted`，不显示局部推导的完整 hunk 数；
+- 模型正文只列出落在本次编辑产出区间（由已验证 `editDeltas` 换算到新坐标）内的 updated anchors；区间外的行已由 evidence 平移与 verified rename 覆盖，不重复发给模型。纯删除产出空区间，不输出 anchor 块；不完整提示只在产出行未被实际返回窗口覆盖、或产出行自身文本被截断时追加（仅砍掉上下文行的 CLI `truncated` 不触发），且不再给出跨度可能达百行的 `desiredLimit` 重读建议；
 - expanded updated-anchor rows 只来自 `details.updatedAnchors`，不解析模型正文；
 - diff 在 120 列切换 split/unified，主题色、布局和高亮缓存必须在 `invalidate()` 正确清理；
 - `session_before_compact` 从两个工具的结构化结果补充 fileOps：read 成功 → read；带严格验证 `recoveredRead` 的零写入 apply → read；apply content change → modified；apply no-op → read；`outcome_unknown` → modified；其余确认零写入结果不记录。

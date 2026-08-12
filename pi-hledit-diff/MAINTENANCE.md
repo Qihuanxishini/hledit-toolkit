@@ -191,6 +191,7 @@ CLI 写入逐行保留未修改 terminator、BOM 和 trailing-newline 状态；�
 "succeeded" | "rejected" | "unavailable" | "outcome_unknown"
 ```
 
+- `findChangeShapeIssue` 在 `selectProof` 之前拦截仅凭请求即可判定的自相矛盾：区间锚点倒置（`reversed_anchor_range`）、`lines` 行首粘贴了本次提交过的锚点 token（`anchor_token_in_lines`）。这类问题重读文件无法修复，必须让模型改参数，因此不得落到 `insufficient_read_proof` 的补读指令上；正文明确声明重读无效并给出交换/删前缀的具体动作。检测即拒绝，不自动修正——与 `prepareArguments` 只服务 read 的约定一致；
 - 插件侧 `insufficient_read_proof` 是可恢复补读结果，不设置 Pi `isError`；其他非成功结果均升级为工具错误；
 - stale remap 和同 snapshot anchors 只用于显式确认，不自动修正或重试；正文只保留一份确认/重读要求；
 - `source_changed_before_commit` 是确认零写入；CLI 从未启动使用 `unavailable`；

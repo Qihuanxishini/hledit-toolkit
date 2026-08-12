@@ -396,6 +396,88 @@ test("apply tool rejects accidental single-line range expansion with actionable 
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
 });
 
+test("apply tool rejects an anchor token pasted into lines instead of writing it to disk", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "const a = 1;\nconst b = 2;\nconst c = 3;\n", "utf8");
+	const context = { cwd: directory };
+
+	const readResult = await readTool.execute("read", { path: "target.txt", offset: 2, limit: 1 } as never, undefined, undefined, context);
+	const anchor = readResult.details.read?.lines[0]?.anchor;
+	assert.ok(anchor);
+
+	// 模型把 read 输出的 "LN#HASH:text" 展示格式整行抄进了替换内容。
+	const applyResult = await applyTool.execute(
+		"apply",
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: `${anchor}:const b = 20;` }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+
+	assert.equal(applyResult.details.disposition, "rejected");
+	assert.deepEqual(applyResult.details.error, {
+		code: "anchor_token_in_lines",
+		message: `Change 1 pasted the anchor token ${anchor} into lines; strip the prefix instead of rereading.`,
+		changeNumber: 1,
+	});
+	const text = applyResult.content[0]?.text ?? "";
+	assert.match(text, /The atomic batch was rejected; no content was written/);
+	assert.match(text, new RegExp(`Line 1 of lines begins with ${anchor}:`));
+	assert.match(text, /Rereading the file cannot resolve this/);
+	assert.equal(await readFile(target, "utf8"), "const a = 1;\nconst b = 2;\nconst c = 3;\n");
+});
+
+test("apply tool rejects a reversed anchor range with a swap instruction instead of a reread loop", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "one\ntwo\nthree\n", "utf8");
+	const context = { cwd: directory };
+
+	const readResult = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const first = readResult.details.read?.lines[0]?.anchor;
+	const third = readResult.details.read?.lines[2]?.anchor;
+	assert.ok(first && third);
+
+	const reversed = { path: "target.txt", changes: [{ operation: "replace_range", start_anchor: third, end_anchor: first, lines: "merged" }] };
+	const applyResult = await applyTool.execute("apply", reversed as never, undefined, undefined, context);
+
+	assert.equal(applyResult.details.disposition, "rejected");
+	assert.deepEqual(applyResult.details.error, {
+		code: "reversed_anchor_range",
+		message: `Change 1 submitted start_anchor ${third} below end_anchor ${first}; swap them instead of rereading.`,
+		changeNumber: 1,
+	});
+	const text = applyResult.content[0]?.text ?? "";
+	assert.match(text, new RegExp(`Swap them: set start_anchor to ${first} and end_anchor to ${third}`));
+	// 旧行为会返回 insufficient_read_proof 并要求重读，而重读后重发会复现同一错误。
+	assert.doesNotMatch(text, /Call hledit_read_anchors/);
+	assert.doesNotMatch(text, /resubmit the original hledit_apply_file_changes call/);
+	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
+
+	// 交换后无需重读即可成功，证明拒绝未损失已有证据。
+	const fixed = await applyTool.execute(
+		"apply",
+		{ path: "target.txt", changes: [{ operation: "replace_range", start_anchor: first, end_anchor: third, lines: "merged" }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(fixed.details.disposition, "succeeded");
+	assert.equal(await readFile(target, "utf8"), "merged\n");
+});
 test("apply tool rejects an anchor that does not match its read proof before starting batch", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);

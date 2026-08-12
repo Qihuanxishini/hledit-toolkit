@@ -80,6 +80,89 @@ export function lineFromAnchor(anchor: unknown): number | undefined {
 	return Number.isSafeInteger(line) && line > 0 ? line : undefined;
 }
 
+// 请求层自洽性校验。schema 只保证字段类型合法，read proof 只校验与文件快照的一致
+// 性；这里检查一个类型合法的 change 是否自相矛盾。这类问题重读文件永远无法修复，
+// 必须由模型改自己的参数，所以要在 selectProof 之前拦下——否则会给出"去重读再重发"
+// 的指令，而重发必然复现同一错误，形成恢复死循环。
+const ANCHOR_LINE_PREFIX_PATTERN = new RegExp(`^(\\d+#${ANCHOR_HASH_PATTERN}):`);
+
+export type ChangeShapeIssue =
+	| {
+		code: "reversed_anchor_range";
+		changeNumber: number;
+		operation: "replace_range" | "delete_range";
+		startAnchor: string;
+		endAnchor: string;
+	}
+	| {
+		code: "anchor_token_in_lines";
+		changeNumber: number;
+		replacementLineNumber: number;
+		anchorToken: string;
+	};
+
+function submittedAnchorTokens(changes: FileChangeParams["changes"]): Set<string> {
+	const tokens = new Set<string>();
+	for (const change of changes) {
+		if (change.operation === "insert_before" || change.operation === "insert_after") {
+			tokens.add(change.anchor);
+			continue;
+		}
+		tokens.add(change.start_anchor);
+		tokens.add(change.end_anchor);
+	}
+	return tokens;
+}
+
+export function findChangeShapeIssue(params: FileChangeParams): ChangeShapeIssue | undefined {
+	const submittedAnchors = submittedAnchorTokens(params.changes);
+	for (const [index, change] of params.changes.entries()) {
+		const changeNumber = index + 1;
+		if (change.operation === "replace_range" || change.operation === "delete_range") {
+			const startLine = lineFromAnchor(change.start_anchor);
+			const endLine = lineFromAnchor(change.end_anchor);
+			if (startLine !== undefined && endLine !== undefined && startLine > endLine) {
+				return {
+					code: "reversed_anchor_range",
+					changeNumber,
+					operation: change.operation,
+					startAnchor: change.start_anchor,
+					endAnchor: change.end_anchor,
+				};
+			}
+		}
+		if (change.operation === "delete_range") continue;
+
+		for (const [lineIndex, text] of change.lines.entries()) {
+			// 只有当行首 token 正是本次请求提交过的 anchor 时才判定为误贴 read 输出：
+			// 真实源码里出现恰好等于当前 anchor 的行首 token 需要 hash 自碰撞，可忽略。
+			const anchorToken = ANCHOR_LINE_PREFIX_PATTERN.exec(text)?.[1];
+			if (anchorToken !== undefined && submittedAnchors.has(anchorToken)) {
+				return { code: "anchor_token_in_lines", changeNumber, replacementLineNumber: lineIndex + 1, anchorToken };
+			}
+		}
+	}
+	return undefined;
+}
+
+export function formatChangeShapeIssue(issue: ChangeShapeIssue): string {
+	if (issue.code === "reversed_anchor_range") {
+		return [
+			`Change ${issue.changeNumber} was rejected.`,
+			`Received: ${issue.operation} from start_anchor ${issue.startAnchor} through end_anchor ${issue.endAnchor}, which runs backwards.`,
+			"start_anchor must not be below end_anchor in the file.",
+			`Swap them: set start_anchor to ${issue.endAnchor} and end_anchor to ${issue.startAnchor}.`,
+			"Rereading the file cannot resolve this; fix the anchor order and resubmit.",
+		].join("\n");
+	}
+	return [
+		`Change ${issue.changeNumber} was rejected.`,
+		`Line ${issue.replacementLineNumber} of lines begins with ${issue.anchorToken}:, which is hledit_read_anchors display syntax, not file content.`,
+		`Writing it would put the literal text ${issue.anchorToken}: into the file.`,
+		`Remove the leading ${issue.anchorToken}: from that line; lines carries file content only, and anchors belong in the anchor fields.`,
+		"Rereading the file cannot resolve this; fix lines and resubmit.",
+	].join("\n");
+}
 export type NearbyDeleteRangeHint = {
 	changeNumber: number;
 	startAnchor: string;

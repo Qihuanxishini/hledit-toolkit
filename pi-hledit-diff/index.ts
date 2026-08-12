@@ -23,7 +23,9 @@ import { recordAnchoredFileOperations } from "./src/compaction-files.ts";
 import {
 	buildFileChangeCheckRequest,
 	buildFileChangeRequest,
+	findChangeShapeIssue,
 	findSingleLineRangeExpansionIssue,
+	formatChangeShapeIssue,
 	formatSingleLineRangeExpansionIssue,
 } from "./src/file-changes.ts";
 import { formatBatchUpdatedAnchorContext, type BatchAnchorContext } from "./src/post-edit-context.ts";
@@ -219,6 +221,25 @@ async function runFileChangesWithDiff(
 	const normalizedPath = normalizeToolPath(params.path);
 	const evidencePath = await resolveReadEvidencePath(ctx.cwd, normalizedPath);
 	const normalizedParams = { ...params, path: normalizedPath };
+	// 请求层自洽性先于 evidence 校验：它不依赖文件状态，且重读无法修复，
+	// 不能让它落到 insufficient_read_proof 的"去重读"指令上。
+	const shapeIssue = findChangeShapeIssue(normalizedParams);
+	if (shapeIssue) {
+		return attachEvidencePath(
+			rejectedToolResult(
+				`The atomic batch was rejected; no content was written.\n${formatChangeShapeIssue(shapeIssue)}`,
+				{
+					code: shapeIssue.code,
+					message: shapeIssue.code === "reversed_anchor_range"
+						? `Change ${shapeIssue.changeNumber} submitted start_anchor ${shapeIssue.startAnchor} below end_anchor ${shapeIssue.endAnchor}; swap them instead of rereading.`
+						: `Change ${shapeIssue.changeNumber} pasted the anchor token ${shapeIssue.anchorToken} into lines; strip the prefix instead of rereading.`,
+					changeNumber: shapeIssue.changeNumber,
+				},
+			),
+			normalizedPath,
+			evidencePath,
+		);
+	}
 	const applyWithinQueue = async (): Promise<TextResult> => {
 		const proofSelection = evidence.selectProof(evidencePath, normalizedParams.changes);
 		if ("failure" in proofSelection) {

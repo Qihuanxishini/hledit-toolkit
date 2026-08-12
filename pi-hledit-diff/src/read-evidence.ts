@@ -653,7 +653,9 @@ export class ReadEvidenceStore {
 			return {
 				failure: {
 					code: "insufficient_read_proof",
-					message: "The source lines required by this change could not be determined.",
+					// findChangeShapeIssue 已在 apply 入口拦下锚点顺序问题，这里只可能是行号
+					// 溢出等不可用锚点；仍点名两项待查，避免退化成无从下手的泛化诊断。
+					message: "The source lines required by this change could not be determined; verify that each anchor is a current LN#HASH token and that start_anchor is not below end_anchor.",
 					reportedMissingLines: [],
 				},
 			};

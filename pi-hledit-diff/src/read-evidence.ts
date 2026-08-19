@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
@@ -33,6 +34,7 @@ type EvidenceLine = {
 
 type FileReadEvidence = {
 	revision: string;
+	proofId: string;
 	lines: Map<number, EvidenceLine>;
 	// 成功编辑造成的锚点更名（旧锚点 -> 内容未变的新锚点），仅用于失败恢复提示。
 	renames: Map<string, string>;
@@ -75,7 +77,7 @@ export type RenamedAnchor = {
 };
 
 export type ReadProofFailure = {
-	code: "insufficient_read_proof";
+	code: "insufficient_read_proof" | "invalid_proof_id";
 	message: string;
 	reportedMissingLines: number[];
 	suggestedReadRange?: ReadProofLineRange;
@@ -347,6 +349,12 @@ function evaluateProofAgainstEvidence(
 // 诊断段：失败原因与已验证的锚点更名。补读成功与未补读两条路径共用同一段诊断，
 // 各自追加自己的后续指令；调用方不得再从完整正文里切割这一段。
 export function formatReadProofDiagnosis(failure: ReadProofFailure): string {
+	if (failure.code === "invalid_proof_id") {
+		return [
+			"The submitted proof_id is not valid for the current editable evidence. Batch was not started and no content was written.",
+			`Reason: ${failure.message}`,
+		].join("\n");
+	}
 	const lines = [
 		"Valid read proof does not cover every source line required by this change. Batch was not started and no content was written.",
 		`Reason: ${failure.message}`,
@@ -435,8 +443,8 @@ export class ReadEvidenceStore {
 		}
 	}
 
-	private storeEvidence(path: string, evidence: FileReadEvidence): boolean {
-		if (evidence.lines.size === 0) {
+	private storeEvidence(path: string, evidence: FileReadEvidence, allowEmpty = false): boolean {
+		if (evidence.lines.size === 0 && !allowEmpty) {
 			this.files.delete(path);
 			return true;
 		}
@@ -470,7 +478,14 @@ export class ReadEvidenceStore {
 		return ambiguousTokens;
 	}
 
-	recordRead(path: string, read: HleditReadMetadata): void {
+	recordRead(path: string, read: HleditReadMetadata, proofId?: string): void {
+		if (read.requested.grep !== undefined && read.lines.length === 0) {
+			// [喵喵喵]: 0 命中不是一次成功的编辑证明；必须清除该文件的旧 proof，
+			// 防止模型在查询失败后误用历史锚点。(2026-08-01)
+			this.files.delete(path);
+			return;
+		}
+		const activeProofId = proofId ?? randomUUID();
 		const existing = this.files.get(path);
 		const sameRevision = existing?.revision === read.revision;
 		const lines = sameRevision ? new Map(existing.lines) : new Map<number, EvidenceLine>();
@@ -489,15 +504,19 @@ export class ReadEvidenceStore {
 		}
 		const next: FileReadEvidence = {
 			revision: read.revision,
+			proofId: activeProofId,
 			lines,
 			renames,
 			ambiguousTokens: this.addTokenReuseAmbiguities(lines, renames, ambiguousTokens),
 		};
-		if (this.storeEvidence(path, next)) return;
+		// [喵喵喵]: 文本被截断时保留 proof generation 的空状态，让 apply 进入
+		// source_line_truncated 终止分支，而不是把一次合法 read 误报为 proof_id 不存在。
+		if (this.storeEvidence(path, next, read.textTruncated)) return;
 
 		// 合并后超限时不保留历史 alias/ambiguity 链，只尝试缓存触发更新的 fresh window。
 		this.storeEvidence(path, {
 			revision: read.revision,
+			proofId: activeProofId,
 			lines: freshLines,
 			renames: new Map(),
 			ambiguousTokens: new Set(),
@@ -531,6 +550,9 @@ export class ReadEvidenceStore {
 		}
 		const next: FileReadEvidence = {
 			revision,
+			// [喵喵喵]: 受控 apply 产生的新 revision 延续同一 proof generation；
+			// 只有显式 read 才轮换 proofId，避免 updatedAnchors 无法继续用于后续编辑。
+			proofId: existing?.proofId ?? randomUUID(),
 			lines,
 			renames,
 			// updatedAnchors 不能消歧；模型仍可能持有编辑前或已消费行的同 token。
@@ -590,6 +612,7 @@ export class ReadEvidenceStore {
 		for (const token of tokensNeedingDisambiguation) remappedAmbiguousTokens.add(token);
 		const retained = this.storeEvidence(path, {
 			revision: newRevision,
+			proofId: evidence.proofId,
 			lines,
 			renames,
 			ambiguousTokens: remappedAmbiguousTokens,
@@ -647,7 +670,17 @@ export class ReadEvidenceStore {
 		this.recordUpdatedAnchors(path, currentRevision, currentAnchors);
 	}
 
-	selectProof(path: string, changes: FileChangeParams["changes"]): ReadProofSelection {
+	selectProof(path: string, changes: FileChangeParams["changes"], proofId?: string): ReadProofSelection {
+		const evidence = this.files.get(path);
+		if (proofId !== undefined && (!evidence || evidence.proofId !== proofId)) {
+			return {
+				failure: {
+					code: "invalid_proof_id",
+					message: "The submitted proof_id is missing, expired, or belongs to a different read. Call hledit_read_anchors again and use the returned proof_id.",
+					reportedMissingLines: [],
+				},
+			};
+		}
 		const requested = requestedChangeEvidence(changes);
 		if (!requested || requested.ranges.length === 0) {
 			return {
@@ -661,7 +694,6 @@ export class ReadEvidenceStore {
 			};
 		}
 
-		const evidence = this.files.get(path);
 		if (!evidence) {
 			const emptyEvidence = new Map<number, EvidenceLine>();
 			const coverage = collectProofCoverage(requested.ranges, emptyEvidence);
@@ -761,7 +793,7 @@ export class ReadEvidenceStore {
 			if (entry.message.toolName === HLEDIT_READ_ANCHORS_TOOL) {
 				if (details.disposition === "succeeded") {
 					const read = parseHleditReadMetadata(details.read);
-					if (read) this.recordRead(path, read);
+					if (read) this.recordRead(path, read, typeof details.proofId === "string" ? details.proofId : undefined);
 					else this.touch(path);
 				} else {
 					this.touch(path);
@@ -772,7 +804,9 @@ export class ReadEvidenceStore {
 			if (entry.message.toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) continue;
 			const applyDetails = details as HleditDetails;
 			const recoveredRead = parseRecoveredRead(applyDetails);
-			if (recoveredRead) this.recordRead(path, recoveredRead);
+			if (recoveredRead) {
+				this.recordRead(path, recoveredRead, typeof applyDetails.proofId === "string" ? applyDetails.proofId : undefined);
+			}
 			this.recordApplyResult(path, applyDetails);
 		}
 	}
@@ -784,13 +818,18 @@ export class ReadEvidenceStore {
 		if (!path) return;
 
 		if (toolName === HLEDIT_READ_ANCHORS_TOOL) {
-			if (details.disposition === "succeeded" && details.read) this.recordRead(path, details.read);
-			else this.touch(path);
+			if (details.disposition === "succeeded" && details.read) {
+				this.recordRead(path, details.read, typeof details.proofId === "string" ? details.proofId : undefined);
+			} else {
+				this.touch(path);
+			}
 			return;
 		}
 		if (toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) return;
 		const recoveredRead = parseRecoveredRead(details);
-		if (recoveredRead) this.recordRead(path, recoveredRead);
+		if (recoveredRead) {
+			this.recordRead(path, recoveredRead, typeof details.proofId === "string" ? details.proofId : undefined);
+		}
 		this.recordApplyResult(path, details);
 	}
 }

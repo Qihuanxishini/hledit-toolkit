@@ -90,8 +90,8 @@ test("anchored editing tools stay active regardless of current read evidence", a
 		undefined,
 		context,
 	);
-	assert.equal(prooflessApply.details.error?.code, "insufficient_read_proof");
-	assert.match(prooflessApply.content[0]?.text ?? "", /Batch was not started/);
+	assert.equal(prooflessApply.details.error?.code, "invalid_proof_id");
+	assert.match(prooflessApply.content[0]?.text ?? "", /missing proof_id/);
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
 
 	const readTool = harness.tools.get(HLEDIT_READ_ANCHORS_TOOL);
@@ -119,6 +119,7 @@ test("anchored editing tools stay active regardless of current read evidence", a
 	assert.ok(currentAnchor);
 	const noOpApplyParams = {
 		path: "target.txt",
+		proof_id: successfulRead.details.proofId,
 		changes: [{ operation: "replace_range", start_anchor: currentAnchor, end_anchor: currentAnchor, lines: "two" }],
 	} as never;
 
@@ -132,7 +133,7 @@ test("anchored editing tools stay active regardless of current read evidence", a
 		undefined,
 		context,
 	);
-	assert.equal(clearedBranchApply.details.error?.code, "insufficient_read_proof");
+	assert.equal(clearedBranchApply.details.error?.code, "invalid_proof_id");
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
 
 	branch = [{
@@ -193,6 +194,7 @@ test("grep reads provide partial proof without a second range read", async (t) =
 		"grep-uncovered-range",
 		{
 			path: "partial.txt",
+			proof_id: partialRead.details.proofId,
 			changes: [{ operation: "replace_range", start_anchor: "1#AAA", end_anchor: hitAnchor, lines: "changed" }],
 		} as never,
 		undefined,
@@ -207,6 +209,7 @@ test("grep reads provide partial proof without a second range read", async (t) =
 		"grep-covered-line",
 		{
 			path: "partial.txt",
+			proof_id: uncoveredApply.details.proofId,
 			changes: [{ operation: "replace_range", start_anchor: hitAnchor, end_anchor: hitAnchor, lines: "changed" }],
 		} as never,
 		undefined,
@@ -234,6 +237,7 @@ test("grep reads provide partial proof without a second range read", async (t) =
 		"grep-covered-range",
 		{
 			path: "context.txt",
+			proof_id: contextRead.details.proofId,
 			changes: [{ operation: "replace_range", start_anchor: firstAnchor, end_anchor: lastAnchor, lines: "rewritten" }],
 		} as never,
 		undefined,

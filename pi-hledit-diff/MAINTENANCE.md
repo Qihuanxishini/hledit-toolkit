@@ -20,7 +20,7 @@ pi-hledit-diff/
 └─ src/
 ```
 
-不得部署 `test/`、`node_modules/`、README、锁文件或 `tsconfig.json`；运行时依赖由 Pi 宿主提供，正式目录不执行 `npm install`。本计划实施不包含正式部署。
+不得部署 `test/`、`node_modules/`、README、锁文件或 `tsconfig.json`；运行时依赖由 Pi 宿主提供，正式目录不执行 `npm install`。正式部署必须显式执行并逐文件核对，不由开发仓库自动完成。
 
 ## CLI capability 门禁
 
@@ -29,7 +29,7 @@ pi-hledit-diff/
 ```json
 {
   "ok": true,
-  "version": "3.0.0",
+  "version": "3.1.0",
   "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,
@@ -39,7 +39,9 @@ pi-hledit-diff/
   "batchWireV3": true,
   "batchReadProof": true,
   "batchEditDeltas": true,
-  "readIgnoreCase": true
+  "readIgnoreCase": true,
+  "readRegex": true,
+  "readLiteral": true
 }
 ```
 
@@ -72,13 +74,14 @@ pi-hledit-diff/
   offset?: number,
   limit?: number,
   grep?: string,
+  literal?: boolean,
   context?: number,
   ignore_case?: boolean,
 }
 ```
 
 - 编辑现有非空可读文本文件前，使用该工具读取会被消费的全部原始行；普通 `read` 只用于参考或目标未定的探索。
-- 默认 `limit` 为 160，公开上限 2000；`grep` / `context` 可贡献离散局部 proof，`ignore_case` 透传 `--ignore-case`。
+- 默认 `limit` 为 160，公开上限 2000；`grep` 默认使用 Go RE2 正则，`literal:true` 显式切换字面子串匹配，`context` 可贡献离散局部 proof，`ignore_case` 透传 `--ignore-case`。
 - `prepareArguments` 仅用于 read：宽容转换不改变语义的数字字符串和边界值；非整数仍由严格 schema 拒绝。apply 不做兼容预处理。
 - 固定调用 `read-range --json`。响应验证 revision、总行数、连续性/递增顺序、锚点格式、分页和 source-line truncation；模型正文和 `details.read` 都由已验证结构生成。
 - CLI 执行、响应验证和 evidence 更新是同一个 canonical file queue 事务。不得在队列外记录晚到 snapshot。
@@ -96,11 +99,15 @@ pi-hledit-diff/
 }
 ```
 
+
+插件对非零命中或普通范围 read 生成 `proof_id`，同时写入模型正文与 `details.proofId`；零命中 grep 不生成 proof，并清除该 canonical path 的旧 proof generation。分页或后续显式 read 会轮换 proof id，同时在同 revision 下合并已验证行。
+
 ### `hledit_apply_file_changes`
 
 ```ts
 {
   path: string,
+  proof_id: string,
   changes: [
     { operation: "replace_range", start_anchor: "12#aB3", end_anchor: "18#xY7", lines: "new line\nanother line" },
     { operation: "delete_range", start_anchor: "24#nK2", end_anchor: "29#Qw_" },
@@ -118,10 +125,10 @@ pi-hledit-diff/
 - apply 不接受数组 `lines`、序列化 `changes`、单 change 自动包装或带源码后缀的 anchor；旧 operation、别名和字段不迁移，object 使用严格额外字段拒绝；
 - 单次 batch 限 1–200 个 changes，replacement 总量限 1 MiB UTF-8，输出总量限 20,000 行；
 - batch stdin request 总大小限 8 MiB；`lines` 与 `proof.anchors` 的每个元素必须是 JSON 字符串，`null` 等类型会被拒绝；
-- 公开 schema 不含 revision/proof。插件从当前 branch evidence 注入每个消费行或 insert 依附行的完整 hidden proof；
-- proof 不完整时不启动 mutation batch；apply 在同一 canonical file queue 内完成一次定向只读。若仍有 `nextOffset`，只返回下一页 read 指引并禁止提前重提 apply；覆盖完整缺口后才通过顶层 `recoveredRead` 返回当前证据，调用方审阅后显式重提 batch。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；插件不自动重放修改；
-- 高风险单行范围扩展先执行一次 `batch --check`。check 成功只返回字段级修复，不继续真正写入；
-- 普通路径只执行一次非 check `batch`，插件本身不写目标文件。
+- 公开 schema 要求 `proof_id`，但不暴露 raw revision 或 CLI `proof`；插件仅接受当前 canonical path 上最近有效 read generation 的 id，再从 branch evidence 注入每个消费行或 insert 依附行的完整 hidden proof；
+- proof id 无效或跨路径使用时不启动 CLI；proof 行覆盖不完整时，apply 在同一 canonical file queue 内完成一次定向只读。若仍有 `nextOffset`，只返回下一页 read 指引并禁止提前重提 apply；覆盖完整缺口后通过顶层 `recoveredRead` 与新的 `proof_id` 返回当前证据，调用方审阅后显式重提 batch。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；插件不自动重放修改；
+- 每个通过插件的 apply 都先执行一次 `batch --check`，验证当前 revision、hidden proof、全部锚点与操作冲突；check 失败确认零写入；
+- check 成功后才执行一次非 check `batch`，CLI 在原子替换前再次复检 raw-byte revision，插件本身不写目标文件。
 
 内部请求：
 
@@ -134,9 +141,10 @@ pi-hledit-diff/
 
 ## Evidence 与并发不变量
 
-Evidence 以 resolved canonical path 为 key，每个文件状态包含当前 raw-byte revision、完整观察行、verified rename alias 和 ambiguous token：
+Evidence 以 resolved canonical path 为 key，每个文件状态包含当前 `proofId` generation、raw-byte revision、完整观察行、verified rename alias 和 ambiguous token：
 
 - 普通范围和 grep 同 revision 按行合并；新 revision 替换旧 state。`textTruncated` 行不建立 proof；
+- 零命中 grep 立即清除该路径旧 proof；非零显式 read 轮换 proof id，同 revision 下可继续合并已验证窗口。apply 必须提交匹配当前 generation 的 id；成功 apply 产生的新 revision 延续同一 generation，使受控更新锚点可继续使用；
 - apply 成功后，消费区间 evidence 被删除，区间外行按已验证 `editDeltas` 平移并用 `anchor-hash.ts` 自校验重算，再合并 `updatedAnchors`；
 - verified rename 仅在目标唯一、非歧义、同 revision，且替换后完整 proof 再次成立时内部规范化；CLI 仍复验 raw revision、proof 和全部 anchors，成功结果通过 `details.resolvedAnchors` 报告映射；
 - 持续存活且可验证平移的目标保留 verified rename；旧 token 被当前行重新占用，或其源行/alias 最终目标被消费失联时进入 ambiguous set 并持续到显式重读，以防立即或延迟复用。`selectProof` 在 CLI 启动前拒绝 ambiguous token；只有直接读取覆盖当前行时才删除同 token 的旧身份并建立当前语义。`updatedAnchors` 不自动消歧；
@@ -267,7 +275,7 @@ npm run check
 pi --no-extensions -e ./pi-hledit-diff/index.ts
 ```
 
-用 `/hledit-status` 确认 CLI 3.0.0 与 capability 健康，并覆盖：
+用 `/hledit-status` 确认 CLI 3.1.0 与 capability 健康，并覆盖：
 
 1. range、grep/context read 和四种 anchored operation；
 2. proof 缺失、stale、token 复用零写入、显式重读后成功；

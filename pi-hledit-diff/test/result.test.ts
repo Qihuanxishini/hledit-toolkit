@@ -31,12 +31,13 @@ test("readAnchorsResult exposes actual range, total lines, and continuation", ()
         { path: "src/a.ts", offset: 2, limit: 2 },
     );
 
-    assert.equal(result.content[0]?.text, "2#BHJ:two\n3#BJL:three\n-- Showing lines 2-3 of 5; continue with offset 4 --");
-    assert.equal(result.details.disposition, "succeeded");
-    assert.deepEqual(result.details.read?.requested, { offset: 2, limit: 2 });
-    assert.deepEqual(result.details.read?.actual, { firstLine: 2, lastLine: 3, lineCount: 2, totalLines: 5 });
-    assert.equal(result.details.read?.nextOffset, 4);
-    assert.equal(result.details.read?.eof, false);
+	assert.match(result.content[0]?.text ?? "", /^proof_id: [0-9a-f-]+\n2#BHJ:two\n3#BJL:three\n-- Showing lines 2-3 of 5; continue with offset 4 --$/);
+	assert.equal(result.details.disposition, "succeeded");
+	assert.match(result.details.proofId ?? "", /^[0-9a-f-]{36}$/);
+	assert.deepEqual(result.details.read?.requested, { offset: 2, limit: 2 });
+	assert.deepEqual(result.details.read?.actual, { firstLine: 2, lastLine: 3, lineCount: 2, totalLines: 5 });
+	assert.equal(result.details.read?.nextOffset, 4);
+	assert.equal(result.details.read?.eof, false);
 });
 
 test("readAnchorsResult marks a completed range as EOF", () => {
@@ -129,11 +130,12 @@ test("readAnchorsResult formats a complete empty filtered result", () => {
         { path: "src/a.ts", offset: 1, limit: 20, grep: "missing", context: 2 },
     );
 
-    assert.equal(result.content[0]?.text, '-- No lines containing "missing" were found (5 lines total) --');
-    assert.deepEqual(result.details.read?.actual, { lineCount: 0, totalLines: 5 });
-    assert.deepEqual(result.details.read?.requested, { offset: 1, limit: 20, grep: "missing", context: 2 });
-});
+	assert.equal(result.content[0]?.text, '-- No lines matching "missing" were found (5 lines total) --');
+	assert.equal(result.details.proofId, undefined);
+	assert.deepEqual(result.details.read?.actual, { lineCount: 0, totalLines: 5 });
+	assert.deepEqual(result.details.read?.requested, { offset: 1, limit: 20, grep: "missing", context: 2 });
 
+});
 test("applyFileChangesResult summarizes successful file changes", () => {
     const result = applyFileChangesResult({
         stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 2, contentChanged: true, firstChangedLine: 3, lastChangedLine: 5, linesAdded: 4, linesDeleted: 1, editDeltas: [{ oldStart: 3, oldEnd: 3, delta: 2 }, { oldStart: 5, oldEnd: 4, delta: 1 }], updatedAnchors: { lines: [{ line: 3, anchor: "3#BHJ", text: "changed" }], offset: 3, limit: 1, desiredLimit: 1, truncated: false } }),

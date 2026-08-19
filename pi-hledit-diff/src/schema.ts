@@ -60,7 +60,8 @@ export const HLEDIT_READ_ANCHORS_PARAMS_SCHEMA = Type.Object(
 		path: PATH_SCHEMA,
 		offset: Type.Optional(Type.Integer({ minimum: 1, description: "First line (1-based)." })),
 		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_READ_LIMIT, description: `Maximum lines (${MAX_READ_LIMIT} max).` })),
-		grep: Type.Optional(Type.String({ description: "Substring filter." })),
+		grep: Type.Optional(Type.String({ description: "RE2 regular expression filter; use literal:true for exact text." })),
+		literal: Type.Optional(Type.Boolean({ description: "Treat grep as an exact literal string instead of a regular expression." })),
 		context: Type.Optional(Type.Integer({ minimum: 0, description: "Lines around each grep match." })),
 		ignore_case: Type.Optional(Type.Boolean({ description: "Case-insensitive grep." })),
 	},
@@ -70,6 +71,7 @@ export const HLEDIT_READ_ANCHORS_PARAMS_SCHEMA = Type.Object(
 export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 	{
 		path: PATH_SCHEMA,
+		proof_id: Type.String({ minLength: 1, description: "Proof id returned by the latest read for edit on this path." }),
 		changes: Type.Array(
 			Type.Union([REPLACE_RANGE_CHANGE_SCHEMA, DELETE_RANGE_CHANGE_SCHEMA, INSERT_BEFORE_CHANGE_SCHEMA, INSERT_AFTER_CHANGE_SCHEMA]),
 			{
@@ -91,5 +93,6 @@ export type CanonicalFileChange =
 	| { operation: "insert_after"; anchor: string; lines: string[] };
 export type FileChangeParams = {
 	path: string;
+	proof_id?: string;
 	changes: CanonicalFileChange[];
 };

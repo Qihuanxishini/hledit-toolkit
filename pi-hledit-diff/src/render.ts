@@ -241,6 +241,8 @@ export function renderHleditCall(
     const offset = typeof input.offset === "number" && input.offset > 0 ? input.offset : undefined;
     const limit = typeof input.limit === "number" && input.limit > 0 ? input.limit : undefined;
     const grep = kind === "read_anchors" && typeof input.grep === "string" ? input.grep : undefined;
+    const grepLiteral = kind === "read_anchors" && input.literal === true;
+    const grepIgnoreCase = kind === "read_anchors" && input.ignore_case === true;
     const range = kind === "read_anchors"
 		// 未提供 limit 时插件实际按 DEFAULT_READ_LIMIT 发起 CLI 请求，标题不得显示 2000。
 		? grep ? undefined : formatLineRange(offset ?? 1, (offset ?? 1) + (limit ?? DEFAULT_READ_LIMIT) - 1)
@@ -255,11 +257,13 @@ export function renderHleditCall(
         suffix = theme.fg("muted", `（${operationCount} 项操作）`);
     } else if (grep) {
         const options = [
+            grepLiteral ? "字面匹配" : "正则匹配",
+            grepIgnoreCase ? "忽略大小写" : "",
             grepContext === undefined ? "" : `上下文 ±${grepContext} 行`,
             offset === undefined || offset === 1 ? "" : `从第 ${offset} 行开始`,
             limit === undefined ? "" : `最多 ${limit} 行`,
         ].filter(Boolean);
-        suffix = theme.fg("muted", ` 包含 ${JSON.stringify(grep)}${options.length === 0 ? "" : `（${options.join("；")}）`}`);
+        suffix = theme.fg("muted", ` ${grepLiteral ? "包含" : "匹配"} ${JSON.stringify(grep)}${options.length === 0 ? "" : `（${options.join("；")}）`}`);
     }
     return component((width) => [truncateToWidth(`${title} ${target}${suffix}`, width, "")]);
 }

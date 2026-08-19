@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-const version = "3.0.0"
+const version = "3.1.0"
 
 // splitArgs separates a command's args into flags and positionals so that
 // flags may appear before OR after the positional file argument (e.g.
@@ -16,7 +16,7 @@ const version = "3.0.0"
 func splitArgs(args []string) (positionals []string, flags []string) {
 	// Flags that take a value ("-x v" form) in our subcommands.
 	valueFlags := map[string]bool{"-offset": true, "--offset": true, "-limit": true, "--limit": true, "-grep": true, "--grep": true, "-context": true, "--context": true}
-	boolFlags := map[string]bool{"--before": true, "--after": true, "--json": true, "-json": true, "--pretty": true, "-pretty": true, "--check": true, "-check": true, "--ignore-case": true, "-ignore-case": true}
+	boolFlags := map[string]bool{"--before": true, "--after": true, "--json": true, "-json": true, "--pretty": true, "-pretty": true, "--check": true, "-check": true, "--ignore-case": true, "-ignore-case": true, "--literal": true, "-literal": true}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "-" {
@@ -49,9 +49,9 @@ const usage = `hledit — hash-anchored line editor for AI coding agents
 Usage:
   hledit --version
   hledit capabilities
-  hledit read <file> [--grep <pattern>] [--context N] [--ignore-case] [--json] [--pretty]
-  hledit read-range <file> [--offset N] [--limit M] [--grep <pattern>] [--context N] [--ignore-case] [--json] [--pretty]
-  hledit anchors <file> [--offset N] [--limit M] [--grep <pattern>] [--context N] [--ignore-case] [--json] [--pretty]
+  hledit read <file> [--grep <pattern>] [--literal] [--context N] [--ignore-case] [--json] [--pretty]
+  hledit read-range <file> [--offset N] [--limit M] [--grep <pattern>] [--literal] [--context N] [--ignore-case] [--json] [--pretty]
+  hledit anchors <file> [--offset N] [--limit M] [--grep <pattern>] [--literal] [--context N] [--ignore-case] [--json] [--pretty]
   hledit replace <file> <anchor> <content-source>
   hledit replace-range <file> <anchor> <end-anchor> <content-source>
   hledit insert [--before|--after] <file> <anchor> <content-source>
@@ -60,6 +60,9 @@ Usage:
 Arguments:
   <anchor>          LN#HHH from a prior read, e.g. 5#aB3
   <content-source>  - for stdin, or a file path
+  --grep            RE2 regular expression filter (empty means no filter)
+  --literal         treat --grep as an exact literal string instead of RE2
+  --ignore-case     match the --grep pattern case-insensitively
 
 Batch input (JSON on stdin):
   {"edits": [
@@ -113,7 +116,8 @@ func run(argv []string) int {
 	case "read":
 		positionals, flagArgs := splitArgs(args)
 		fs := flag.NewFlagSet("read", flag.ExitOnError)
-		grep := fs.String("grep", "", "filter lines by substring match")
+		grep := fs.String("grep", "", "filter lines by RE2 regular expression")
+		literal := fs.Bool("literal", false, "treat --grep as a literal string")
 		contextN := fs.Int("context", 0, "include N surrounding lines for each grep match")
 		ignoreCase := fs.Bool("ignore-case", false, "match the grep pattern case-insensitively")
 		pretty := fs.Bool("pretty", false, "emit ANSI-styled text for human reading")
@@ -123,14 +127,15 @@ func run(argv []string) int {
 			fmt.Fprint(os.Stderr, usage)
 			return 2
 		}
-		return mustRun(cmdReadPretty(positionals[0], *grep, *contextN, *ignoreCase, *jsonOut, *pretty))
+		return mustRun(cmdReadPrettyWithMode(positionals[0], *grep, *literal, *contextN, *ignoreCase, *jsonOut, *pretty))
 
 	case "read-range":
 		positionals, flagArgs := splitArgs(args)
 		fs := flag.NewFlagSet("read-range", flag.ExitOnError)
 		offset := fs.Int("offset", 1, "1-indexed starting line")
 		limit := fs.Int("limit", 2000, "max lines to return")
-		grep := fs.String("grep", "", "filter lines by substring match")
+		grep := fs.String("grep", "", "filter lines by RE2 regular expression")
+		literal := fs.Bool("literal", false, "treat --grep as a literal string")
 		contextN := fs.Int("context", 0, "include N surrounding lines for each grep match")
 		ignoreCase := fs.Bool("ignore-case", false, "match the grep pattern case-insensitively")
 		pretty := fs.Bool("pretty", false, "emit ANSI-styled text for human reading")
@@ -140,14 +145,15 @@ func run(argv []string) int {
 			fmt.Fprint(os.Stderr, usage)
 			return 2
 		}
-		return mustRun(cmdReadRangePretty(positionals[0], *offset, *limit, *grep, *contextN, *ignoreCase, *jsonOut, *pretty))
+		return mustRun(cmdReadRangePrettyWithMode(positionals[0], *offset, *limit, *grep, *literal, *contextN, *ignoreCase, *jsonOut, *pretty))
 
 	case "anchors":
 		positionals, flagArgs := splitArgs(args)
 		fs := flag.NewFlagSet("anchors", flag.ExitOnError)
 		offset := fs.Int("offset", 1, "1-indexed starting line")
 		limit := fs.Int("limit", 2000, "max lines to return")
-		grep := fs.String("grep", "", "filter lines by substring match")
+		grep := fs.String("grep", "", "filter lines by RE2 regular expression")
+		literal := fs.Bool("literal", false, "treat --grep as a literal string")
 		contextN := fs.Int("context", 0, "include N surrounding lines for each grep match")
 		ignoreCase := fs.Bool("ignore-case", false, "match the grep pattern case-insensitively")
 		pretty := fs.Bool("pretty", false, "emit ANSI-styled text for human reading")
@@ -157,7 +163,7 @@ func run(argv []string) int {
 			fmt.Fprint(os.Stderr, usage)
 			return 2
 		}
-		return mustRun(cmdAnchorsPretty(positionals[0], *offset, *limit, *grep, *contextN, *ignoreCase, *jsonOut, *pretty))
+		return mustRun(cmdAnchorsPrettyWithMode(positionals[0], *offset, *limit, *grep, *literal, *contextN, *ignoreCase, *jsonOut, *pretty))
 
 	case "replace":
 		if len(args) != 3 {
@@ -217,6 +223,8 @@ func run(argv []string) int {
 			BatchReadProof:      true,
 			BatchEditDeltas:     true,
 			ReadIgnoreCase:      true,
+			ReadRegex:           true,
+			ReadLiteral:         true,
 		}))
 
 	case "-h", "--help", "help":

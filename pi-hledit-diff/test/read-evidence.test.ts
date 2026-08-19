@@ -195,11 +195,13 @@ test("grep pagination records complete rows but excludes text-truncated rows", (
 	assert.ok("proof" in store.selectProof(PATH, replaceRange("6#AAF", "6#AAF")));
 });
 
-test("empty grep reads preserve same-revision proof and discard stale revisions", () => {
+test("empty grep reads invalidate existing proof for that path", () => {
 	const store = new ReadEvidenceStore();
 	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }]));
 	store.recordRead(PATH, readMetadata(REVISION_A, [], { grep: "missing" }));
-	assert.ok("proof" in store.selectProof(PATH, replaceRange("1#AAA", "1#AAA")));
+	const sameRevisionSelection = store.selectProof(PATH, replaceRange("1#AAA", "1#AAA"));
+	assert.ok("failure" in sameRevisionSelection);
+	assert.deepEqual(sameRevisionSelection.failure.reportedMissingLines, [1]);
 
 	store.recordRead(PATH, readMetadata(REVISION_B, [], { grep: "missing" }));
 	const selection = store.selectProof(PATH, replaceRange("1#AAA", "1#AAA"));

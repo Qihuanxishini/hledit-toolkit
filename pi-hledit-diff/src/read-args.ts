@@ -8,6 +8,7 @@ export type ReadArgsParams = {
 	grep?: string;
 	context?: number;
 	ignore_case?: boolean;
+	literal?: boolean;
 };
 
 export type NormalizedReadRequest = {
@@ -17,6 +18,7 @@ export type NormalizedReadRequest = {
 	grep?: string;
 	context?: number;
 	ignoreCase?: boolean;
+	literal?: boolean;
 };
 
 export function normalizeToolPath(path: string): string {
@@ -44,13 +46,15 @@ function toReadLimit(v: number | undefined): number | undefined {
 export function normalizeReadRequest(params: ReadArgsParams): NormalizedReadRequest {
 	const grep = params.grep || undefined;
 	const context = toNonNegativeInteger(params.context);
-	// ignore_case 只在 grep 生效时有意义。
+	// literal 只在 grep 生效时有意义；默认正则与 Pi 内置 grep 对齐。
+	const literal = grep !== undefined && params.literal === true;
 	const ignoreCase = grep !== undefined && params.ignore_case === true;
 	return {
 		path: normalizeToolPath(params.path),
 		offset: toPositiveInteger(params.offset) ?? 1,
 		limit: toReadLimit(params.limit) ?? DEFAULT_READ_LIMIT,
 		...(grep ? { grep } : {}),
+		...(literal ? { literal: true } : {}),
 		...(context !== undefined ? { context } : {}),
 		...(ignoreCase ? { ignoreCase: true } : {}),
 	};
@@ -72,6 +76,9 @@ export function buildReadArgs(request: NormalizedReadRequest): string[] {
 
 	if (request.grep) {
 		args.push("--grep", request.grep);
+		if (request.literal) {
+			args.push("--literal");
+		}
 	}
 	if (request.context !== undefined) {
 		args.push("--context", String(request.context));

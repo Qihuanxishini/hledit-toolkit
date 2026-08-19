@@ -903,3 +903,26 @@ func TestFilterLinesIgnoreCase(t *testing.T) {
 		t.Fatalf("case-insensitive matches = %v, want [1 2]", got)
 	}
 }
+
+func TestFilterLinesRegexAndLiteralModes(t *testing.T) {
+	lines := []string{"from \"./diff-renderer\"", "from \"./change-preview\"", "from \"./other\""}
+	got, err := filterLinesWithMode(lines, `from "\./(diff-renderer|change-preview)"`, false, false)
+	if err != nil {
+		t.Fatalf("regex filter returned error: %v", err)
+	}
+	if !slices.Equal(got, []int{1, 2}) {
+		t.Fatalf("regex matches = %v, want [1 2]", got)
+	}
+
+	got, err = filterLinesWithMode([]string{"a.b", "axb"}, `a.b`, true, false)
+	if err != nil {
+		t.Fatalf("literal filter returned error: %v", err)
+	}
+	if !slices.Equal(got, []int{1}) {
+		t.Fatalf("literal matches = %v, want [1]", got)
+	}
+
+	if _, err := filterLinesWithMode(lines, "[", false, false); err == nil {
+		t.Fatal("invalid regex should return an error")
+	}
+}

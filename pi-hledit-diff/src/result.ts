@@ -1,4 +1,5 @@
 import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
+import { randomUUID } from "node:crypto";
 import { ANCHOR_HASH_PATTERN, lineFromAnchor } from "./file-changes.ts";
 import { parseAnchorContext, parseBatchUpdatedAnchorContext, type BatchAnchorContext, type ProducedLineRange } from "./post-edit-context.ts";
 import { MAX_READ_LIMIT, suggestedReadWindow, type NormalizedReadRequest } from "./read-args.ts";
@@ -23,6 +24,7 @@ export type HleditReadMetadata = {
 		grep?: string;
 		context?: number;
 		ignoreCase?: boolean;
+		literal?: boolean;
 	};
 	actual: {
 		firstLine?: number;
@@ -125,6 +127,7 @@ export type HleditDetails = Record<string, unknown> & {
 	path?: string;
 	evidencePath?: string;
 	revision?: string;
+	proofId?: string;
 	updatedAnchors?: BatchAnchorContext;
 	read?: HleditReadMetadata;
 	recoveredRead?: HleditReadMetadata;
@@ -149,6 +152,7 @@ export function parseHleditReadMetadata(value: unknown): HleditReadMetadata | un
 	if (requested.grep !== undefined && (typeof requested.grep !== "string" || requested.grep.length === 0)) return undefined;
 	if (requested.context !== undefined && !isIntegerAtLeast(requested.context, 0)) return undefined;
 	if (requested.ignoreCase !== undefined && requested.ignoreCase !== true) return undefined;
+	if (requested.literal !== undefined && requested.literal !== true) return undefined;
 	if (!value.lines.every((line) => isRecord(line) && typeof line.textTruncated === "boolean")) return undefined;
 	const actual = value.actual;
 	if (!isIntegerAtLeast(actual.lineCount, 0) || !isIntegerAtLeast(actual.totalLines, 0)) return undefined;
@@ -163,6 +167,7 @@ export function parseHleditReadMetadata(value: unknown): HleditReadMetadata | un
 		...(requested.grep !== undefined ? { grep: requested.grep } : {}),
 		...(requested.context !== undefined ? { context: requested.context } : {}),
 		...(requested.ignoreCase === true ? { ignoreCase: true } : {}),
+		...(requested.literal === true ? { literal: true } : {}),
 	};
 	const parsed = parseReadMetadata({
 		ok: true,
@@ -281,6 +286,7 @@ function parseReadMetadata(parsed: Record<string, unknown>, request: NormalizedR
 			...(request.grep ? { grep: request.grep } : {}),
 			...(request.context !== undefined ? { context: request.context } : {}),
 			...(request.ignoreCase ? { ignoreCase: true } : {}),
+			...(request.literal ? { literal: true } : {}),
 		},
 		actual: {
 			...(firstLine !== undefined ? { firstLine } : {}),
@@ -338,7 +344,7 @@ function parseReadErrorMetadata(parsed: Record<string, unknown>): HleditErrorMet
 	};
 }
 
-function formatReadMetadata(read: HleditReadMetadata): string {
+function formatReadMetadata(read: HleditReadMetadata, proofId?: string): string {
 	const anchoredLines = read.lines.map((line) => `${line.anchor}:${line.text}`);
 	const { firstLine, lastLine, lineCount, totalLines } = read.actual;
 	const filter = read.requested.grep;
@@ -348,7 +354,7 @@ function formatReadMetadata(read: HleditReadMetadata): string {
 		notice = `-- Source line text was truncated${lastLine !== undefined ? `; the last returned line is ${lastLine}` : ""} (${totalLines} lines total); rereading line ranges cannot recover the omitted in-line text. Truncated lines cannot establish edit proof; if the edit target includes such a line, rewrite the file with write instead --`;
 	} else if (filter) {
 		if (lineCount === 0) {
-			notice = `-- No lines containing ${JSON.stringify(filter)} were found (${totalLines} lines total) --`;
+			notice = `-- No lines matching ${JSON.stringify(filter)} were found (${totalLines} lines total) --`;
 		} else if (read.nextOffset !== undefined) {
 			notice = `-- Returned ${lineCount} matching lines with context, ending at line ${lastLine} (${totalLines} lines total); continue with offset ${read.nextOffset} --`;
 		} else {
@@ -360,7 +366,11 @@ function formatReadMetadata(read: HleditReadMetadata): string {
 		notice = `-- Showing lines ${firstLine}-${lastLine} of ${totalLines}; end of file --`;
 	}
 
-	return [...anchoredLines, notice].join("\n");
+	return [
+		...(proofId ? [`proof_id: ${proofId}`] : []),
+		...anchoredLines,
+		notice,
+	].join("\n");
 }
 
 function formatReadError(error: HleditErrorMetadata): string {
@@ -411,9 +421,16 @@ export function readAnchorsResult(run: HleditRun, request: NormalizedReadRequest
 			details: { disposition: "unavailable", path: request.path },
 		};
 	}
+	const proofId = read.requested.grep !== undefined && read.lines.length === 0 ? undefined : randomUUID();
 	return {
-		content: [{ type: "text", text: formatReadMetadata(read) }],
-		details: { disposition: "succeeded", path: request.path, revision: read.revision, read },
+		content: [{ type: "text", text: formatReadMetadata(read, proofId) }],
+		details: {
+			disposition: "succeeded",
+			path: request.path,
+			revision: read.revision,
+			...(proofId ? { proofId } : {}),
+			read,
+		},
 	};
 }
 

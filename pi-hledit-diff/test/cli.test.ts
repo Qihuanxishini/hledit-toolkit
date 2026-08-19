@@ -11,7 +11,7 @@ import { applyFileChangesResult } from "../src/result.ts";
 
 // CLI 声明的完整能力集；解析结果只保留 version，其余字段仅用于构造被校验的输入。
 const DECLARED_CAPABILITIES = {
-	version: "3.0.0",
+	version: "3.1.0",
 	anchorProtocolV2: true,
 	readRangeMetadata: true,
 	batchInsertAfter: true,
@@ -22,6 +22,8 @@ const DECLARED_CAPABILITIES = {
 	batchReadProof: true,
 	batchEditDeltas: true,
 	readIgnoreCase: true,
+	readRegex: true,
+	readLiteral: true,
 } as const;
 
 test("resolveHleditBin uses the fixed bundled CLI path", () => {
@@ -64,7 +66,7 @@ test("parseHleditCapabilities requires the reviewed CLI 3.x two-tool contract", 
 // 单一 REQUIRED_CAPABILITIES 列表必须真的逐项生效：任何一项缺失都要拒绝整个 CLI。
 test("parseHleditCapabilities rejects a CLI missing any single required capability", () => {
 	const capabilities = Object.keys(DECLARED_CAPABILITIES).filter((name) => name !== "version");
-	assert.equal(capabilities.length, 10);
+	assert.equal(capabilities.length, 12);
 	for (const capability of capabilities) {
 		const declaration = { ok: true, ...DECLARED_CAPABILITIES, [capability]: false };
 		assert.equal(

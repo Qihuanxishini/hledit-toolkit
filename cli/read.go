@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -84,23 +85,50 @@ func readFileLines(path string) ([]string, bool) {
 }
 
 // filterLines returns 1-indexed line numbers of lines matching the pattern.
-// If pattern is empty, nil is returned (meaning no filtering).
-func filterLines(lines []string, pattern string, ignoreCase bool) []int {
+// If pattern is empty, nil is returned (meaning no filtering). The default
+// matcher is Go's RE2 implementation; literal mode is explicit so callers can
+// retain exact substring semantics when needed.
+func filterLinesWithMode(lines []string, pattern string, literal, ignoreCase bool) ([]int, error) {
 	if pattern == "" {
-		return nil
+		return nil, nil
 	}
-	if ignoreCase {
+
+	var matcher *regexp.Regexp
+	if !literal {
+		expression := pattern
+		if ignoreCase {
+			expression = "(?i)" + expression
+		}
+		compiled, err := regexp.Compile(expression)
+		if err != nil {
+			return nil, err
+		}
+		matcher = compiled
+	} else if ignoreCase {
 		pattern = strings.ToLower(pattern)
 	}
+
 	matches := make([]int, 0)
 	for i, line := range lines {
-		if ignoreCase {
-			line = strings.ToLower(line)
+		matched := false
+		if literal {
+			if ignoreCase {
+				line = strings.ToLower(line)
+			}
+			matched = strings.Contains(line, pattern)
+		} else {
+			matched = matcher.MatchString(line)
 		}
-		if strings.Contains(line, pattern) {
+		if matched {
 			matches = append(matches, i+1) // 1-indexed
 		}
 	}
+	return matches, nil
+}
+
+// filterLines keeps the original test/helper contract for literal matching.
+func filterLines(lines []string, pattern string, ignoreCase bool) []int {
+	matches, _ := filterLinesWithMode(lines, pattern, true, ignoreCase)
 	return matches
 }
 
@@ -432,14 +460,17 @@ func emitMatchLines(buf *bytes.Buffer, lines []string, matchIdxs []int, offset, 
 	}
 }
 
-func cmdReadPretty(path, grep string, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
+func cmdReadPrettyWithMode(path, grep string, literal bool, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
 	file, errored := readCommandFile(path)
 	lines := file.Lines
 	if errored {
 		return nil
 	}
 
-	matchIdxs := filterLines(lines, grep, ignoreCase)
+	matchIdxs, matchErr := filterLinesWithMode(lines, grep, literal, ignoreCase)
+	if matchErr != nil {
+		return emitError("grep", fmt.Sprintf("invalid grep pattern: %v", matchErr))
+	}
 
 	if jsonOut {
 		jsonLineBytes := readJSONLineBudget(file.Revision, len(lines), readOutputMaxBytes)
@@ -464,6 +495,10 @@ func cmdReadPretty(path, grep string, contextN int, ignoreCase bool, jsonOut boo
 	}
 	fmt.Print(buf.String())
 	return nil
+}
+
+func cmdReadPretty(path, grep string, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
+	return cmdReadPrettyWithMode(path, grep, false, contextN, ignoreCase, jsonOut, pretty)
 }
 
 // emitAnchorLines writes ANCHOR\tTEXT lines (completion-friendly) with truncation.
@@ -550,7 +585,7 @@ func emitAnchorMatchLines(buf *bytes.Buffer, lines []string, matchIdxs []int, of
 	}
 }
 
-func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
+func cmdAnchorsPrettyWithMode(path string, offset, limit int, grep string, literal bool, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
 	file, errored := readCommandFile(path)
 	lines := file.Lines
 	if errored {
@@ -569,7 +604,10 @@ func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int,
 		maxLines = 2000
 	}
 
-	matchIdxs := filterLines(lines, grep, ignoreCase)
+	matchIdxs, matchErr := filterLinesWithMode(lines, grep, literal, ignoreCase)
+	if matchErr != nil {
+		return emitError("grep", fmt.Sprintf("invalid grep pattern: %v", matchErr))
+	}
 
 	if jsonOut {
 		jsonLineBytes := readJSONLineBudget(file.Revision, len(lines), readOutputMaxBytes)
@@ -597,7 +635,11 @@ func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int,
 	return nil
 }
 
-func cmdReadRangePretty(path string, offset, limit int, grep string, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
+func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
+	return cmdAnchorsPrettyWithMode(path, offset, limit, grep, false, contextN, ignoreCase, jsonOut, pretty)
+}
+
+func cmdReadRangePrettyWithMode(path string, offset, limit int, grep string, literal bool, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
 	file, errored := readCommandFile(path)
 	lines := file.Lines
 	if errored {
@@ -616,7 +658,10 @@ func cmdReadRangePretty(path string, offset, limit int, grep string, contextN in
 		maxLines = 2000
 	}
 
-	matchIdxs := filterLines(lines, grep, ignoreCase)
+	matchIdxs, matchErr := filterLinesWithMode(lines, grep, literal, ignoreCase)
+	if matchErr != nil {
+		return emitError("grep", fmt.Sprintf("invalid grep pattern: %v", matchErr))
+	}
 
 	if jsonOut {
 		jsonLineBytes := readJSONLineBudget(file.Revision, len(lines), readOutputMaxBytes)
@@ -642,4 +687,8 @@ func cmdReadRangePretty(path string, offset, limit int, grep string, contextN in
 
 	fmt.Print(buf.String())
 	return nil
+}
+
+func cmdReadRangePretty(path string, offset, limit int, grep string, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
+	return cmdReadRangePrettyWithMode(path, offset, limit, grep, false, contextN, ignoreCase, jsonOut, pretty)
 }

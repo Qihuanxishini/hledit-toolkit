@@ -18,7 +18,7 @@ hledit capabilities
 Outputs one JSON object describing behavior that integrations may require:
 
 ```json
-{ "ok": true, "version": "3.0.0", "anchorProtocolV2": true, "readRangeMetadata": true, "batchInsertAfter": true, "batchCheck": true, "batchUpdatedAnchors": true, "batchStaleContext": true, "batchWireV3": true, "batchReadProof": true, "batchEditDeltas": true, "readIgnoreCase": true }
+{ "ok": true, "version": "3.1.0", "anchorProtocolV2": true, "readRangeMetadata": true, "batchInsertAfter": true, "batchCheck": true, "batchUpdatedAnchors": true, "batchStaleContext": true, "batchWireV3": true, "batchReadProof": true, "batchEditDeltas": true, "readIgnoreCase": true, "readRegex": true, "readLiteral": true }
 ```
 
 The bundled Pi extension requires version 3.x and every capability shown above. The removed `contentReplaceOnce` field must be absent; a successful `help` command alone is not a compatibility guarantee.
@@ -28,7 +28,7 @@ The bundled Pi extension requires version 3.x and every capability shown above. 
 ### 2.1 `read`
 
 ```
-hledit read <file> [--grep <pattern>] [--context N] [--json]
+hledit read <file> [--grep <pattern>] [--literal] [--context N] [--ignore-case] [--json]
 ```
 
 Reads the entire file. Each line is emitted as:
@@ -41,7 +41,9 @@ Reads the entire file. Each line is emitted as:
 - `HHH` — 3-character URL-safe Base64 hash (see §3).
 - `:` — literal separator.
 - Content includes the original line without trailing `\n` or `\r`.
-- `--grep` — substring match; only matching lines are emitted.
+- `--grep` — RE2 regular-expression match; only matching lines are emitted. An invalid expression is a logical `grep` error.
+- `--literal` — treat `--grep` as an exact literal substring instead of a regular expression.
+- `--ignore-case` — apply case-insensitive matching to `--grep`.
 - `--context` — include N lines before/after each match; overlapping windows merge.
 - `--json` — emit JSON `{ok, revision, totalLines, lines:[{line,anchor,text,textTruncated?}], truncated, nextOffset?}`. `revision` is `sha256:<64 lowercase hex digits>` over the exact original bytes, including UTF-8 BOM, line endings, and trailing newline.
 
@@ -68,12 +70,14 @@ An existing UTF-8 BOM is excluded from line text and hashes, then restored on wr
 ### 2.2 `read-range`
 
 ```
-hledit read-range <file> [--offset <N>] [--limit <M>] [--grep <pattern>] [--context N] [--json]
+hledit read-range <file> [--offset <N>] [--limit <M>] [--grep <pattern>] [--literal] [--context N] [--ignore-case] [--json]
 ```
 
 - `--offset` — 1-indexed starting line (default 1).
 - `--limit` — max lines to return (default 2000).
-- `--grep` — substring match; only matching lines are emitted.
+- `--grep` — RE2 regular-expression match; only matching lines are emitted.
+- `--literal` — treat `--grep` as an exact literal substring instead of a regular expression.
+- `--ignore-case` — apply case-insensitive matching to `--grep`.
 - `--context` — include N lines before/after each match; overlapping windows merge.
 
 Same output format as `read`. Same truncation behavior at 50 KB / 2,000 lines from the offset.
@@ -88,7 +92,7 @@ If `--offset` exceeds file length, emit:
 ### 2.3 `anchors`
 
 ```
-hledit anchors <file> [--offset <N>] [--limit <M>] [--grep <pattern>] [--context N] [--json]
+hledit anchors <file> [--offset <N>] [--limit <M>] [--grep <pattern>] [--literal] [--context N] [--ignore-case] [--json]
 ```
 
 - Same flags and filtering as `read-range`.

@@ -29,7 +29,14 @@ function render(component: { render(width: number): string[] }, width = 120): st
 
 test("renderHleditCall includes read range and grep", () => {
 	assert.deepEqual(render(renderHleditCall("read_anchors", { path: "src/a.ts", offset: 3, limit: 5, grep: "token", context: 2 }, theme)), [
-		'read for edit src/a.ts 包含 "token"（上下文 ±2 行；从第 3 行开始；最多 5 行）',
+		'read for edit src/a.ts 匹配 "token"（正则匹配；上下文 ±2 行；从第 3 行开始；最多 5 行）',
+	]);
+});
+
+
+test("renderHleditCall labels literal and case-insensitive grep", () => {
+	assert.deepEqual(render(renderHleditCall("read_anchors", { path: "src/a.ts", grep: "Token", literal: true, ignore_case: true }, theme)), [
+		'read for edit src/a.ts 包含 "Token"（字面匹配；忽略大小写）',
 	]);
 });
 

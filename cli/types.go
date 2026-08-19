@@ -102,6 +102,8 @@ type CLICapabilities struct {
 	BatchReadProof      bool   `json:"batchReadProof"`
 	BatchEditDeltas     bool   `json:"batchEditDeltas"`
 	ReadIgnoreCase      bool   `json:"readIgnoreCase"`
+	ReadRegex           bool   `json:"readRegex"`
+	ReadLiteral         bool   `json:"readLiteral"`
 }
 
 // ────────────────────────────────────────────────────────────────────────────

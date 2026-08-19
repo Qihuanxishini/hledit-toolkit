@@ -36,6 +36,8 @@ const REQUIRED_CAPABILITIES = [
 	"batchReadProof",
 	"batchEditDeltas",
 	"readIgnoreCase",
+	"readRegex",
+	"readLiteral",
 ] as const;
 
 const SUPPORTED_CLI_VERSION_PATTERN = /^3\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;

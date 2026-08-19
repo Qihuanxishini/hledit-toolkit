@@ -58,7 +58,8 @@ export type FileChangeInputDecoding =
 	| { params: FileChangeParams }
 	| { error: string };
 
-export function decodeFileChangeInput(input: FileChangeInput): FileChangeInputDecoding {
+type FileChangeDecodeInput = Omit<FileChangeInput, "proof_id"> & { proof_id?: string };
+export function decodeFileChangeInput(input: FileChangeDecodeInput): FileChangeInputDecoding {
 	if (input.changes.length < 1 || input.changes.length > MAX_FILE_CHANGE_COUNT) {
 		return { error: `Atomic batch must contain 1-${MAX_FILE_CHANGE_COUNT} changes.` };
 	}
@@ -84,5 +85,5 @@ export function decodeFileChangeInput(input: FileChangeInput): FileChangeInputDe
 		}
 		changes.push({ ...change, lines });
 	}
-	return { params: { path: input.path, changes } };
+	return { params: { path: input.path, ...(input.proof_id ? { proof_id: input.proof_id } : {}), changes } };
 }

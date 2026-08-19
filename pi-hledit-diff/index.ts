@@ -143,6 +143,7 @@ async function recoverMissingReadProof(
 	evidencePath: string,
 	ctx: ExtensionContext,
 	signal: AbortSignal | undefined,
+	evidence: ReadEvidenceStore,
 ): Promise<TextResult | undefined> {
 	const range = failure.suggestedReadRange;
 	if (!range) return undefined;
@@ -177,6 +178,7 @@ async function recoverMissingReadProof(
 	}
 
 	const recoveredRead = queuedReadResult.details.read;
+	evidence.recordRead(evidencePath, recoveredRead, queuedReadResult.details.proofId);
 	if (recoveredRead.textTruncated) {
 		const message = "The target includes source-line text that was truncated and cannot establish edit proof.";
 		return attachEvidencePath(rejectedToolResult([
@@ -207,7 +209,7 @@ async function recoverMissingReadProof(
 		...failureContext,
 	});
 	return attachEvidencePath(
-		{ ...rejected, details: { ...rejected.details, recoveredRead } },
+		{ ...rejected, details: { ...rejected.details, proofId: queuedReadResult.details.proofId, recoveredRead } },
 		normalizedPath,
 		evidencePath,
 	);
@@ -240,17 +242,30 @@ async function runFileChangesWithDiff(
 			evidencePath,
 		);
 	}
+	if (!normalizedParams.proof_id) {
+		return attachEvidencePath(
+			rejectedToolResult("The apply request is missing proof_id. Call hledit_read_anchors first and use its returned proof_id.", {
+				code: "invalid_proof_id",
+				message: "proof_id is required for anchored edits.",
+			}),
+			normalizedPath,
+			evidencePath,
+		);
+	}
 	const applyWithinQueue = async (): Promise<TextResult> => {
-		const proofSelection = evidence.selectProof(evidencePath, normalizedParams.changes);
+		const proofSelection = evidence.selectProof(evidencePath, normalizedParams.changes, normalizedParams.proof_id);
 		if ("failure" in proofSelection) {
-			const recovered = await recoverMissingReadProof(
-				proofSelection.failure,
-				normalizedPath,
-				evidencePath,
-				ctx,
-				signal,
-			);
-			if (recovered) return recovered;
+			if (proofSelection.failure.code !== "invalid_proof_id") {
+				const recovered = await recoverMissingReadProof(
+					proofSelection.failure,
+					normalizedPath,
+					evidencePath,
+					ctx,
+					signal,
+					evidence,
+				);
+				if (recovered) return recovered;
+			}
 			return attachEvidencePath(
 				rejectedToolResult(formatReadProofFailure(normalizedPath, proofSelection.failure), {
 					code: proofSelection.failure.code,
@@ -275,16 +290,16 @@ async function runFileChangesWithDiff(
 			: normalizedParams;
 		const applyContext = { path: normalizedPath, changes: effectiveParams.changes };
 		const request = buildFileChangeRequest(effectiveParams, proofSelection.proof);
-
 		const singleLineRangeExpansionIssue = findSingleLineRangeExpansionIssue(effectiveParams, proofSelection.consumedLines);
-		if (singleLineRangeExpansionIssue) {
-			const checkRequest = buildFileChangeCheckRequest(effectiveParams, proofSelection.proof);
-			const checkRun = await runHledit(checkRequest.args, checkRequest.stdin, ctx.cwd, signal);
-			const checkFailure = fileChangeCheckFailure(checkRun, applyContext);
-			if (checkFailure) {
-				return attachEvidencePath(checkFailure, normalizedPath, evidencePath);
-			}
 
+		const checkRequest = buildFileChangeCheckRequest(effectiveParams, proofSelection.proof);
+		const checkRun = await runHledit(checkRequest.args, checkRequest.stdin, ctx.cwd, signal);
+		const checkFailure = fileChangeCheckFailure(checkRun, applyContext);
+		if (checkFailure) {
+			return attachEvidencePath(checkFailure, normalizedPath, evidencePath);
+		}
+
+		if (singleLineRangeExpansionIssue) {
 			const verifiedIssue = { ...singleLineRangeExpansionIssue, anchorsVerified: true as const };
 			const nearbyDeleteRange = verifiedIssue.nearbyDeleteRange;
 			return attachEvidencePath(
@@ -356,7 +371,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		label: "Read for Edit",
 		description: "Read a text file and return LN#HASH anchors with source text for stale-safe edits.",
 		promptGuidelines: [
-			"For anchored edits of a nonempty existing text file, first read the target with hledit_read_anchors unless complete current proof is already available from verified updated anchors. Use ordinary read only for references or before the target is known. Use grep/context to locate code; once the target is known, read the smallest complete range needed for proof. Before replace_range or delete_range, ensure current evidence covers every source line from start_anchor through end_anchor; endpoint-only or sparse grep evidence is insufficient. In changes, copy only the current LN#HASH token for each endpoint or attachment line; interior anchors are carried automatically as hidden proof.",
+			"For anchored edits of a nonempty existing text file, first read the target with hledit_read_anchors unless complete current proof is already available from verified updated anchors. grep uses modern RE2 regular expressions by default; set literal: true for exact text. A complete, non-truncated grep result is an editable proof and may be used directly; a zero-match or truncated result does not prove unseen lines. Before replace_range or delete_range, ensure current evidence covers every source line from start_anchor through end_anchor; endpoint-only or sparse grep evidence is insufficient. In changes, copy only the current LN#HASH token for each endpoint or attachment line; interior anchors are carried automatically as hidden proof.",
 		],
 		parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 		// provider 侧按 schema 约束采样，从源头消除畸形参数；不支持的模型自动回落普通调用。
@@ -386,7 +401,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		label: "Apply File Changes",
 		description: "Atomically apply one complete non-overlapping batch using boundary anchors and hidden complete read proof.",
 		promptGuidelines: [
-			"Read the target with hledit_read_anchors before editing unless complete proof is already available. Submit only current LN#HASH tokens; range interiors are proven internally.",
+			"Submit the proof_id returned by the same hledit_read_anchors result and only current LN#HASH tokens from that proof; never reuse a proof_id across paths or after a zero-match read. A failed read does not establish a new proof, so resolve its error before relying on existing evidence. Range interiors are proven internally, and the batch is checked against the current revision before writing.",
 			"In lines, \\n separates lines; one trailing \\n only terminates the last line, and an empty string is one blank line. Never overwrite a nonempty readable file with write; review targeted recovery results before resubmitting.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,

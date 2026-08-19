@@ -144,19 +144,19 @@ claude mcp add hledit npx hledit-mcp
 
 ```text
 hledit capabilities
-hledit read <file> [--grep pattern] [--context N] [--json] [--pretty]
-hledit read-range <file> [--offset N] [--limit M] [--grep pattern] [--context N] [--json] [--pretty]
-hledit anchors <file> [--offset N] [--limit M] [--grep pattern] [--context N] [--json] [--pretty]
+hledit read <file> [--grep pattern] [--literal] [--context N] [--ignore-case] [--json] [--pretty]
+hledit read-range <file> [--offset N] [--limit M] [--grep pattern] [--literal] [--context N] [--ignore-case] [--json] [--pretty]
+hledit anchors <file> [--offset N] [--limit M] [--grep pattern] [--literal] [--context N] [--ignore-case] [--json] [--pretty]
 hledit replace <file> <anchor> <content-source>
 hledit replace-range <file> <anchor> <end-anchor> <content-source>
 hledit insert [--before|--after] <file> <anchor> <content-source>
 hledit batch [--check] <file>
 ```
 
-`--grep` matches substrings. `--context N` adds N lines before/after each match. `--pretty` adds ANSI styling for human reading; `--json` stays machine-readable and unstyled.
+`--grep` uses Go's RE2 regular-expression syntax by default; `--literal` switches to exact substring matching and `--ignore-case` enables case-insensitive matching. `--context N` adds N lines before/after each match. `--pretty` adds ANSI styling for human reading; `--json` stays machine-readable and unstyled.
 `<content-source>` is either `-` for stdin or a file path.
 
-`hledit capabilities` emits machine-readable JSON for integrations. This tree reports version `3.0.0` and the complete positive capability set listed above; integrations must reject 2.x, unreviewed future major versions, missing capability fields, and the removed `contentReplaceOnce` field.
+`hledit capabilities` emits machine-readable JSON for integrations. This tree reports version `3.1.0` and the complete positive capability set listed above; integrations must reject 2.x, unreviewed future major versions, missing capability fields, and the removed `contentReplaceOnce` field.
 
 ## Examples
 

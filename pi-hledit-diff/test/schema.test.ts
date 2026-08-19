@@ -19,6 +19,7 @@ test("schemas compile with the host-aligned TypeBox version", () => {
   assert.equal(
     applyValidator.Check({
       path: "src/a.ts",
+      proof_id: "proof-1",
       changes: [{ operation: "delete_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ" }],
     }),
     true,
@@ -30,6 +31,7 @@ test("apply file changes rejects anchors outside the CLI hash alphabet", () => {
     assert.equal(
       Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
         path: "src/a.ts",
+        proof_id: "proof-1",
         changes: [{ operation: "delete_range", start_anchor: anchor, end_anchor: anchor }],
       }),
       false,
@@ -43,7 +45,7 @@ test("apply file changes accepts newline-delimited text", () => {
     { operation: "insert_before", anchor: "2#BBK", lines: "before\nafter" },
     { operation: "insert_after", anchor: "3#JKL", lines: "after\nnext" },
   ]) {
-    assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, { path: "src/a.ts", changes: [change] }), true);
+    assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, { path: "src/a.ts", proof_id: "proof-1", changes: [change] }), true);
   }
 });
 
@@ -54,7 +56,7 @@ test("apply file changes rejects old operation shapes", () => {
     { operation: "insert", anchor: "1#BHJ", position: "after", lines: ["next"] },
     { operation: "replace-range", anchor: "1#BHJ", end_anchor: "2#BBK", lines: ["next"] },
   ]) {
-    assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, { path: "src/a.ts", changes: [change] }), false);
+    assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, { path: "src/a.ts", proof_id: "proof-1", changes: [change] }), false);
   }
 });
 
@@ -72,6 +74,7 @@ test("apply file changes rejects mixed and invalid operation-specific fields", (
   assert.equal(
     Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
       path: "src/a.ts",
+      proof_id: "proof-1",
       changes: [{ operation: "insert_after", anchor: "1#BHJ", lines: "next", content: "unknown" }],
     }),
     false,
@@ -80,6 +83,7 @@ test("apply file changes rejects mixed and invalid operation-specific fields", (
     assert.equal(
       Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
         path: "src/a.ts",
+        proof_id: "proof-1",
         changes: [{ operation: "delete_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ" }],
         [hiddenField]: "must remain internal",
       }),

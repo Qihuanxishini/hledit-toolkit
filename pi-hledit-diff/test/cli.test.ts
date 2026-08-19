@@ -152,13 +152,13 @@ test("bundled batch is atomic when a later anchor is stale", async (t) => {
 	assert.equal(await readFile(target, "utf8"), original);
 });
 
-// [喵喵喵]: Phase 1.4 协议余量回归——CLI 侧 50 KiB 上限按转义前原始字节计数，控制字符
-// 经 JSON 转义可膨胀 6 倍（0x01 → \u0001 六字节），wrapper 上限收敛前必须证明合法最坏输出不被终止 (2026-07-25)
-test("wrapper output limit passes through worst-case legal JSON escape expansion", async (t) => {
+// [喵喵喵]: CLI 按最终 JSON UTF-8 字节执行 50 KiB 预算；控制字符覆盖最坏转义，
+// wrapper 必须完整透传接近上限的合法输出而不触发 1 MiB 保护。
+test("wrapper accepts CLI-capped worst-case JSON escaping", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-diff-escape-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
 	const target = join(directory, "target.txt");
-	// 0x01 是合法 UTF-8 文本（二进制检测只拦 NUL），是每原始字节转义开销最大的内容。
+	// [喵喵喵]: 0x01 是合法 UTF-8 文本（二进制检测只拦 NUL），也是单字节输入中 JSON 转义开销最大的内容。
 	const line = "\u0001".repeat(128);
 	const lineCount = 600;
 	await writeFile(target, `${Array.from({ length: lineCount }, () => line).join("\n")}\n`, "utf8");
@@ -169,11 +169,11 @@ test("wrapper output limit passes through worst-case legal JSON escape expansion
 	assert.notEqual(run.started, false);
 	const parsed = JSON.parse(run.stdout) as Record<string, unknown>;
 	assert.equal(parsed.ok, true);
-	// CLI 自身的 50 KiB 原始字节截断必须先生效：本输出即合法读取的最坏体量。
 	assert.equal(parsed.truncated, true);
 	assert.equal(parsed.totalLines, lineCount);
 	const outputBytes = Buffer.byteLength(run.stdout, "utf8");
-	assert.ok(outputBytes > 4 * 50 * 1024, `escaped output ${outputBytes} bytes should exceed 4x the raw CLI cap`);
+	assert.ok(outputBytes > 48 * 1024, `escaped output ${outputBytes} bytes should use most of the CLI budget`);
+	assert.ok(outputBytes <= 50 * 1024, `escaped output ${outputBytes} bytes must stay within the CLI cap`);
 	assert.ok(outputBytes < HLEDIT_MAX_OUTPUT_BYTES, `escaped output ${outputBytes} bytes must stay under the wrapper limit`);
 });
 

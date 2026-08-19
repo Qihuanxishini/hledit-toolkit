@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 func readContentLines(contentSrc string) ([]string, error) {
@@ -21,11 +23,20 @@ func readContentLines(contentSrc string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	if bytes.IndexByte(raw, 0) >= 0 {
+		return nil, errBinaryFile
+	}
+	if !utf8.Valid(raw) {
+		return nil, errInvalidUTF8
+	}
 
 	s := strings.ReplaceAll(string(raw), "\r\n", "\n")
-	s = strings.TrimRight(s, "\n")
 	if s == "" {
 		return []string{}, nil
+	}
+	// [喵喵喵]: 最后一个换行只终止末行，额外的末尾换行才表示空白行。
+	if strings.HasSuffix(s, "\n") {
+		s = strings.TrimSuffix(s, "\n")
 	}
 	return strings.Split(s, "\n"), nil
 }
@@ -33,6 +44,12 @@ func readContentLines(contentSrc string) ([]string, error) {
 func contentSourceErrorMessage(contentSrc string, err error) string {
 	if contentSrc == "" {
 		return "content-source argument is empty; replace/replace-range/insert expect <content-source> to be '-' for stdin or a file path. To delete, pipe empty stdin and use '-' as the content-source, e.g. printf '' | hledit replace <file> <anchor> -"
+	}
+	if errors.Is(err, errBinaryFile) {
+		return fmt.Sprintf("content-source argument %q contains a NUL byte and is not valid text", contentSrc)
+	}
+	if errors.Is(err, errInvalidUTF8) {
+		return fmt.Sprintf("content-source argument %q is not valid UTF-8", contentSrc)
 	}
 	return fmt.Sprintf("content-source argument %q could not be read: %v. If you intended literal replacement text, pipe it on stdin and use '-' as the content-source", contentSrc, err)
 }

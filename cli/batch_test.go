@@ -185,6 +185,38 @@ func TestCmdBatchRejectsInvalidWireFields(t *testing.T) {
 	}
 }
 
+func TestCmdBatchRejectsNullLineElement(t *testing.T) {
+	dir := t.TempDir()
+	target := editTestWriteLinesFile(t, dir, "target.txt", "alpha")
+	payload := []byte(`{"edits":[{"op":"replace","pos":"` + formatTag(1, "alpha") + `","lines":[null]}]}`)
+
+	out := batchTestRunPayload(t, target, payload, false)
+	var result BatchEditError
+	batchTestMustUnmarshal(t, out, &result)
+	if result.OK || result.Error != "invalid" || !strings.Contains(result.Message, "lines[0] must be a string") {
+		t.Fatalf("result = %+v; want invalid null-line error", result)
+	}
+	if got := batchTestReadLines(t, target); !equalLines(got, []string{"alpha"}) {
+		t.Fatalf("file changed to %#v; want unchanged", got)
+	}
+}
+
+func TestCmdBatchRejectsOversizedRequest(t *testing.T) {
+	dir := t.TempDir()
+	target := editTestWriteLinesFile(t, dir, "target.txt", "alpha")
+	payload := bytes.Repeat([]byte{' '}, maxBatchRequestBytes+1)
+
+	out := batchTestRunPayload(t, target, payload, false)
+	var result BatchEditError
+	batchTestMustUnmarshal(t, out, &result)
+	if result.OK || result.Error != "invalid" || !strings.Contains(result.Message, "batch request exceeds") {
+		t.Fatalf("result = %+v; want oversized-request rejection", result)
+	}
+	if got := batchTestReadLines(t, target); !equalLines(got, []string{"alpha"}) {
+		t.Fatalf("file changed to %#v; want unchanged", got)
+	}
+}
+
 func TestCmdBatch(t *testing.T) {
 	t.Run("replace range uses end_pos", func(t *testing.T) {
 		dir := t.TempDir()

@@ -82,11 +82,13 @@ npm run test:bundled
 ```bash
 cd cli
 go test ./...
-go build -trimpath -ldflags="-s -w" -o ../pi-hledit-diff/bin/hledit.exe .
+CGO_ENABLED=0 GOAMD64=v1 go build -buildvcs=false -trimpath -ldflags="-s -w" -o ../pi-hledit-diff/bin/hledit.exe .
 cd ../pi-hledit-diff
 npm run test:bundled
 npm run check
 ```
+
+为保证 CI 可以逐字节校验制品，tracked bundled CLI 固定使用 Go 1.26.3、`CGO_ENABLED=0`、`GOAMD64=v1` 和上述参数构建；`-buildvcs=false` 排除提交状态造成的非源码差异。
 
 修改 TypeScript 源码后，需要在 Pi 中执行 `/reload` 或开启新会话。仅替换 `bin/hledit.exe` 时，后续工具调用会直接使用新 binary。
 

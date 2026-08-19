@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -108,6 +109,57 @@ func TestReadContentLines(t *testing.T) {
 		want := []string{"alpha", "beta"}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("readContentLines(%q) = %#v; want %#v", path, got, want)
+		}
+	})
+	t.Run("preserves an additional trailing empty line", func(t *testing.T) {
+		dir := t.TempDir()
+		path := editTestWriteTextFile(t, dir, "multiple-trailing-newlines.txt", "alpha\n\n")
+
+		got, err := readContentLines(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"alpha", ""}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("readContentLines(%q) = %#v; want %#v", path, got, want)
+		}
+	})
+
+	t.Run("a single empty line is not deletion", func(t *testing.T) {
+		dir := t.TempDir()
+		path := editTestWriteTextFile(t, dir, "empty-line.txt", "\n")
+
+		got, err := readContentLines(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{""}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("readContentLines(%q) = %#v; want %#v", path, got, want)
+		}
+	})
+
+	t.Run("rejects NUL bytes", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "nul.txt")
+		if err := os.WriteFile(path, []byte("alpha\x00beta\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := readContentLines(path); !errors.Is(err, errBinaryFile) {
+			t.Fatalf("readContentLines(%q) error = %v; want binary error", path, err)
+		}
+	})
+
+	t.Run("rejects invalid UTF-8", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "invalid-utf8.txt")
+		if err := os.WriteFile(path, []byte{0xff, '\n'}, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := readContentLines(path); !errors.Is(err, errInvalidUTF8) {
+			t.Fatalf("readContentLines(%q) error = %v; want encoding error", path, err)
 		}
 	})
 }

@@ -194,6 +194,7 @@ func TestBatchRequestRejectsMalformedProofFields(t *testing.T) {
 		{name: "null revision", proof: map[string]any{"revision": nil, "anchors": []string{anchor}}, want: "proof revision must be a string"},
 		{name: "missing revision", proof: map[string]any{"anchors": []string{anchor}}, want: "proof revision is required"},
 		{name: "null anchors", proof: map[string]any{"revision": validRevision, "anchors": nil}, want: "proof anchors must be an array of strings"},
+		{name: "null anchor element", proof: map[string]any{"revision": validRevision, "anchors": []any{nil}}, want: "proof anchors[0] must be a string"},
 		{name: "missing anchors", proof: map[string]any{"revision": validRevision}, want: "proof anchors are required"},
 		{name: "uppercase revision", proof: map[string]any{"revision": "sha256:" + strings.Repeat("A", 64), "anchors": []string{anchor}}, want: "lowercase hexadecimal digits"},
 	}

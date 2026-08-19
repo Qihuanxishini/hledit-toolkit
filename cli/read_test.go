@@ -437,6 +437,24 @@ func TestApplyContextOverlappingWindows(t *testing.T) {
 	}
 }
 
+func TestApplyContextKeepsDisjointWindows(t *testing.T) {
+	lines := []string{"1", "2", "3", "4", "5", "6", "7", "8", "9"}
+	got := applyContext(lines, []int{2, 8}, 1)
+	want := []int{1, 2, 3, 7, 8, 9}
+	if !slices.Equal(got, want) {
+		t.Fatalf("applyContext disjoint windows = %v; want %v", got, want)
+	}
+}
+
+func TestApplyContextClampsOversizedContext(t *testing.T) {
+	lines := []string{"a", "hit", "c"}
+	got := applyContext(lines, []int{2}, int(^uint(0)>>1))
+	want := []int{1, 2, 3}
+	if !slices.Equal(got, want) {
+		t.Fatalf("applyContext oversized context = %v; want %v", got, want)
+	}
+}
+
 func TestApplyContextZeroIsNoop(t *testing.T) {
 	lines := []string{"a", "b", "c"}
 	matchIdxs := []int{2}
@@ -509,26 +527,23 @@ func TestCmdReadJSONTruncation(t *testing.T) {
 	})
 
 	r := readTestParseJSON(t, output)
-	if !r.OK {
-		t.Fatalf("ok = false; want true")
+	if !r.OK || !r.Truncated {
+		t.Fatalf("read result = %#v; want successful byte truncation", r)
 	}
 	if r.TotalLines != 2001 {
 		t.Fatalf("totalLines = %d; want 2001", r.TotalLines)
 	}
-	if !r.Truncated {
-		t.Fatalf("truncated = false; want true")
+	if len(r.Lines) == 0 || len(r.Lines) >= 2000 {
+		t.Fatalf("lines count = %d; want JSON byte limit before 2000 lines", len(r.Lines))
 	}
-	if len(r.Lines) != 2000 {
-		t.Fatalf("lines count = %d; want 2000", len(r.Lines))
+	if r.Lines[0].Line != 1 || r.Lines[len(r.Lines)-1].Line != len(r.Lines) {
+		t.Fatalf("returned line range = %d-%d; want contiguous range from 1", r.Lines[0].Line, r.Lines[len(r.Lines)-1].Line)
 	}
-	if r.NextOffset != 2001 {
-		t.Fatalf("nextOffset = %d; want 2001", r.NextOffset)
+	if r.NextOffset != r.Lines[len(r.Lines)-1].Line+1 {
+		t.Fatalf("nextOffset = %d; want %d", r.NextOffset, r.Lines[len(r.Lines)-1].Line+1)
 	}
-	if r.Lines[0].Line != 1 {
-		t.Fatalf("lines[0].line = %d; want 1", r.Lines[0].Line)
-	}
-	if r.Lines[1999].Line != 2000 {
-		t.Fatalf("lines[1999].line = %d; want 2000", r.Lines[1999].Line)
+	if len(output) > readOutputMaxBytes {
+		t.Fatalf("JSON output bytes = %d; want <= %d", len(output), readOutputMaxBytes)
 	}
 }
 
@@ -656,23 +671,61 @@ func TestCmdReadJSONNoMatchReturnsEmptyArray(t *testing.T) {
 	}
 }
 
-func TestCmdReadJSONGrepExactByteBudgetAtEOF(t *testing.T) {
-	line := strings.Repeat("x", readOutputMaxBytes-len(formatTag(1, ""))-2)
-	if got := len(formatTag(1, line)) + 2 + len(line); got != readOutputMaxBytes {
-		t.Fatalf("fixture annotated bytes = %d; want %d", got, readOutputMaxBytes)
+func TestReadJSONLineBudgetIncludesFinalNewline(t *testing.T) {
+	revision := "sha256:" + strings.Repeat("a", 64)
+	budget := readJSONLineBudget(revision, 1, readOutputMaxBytes)
+	line := ReadLine{Line: 1, Anchor: "1#abc"}
+	textBytes := budget - jsonReadLineSize(line)
+	if textBytes <= 0 {
+		t.Fatalf("line budget = %d; want room for text", budget)
 	}
+	line.Text = strings.Repeat("x", textBytes)
+	result := ReadResult{
+		OK: true, Revision: revision, TotalLines: 1,
+		Lines: []ReadLine{line}, Truncated: true, NextOffset: 2,
+	}
+	if got := jsonValueSize(result) + 1; got != readOutputMaxBytes {
+		t.Fatalf("encoded result bytes = %d; want %d", got, readOutputMaxBytes)
+	}
+}
+
+func TestCmdReadJSONEscapingRespectsByteBudget(t *testing.T) {
 	dir := t.TempDir()
-	path := readTestWriteFile(t, dir, "exact-budget.txt", line+"\n")
+	line := strings.Repeat(`"\\`, readOutputMaxBytes)
+	path := readTestWriteFile(t, dir, "escaped-budget.txt", line+"\n")
 
 	output := readTestCaptureStdout(t, func() {
-		if err := cmdRead(path, "x", 0, true); err != nil {
-			t.Fatalf("cmdRead json exact-budget returned error: %v", err)
+		if err := cmdRead(path, "", 0, true); err != nil {
+			t.Fatalf("cmdRead json escaped-budget returned error: %v", err)
 		}
 	})
 
 	r := readTestParseJSON(t, output)
-	if !r.OK || r.Truncated || r.NextOffset != 0 || len(r.Lines) != 1 || r.Lines[0].TextTruncated {
-		t.Fatalf("read result = %#v; want complete one-line EOF result", r)
+	if !r.OK || !r.Truncated || len(r.Lines) != 1 || !r.Lines[0].TextTruncated {
+		t.Fatalf("read result = %#v; want one escaped truncated line", r)
+	}
+	if len(output) > readOutputMaxBytes {
+		t.Fatalf("JSON output bytes = %d; want <= %d", len(output), readOutputMaxBytes)
+	}
+}
+
+func TestCmdReadJSONBudgetMatchesEmitterEscaping(t *testing.T) {
+	dir := t.TempDir()
+	line := strings.Repeat("<&>", 10_000)
+	path := readTestWriteFile(t, dir, "html-characters.txt", line+"\n")
+
+	output := readTestCaptureStdout(t, func() {
+		if err := cmdRead(path, "", 0, true); err != nil {
+			t.Fatalf("cmdRead json HTML-character budget returned error: %v", err)
+		}
+	})
+
+	r := readTestParseJSON(t, output)
+	if !r.OK || r.Truncated || len(r.Lines) != 1 || r.Lines[0].Text != line {
+		t.Fatalf("read result did not preserve an in-budget line: %#v", r)
+	}
+	if len(output) > readOutputMaxBytes {
+		t.Fatalf("JSON output bytes = %d; want <= %d", len(output), readOutputMaxBytes)
 	}
 }
 

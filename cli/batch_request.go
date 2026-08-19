@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 )
+
+const maxBatchRequestBytes = 8 * 1024 * 1024
 
 // BatchEditOp 是 batch wire v3 中的一项编辑；私有 presence 字段区分缺失与显式零值。
 type BatchEditOp struct {
@@ -26,6 +29,23 @@ type batchEditOpWire struct {
 	EndPos json.RawMessage `json:"end_pos"`
 	After  json.RawMessage `json:"after"`
 	Lines  json.RawMessage `json:"lines"`
+}
+
+func decodeStringArray(raw json.RawMessage, field string) ([]string, error) {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, fmt.Errorf("%s must be an array of strings", field)
+	}
+	var elements []json.RawMessage
+	if err := json.Unmarshal(raw, &elements); err != nil {
+		return nil, fmt.Errorf("%s must be an array of strings", field)
+	}
+	values := make([]string, len(elements))
+	for i, element := range elements {
+		if bytes.Equal(bytes.TrimSpace(element), []byte("null")) || json.Unmarshal(element, &values[i]) != nil {
+			return nil, fmt.Errorf("%s[%d] must be a string", field, i)
+		}
+	}
+	return values, nil
 }
 
 func (edit *BatchEditOp) UnmarshalJSON(data []byte) error {
@@ -62,9 +82,11 @@ func (edit *BatchEditOp) UnmarshalJSON(data []byte) error {
 		}
 	}
 	if edit.linesPresent {
-		if bytes.Equal(bytes.TrimSpace(wire.Lines), []byte("null")) || json.Unmarshal(wire.Lines, &edit.Lines) != nil {
-			return errors.New("lines must be an array of strings")
+		lines, err := decodeStringArray(wire.Lines, "lines")
+		if err != nil {
+			return err
 		}
+		edit.Lines = lines
 	}
 	return nil
 }
@@ -126,9 +148,11 @@ func (proof *BatchReadProof) UnmarshalJSON(data []byte) error {
 	if len(wire.Anchors) == 0 {
 		return errors.New("proof anchors are required")
 	}
-	if bytes.Equal(bytes.TrimSpace(wire.Anchors), []byte("null")) || json.Unmarshal(wire.Anchors, &proof.Anchors) != nil {
-		return errors.New("proof anchors must be an array of strings")
+	anchors, err := decodeStringArray(wire.Anchors, "proof anchors")
+	if err != nil {
+		return err
 	}
+	proof.Anchors = anchors
 	return nil
 }
 
@@ -182,9 +206,12 @@ func (request *BatchEditRequest) UnmarshalJSON(data []byte) error {
 // parseBatchRequest 只接受一个字段闭合的 JSON 对象，协议拼写错误不得降级为其他编辑。
 func parseBatchRequest() (BatchEditRequest, error) {
 	var request BatchEditRequest
-	data, err := io.ReadAll(os.Stdin)
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, maxBatchRequestBytes+1))
 	if err != nil {
 		return request, err
+	}
+	if len(data) > maxBatchRequestBytes {
+		return request, fmt.Errorf("batch request exceeds %d-byte limit", maxBatchRequestBytes)
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(data))

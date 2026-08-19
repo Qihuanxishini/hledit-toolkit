@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -27,6 +28,33 @@ func emitReadRangeError(offset, totalLines int) error {
 }
 
 const readOutputMaxBytes = 50 * 1024
+
+func jsonValueSize(value any) int {
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(value)
+	// [喵喵喵]: 与 emitJSON 保持相同的转义设置，并扣除 Encode 追加的换行。
+	return encoded.Len() - 1
+}
+
+func jsonReadLineSize(line ReadLine) int {
+	return jsonValueSize(line)
+}
+
+func readJSONLineBudget(revision string, totalLines, maxBytes int) int {
+	// [喵喵喵]: 先预留完整结果壳，避免 lines 数组安全但最终 JSON 超过预算。
+	empty := ReadResult{
+		OK: true, Revision: revision, TotalLines: totalLines,
+		Lines: []ReadLine{}, Truncated: true, NextOffset: totalLines + 1,
+	}
+	// [喵喵喵]: byteCount 只统计 lines 数组内容；结果壳已包含 []，emitJSON 还会追加一个换行。
+	budget := maxBytes - jsonValueSize(empty) - 1
+	if budget < 0 {
+		return 0
+	}
+	return budget
+}
 
 const lineTruncationSuffix = "… [line truncated]"
 const jsonTextTruncationSuffix = "… [truncated]"
@@ -84,26 +112,41 @@ func applyContext(lines []string, matchIdxs []int, contextN int) []int {
 	if contextN <= 0 || len(matchIdxs) == 0 {
 		return matchIdxs
 	}
+
 	total := len(lines)
-	included := make([]bool, total+1) // 1-indexed; index 0 unused
-	for _, ln := range matchIdxs {
-		start := ln - contextN
-		if start < 1 {
-			start = 1
-		}
-		end := ln + contextN
-		if end > total {
-			end = total
-		}
-		for i := start; i <= end; i++ {
-			included[i] = true
-		}
+	// [喵喵喵]: context 来自 CLI 数值参数，先压到文件长度以避免 ln+contextN 整数溢出。
+	if contextN > total {
+		contextN = total
 	}
 	result := make([]int, 0, len(matchIdxs))
-	for i := 1; i <= total; i++ {
-		if included[i] {
-			result = append(result, i)
+	start := 0
+	end := 0
+	for _, ln := range matchIdxs {
+		windowStart := ln - contextN
+		if windowStart < 1 {
+			windowStart = 1
 		}
+		windowEnd := ln + contextN
+		if windowEnd > total {
+			windowEnd = total
+		}
+		if start == 0 {
+			start, end = windowStart, windowEnd
+			continue
+		}
+		if windowStart <= end {
+			if windowEnd > end {
+				end = windowEnd
+			}
+			continue
+		}
+		for line := start; line <= end; line++ {
+			result = append(result, line)
+		}
+		start, end = windowStart, windowEnd
+	}
+	for line := start; line <= end; line++ {
+		result = append(result, line)
 	}
 	return result
 }
@@ -212,23 +255,70 @@ func emitAnnotatedLines(buf *bytes.Buffer, lines []string, startIdx, maxLines, m
 
 func appendJSONReadLine(result []ReadLine, byteCount int, lineNum int, line string, maxBytes int) ([]ReadLine, int, bool) {
 	tag := formatTag(lineNum, line)
-	overhead := len(tag) + 2 // tag + ':' + '\n'
-	remaining := maxBytes - byteCount - overhead
-	if remaining < 0 {
-		remaining = 0
+	separatorBytes := 0
+	if len(result) > 0 {
+		separatorBytes = 1
 	}
-	text := line
-	truncated := false
-	if len(text) > remaining {
-		if remaining > len(jsonTextTruncationSuffix) {
-			text = utf8PrefixByBytes(text, remaining-len(jsonTextTruncationSuffix)) + jsonTextTruncationSuffix
-		} else {
-			text = utf8PrefixByBytes(text, remaining)
+	available := maxBytes - byteCount - separatorBytes
+	if available <= 0 {
+		return result, byteCount, true
+	}
+
+	// [喵喵喵]: 编码后的 JSON 文本不会短于原始 UTF-8 文本；超预算的长行无需先完整序列化。
+	if len(line) <= available {
+		full := ReadLine{Line: lineNum, Anchor: tag, Text: line}
+		if size := jsonReadLineSize(full); size <= available {
+			return append(result, full), byteCount + separatorBytes + size, false
 		}
-		truncated = true
 	}
-	byteCount += overhead + len(text)
-	return append(result, ReadLine{Line: lineNum, Anchor: tag, Text: text, TextTruncated: truncated}), byteCount, truncated
+
+	truncatedText := jsonTextTruncationSuffix
+	withSuffix := func(text string) ReadLine {
+		return ReadLine{Line: lineNum, Anchor: tag, Text: text + truncatedText, TextTruncated: true}
+	}
+	withoutSuffix := func(text string) ReadLine {
+		return ReadLine{Line: lineNum, Anchor: tag, Text: text, TextTruncated: true}
+	}
+	maxPrefixBytes := len(line)
+	if maxPrefixBytes > available {
+		maxPrefixBytes = available
+	}
+	candidate := withSuffix("")
+	if jsonReadLineSize(candidate) <= available {
+		low, high := 0, maxPrefixBytes
+		best := candidate
+		for low <= high {
+			middle := low + (high-low)/2
+			candidateText := utf8PrefixByBytes(line, middle)
+			candidate = withSuffix(candidateText)
+			if jsonReadLineSize(candidate) <= available {
+				best = candidate
+				low = middle + 1
+			} else {
+				high = middle - 1
+			}
+		}
+		itemBytes := jsonReadLineSize(best)
+		return append(result, best), byteCount + separatorBytes + itemBytes, true
+	}
+
+	low, high := 0, maxPrefixBytes
+	var best ReadLine
+	bestSize := 0
+	for low <= high {
+		middle := low + (high-low)/2
+		candidate = withoutSuffix(utf8PrefixByBytes(line, middle))
+		if size := jsonReadLineSize(candidate); size <= available {
+			best, bestSize = candidate, size
+			low = middle + 1
+		} else {
+			high = middle - 1
+		}
+	}
+	if bestSize == 0 {
+		return result, byteCount, true
+	}
+	return append(result, best), byteCount + separatorBytes + bestSize, true
 }
 
 // collectAnnotatedLines gathers lines into ReadLine structs with truncation metadata.
@@ -237,9 +327,13 @@ func collectAnnotatedLines(lines []string, startIdx, maxLines, maxBytes int) ([]
 	byteCount := 0
 	for i := startIdx; i < len(lines) && len(result) < maxLines && byteCount < maxBytes; i++ {
 		lineNum := i + 1
+		previousCount := len(result)
 		var textTruncated bool
 		result, byteCount, textTruncated = appendJSONReadLine(result, byteCount, lineNum, lines[i], maxBytes)
 		if textTruncated {
+			if len(result) == previousCount {
+				return result, true, lineNum
+			}
 			return result, true, 0
 		}
 		if byteCount >= maxBytes || len(result) >= maxLines {
@@ -266,9 +360,13 @@ func collectMatchLines(lines []string, matchIdxs []int, offset, maxLines, maxByt
 	byteCount := 0
 	for i := startIdx; i < len(matchIdxs) && len(result) < maxLines && byteCount < maxBytes; i++ {
 		ln := matchIdxs[i]
+		previousCount := len(result)
 		var textTruncated bool
 		result, byteCount, textTruncated = appendJSONReadLine(result, byteCount, ln, lines[ln-1], maxBytes)
 		if textTruncated {
+			if len(result) == previousCount {
+				return result, true, ln
+			}
 			return result, true, 0
 		}
 		if byteCount >= maxBytes {
@@ -344,14 +442,15 @@ func cmdReadPretty(path, grep string, contextN int, ignoreCase bool, jsonOut boo
 	matchIdxs := filterLines(lines, grep, ignoreCase)
 
 	if jsonOut {
+		jsonLineBytes := readJSONLineBudget(file.Revision, len(lines), readOutputMaxBytes)
 		var readLines []ReadLine
 		var truncated bool
 		var nextOffset int
 		if matchIdxs != nil {
 			matchIdxs = applyContext(lines, matchIdxs, contextN)
-			readLines, truncated, nextOffset = collectMatchLines(lines, matchIdxs, 1, 2000, readOutputMaxBytes)
+			readLines, truncated, nextOffset = collectMatchLines(lines, matchIdxs, 1, 2000, jsonLineBytes)
 		} else {
-			readLines, truncated, nextOffset = collectAnnotatedLines(lines, 0, 2000, readOutputMaxBytes)
+			readLines, truncated, nextOffset = collectAnnotatedLines(lines, 0, 2000, jsonLineBytes)
 		}
 		return emitJSON(ReadResult{OK: true, Revision: file.Revision, TotalLines: len(lines), Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
 	}
@@ -473,14 +572,15 @@ func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int,
 	matchIdxs := filterLines(lines, grep, ignoreCase)
 
 	if jsonOut {
+		jsonLineBytes := readJSONLineBudget(file.Revision, len(lines), readOutputMaxBytes)
 		var readLines []ReadLine
 		var truncated bool
 		var nextOffset int
 		if matchIdxs != nil {
 			matchIdxs = applyContext(lines, matchIdxs, contextN)
-			readLines, truncated, nextOffset = collectMatchLines(lines, matchIdxs, offset, maxLines, readOutputMaxBytes)
+			readLines, truncated, nextOffset = collectMatchLines(lines, matchIdxs, offset, maxLines, jsonLineBytes)
 		} else {
-			readLines, truncated, nextOffset = collectAnnotatedLines(lines, offset-1, maxLines, readOutputMaxBytes)
+			readLines, truncated, nextOffset = collectAnnotatedLines(lines, offset-1, maxLines, jsonLineBytes)
 		}
 		return emitJSON(ReadResult{OK: true, Revision: file.Revision, TotalLines: len(lines), Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
 	}
@@ -519,14 +619,15 @@ func cmdReadRangePretty(path string, offset, limit int, grep string, contextN in
 	matchIdxs := filterLines(lines, grep, ignoreCase)
 
 	if jsonOut {
+		jsonLineBytes := readJSONLineBudget(file.Revision, len(lines), readOutputMaxBytes)
 		var readLines []ReadLine
 		var truncated bool
 		var nextOffset int
 		if matchIdxs != nil {
 			matchIdxs = applyContext(lines, matchIdxs, contextN)
-			readLines, truncated, nextOffset = collectMatchLines(lines, matchIdxs, offset, maxLines, readOutputMaxBytes)
+			readLines, truncated, nextOffset = collectMatchLines(lines, matchIdxs, offset, maxLines, jsonLineBytes)
 		} else {
-			readLines, truncated, nextOffset = collectAnnotatedLines(lines, offset-1, maxLines, readOutputMaxBytes)
+			readLines, truncated, nextOffset = collectAnnotatedLines(lines, offset-1, maxLines, jsonLineBytes)
 		}
 		return emitJSON(ReadResult{OK: true, Revision: file.Revision, TotalLines: len(lines), Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
 	}

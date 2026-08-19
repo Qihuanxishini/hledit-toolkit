@@ -182,6 +182,7 @@ Validation:
 
 - All anchors are validated against the original file state before any write.
 - The JSON decoder rejects unknown fields and any additional top-level JSON value; protocol typos never degrade into a different edit.
+- The complete stdin request is limited to 8 MiB; every `lines` and `proof.anchors` element must be a JSON string.
 - `proof` is optional for standalone CLI use. When present, it must contain a valid raw-byte SHA-256 `revision` and unique, strictly increasing anchors.
 - Proof must cover every original line consumed by each replace/delete range and the anchor line used by each insert. Missing coverage returns `error:"insufficient_read_proof"`; revision or proof-anchor changes return `error:"stale"`.
 - Batch wire v3 has one canonical shape: `replace` requires `lines` (an empty array deletes the range), while `delete` must omit `lines`.

@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version-file: cli/go.mod
+          go-version: "1.26.3"
           cache: false
       - name: Test CLI on Windows
         working-directory: cli
@@ -55,10 +55,29 @@ jobs:
         run: npm ci
       - name: Verify tracked bundled CLI
         run: npm run test:bundled
+      - name: Save tracked bundled CLI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $source = Join-Path $PWD "bin/hledit.exe"
+          $destination = Join-Path $env:RUNNER_TEMP "hledit-tracked.exe"
+          Copy-Item -LiteralPath $source -Destination $destination -Force
       - name: Build bundled CLI from current source
         working-directory: cli
-        run: go build -trimpath -ldflags="-s -w" -o ../pi-hledit-diff/bin/hledit.exe .
+        env:
+          CGO_ENABLED: "0"
+          GOAMD64: "v1"
+        run: go build -buildvcs=false -trimpath -ldflags="-s -w" -o ../pi-hledit-diff/bin/hledit.exe .
       - name: Verify rebuilt bundled CLI
         run: npm run test:bundled
+      - name: Verify bundled CLI matches current source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $trackedHash = (Get-FileHash -LiteralPath (Join-Path $env:RUNNER_TEMP "hledit-tracked.exe") -Algorithm SHA256).Hash
+          $rebuiltHash = (Get-FileHash -LiteralPath (Join-Path $PWD "bin/hledit.exe") -Algorithm SHA256).Hash
+          if ($trackedHash -ne $rebuiltHash) {
+            throw "tracked bundled CLI is stale; rebuild it from current source and commit the updated artifact"
+          }
       - name: Check
         run: npm run check

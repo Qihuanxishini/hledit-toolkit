@@ -239,17 +239,20 @@ func TestCmdAnchorsJSONTruncation(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &r); err != nil {
 		t.Fatalf("json.Unmarshal: %v (output=%q)", err, output)
 	}
-	if !r.Truncated {
-		t.Fatalf("truncated = false; want true")
+	if !r.OK || !r.Truncated {
+		t.Fatalf("read result = %#v; want successful byte truncation", r)
 	}
 	if r.TotalLines != 2001 {
 		t.Fatalf("totalLines = %d; want 2001", r.TotalLines)
 	}
-	if len(r.Lines) != 2000 {
-		t.Fatalf("lines count = %d; want 2000", len(r.Lines))
+	if len(r.Lines) == 0 || len(r.Lines) >= 2000 {
+		t.Fatalf("lines count = %d; want JSON byte limit before 2000 lines", len(r.Lines))
 	}
-	if r.NextOffset != 2001 {
-		t.Fatalf("nextOffset = %d; want 2001", r.NextOffset)
+	if r.NextOffset != r.Lines[len(r.Lines)-1].Line+1 {
+		t.Fatalf("nextOffset = %d; want %d", r.NextOffset, r.Lines[len(r.Lines)-1].Line+1)
+	}
+	if len(output) > readOutputMaxBytes {
+		t.Fatalf("JSON output bytes = %d; want <= %d", len(output), readOutputMaxBytes)
 	}
 }
 

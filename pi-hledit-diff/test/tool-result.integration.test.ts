@@ -150,15 +150,14 @@ test("read tool returns structured ranges and actionable EOF errors", async (t) 
 	assert.equal(rangeError.content[0]?.text.split("\n", 1)[0], "Starting line 4 is outside the file range (3 total lines).");
 });
 
-test("read tool accepts a grep result that exactly fills the byte budget at EOF", async (t) => {
+test("read tool accepts a near-limit grep result at EOF", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	assert.ok(readTool);
 
-	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-exact-budget-"));
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-near-budget-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
-	// 1#xxx、冒号和换行共 7 bytes，使锚点行恰好填满 CLI 的 50 KiB 预算。
-	const line = "x".repeat(50 * 1024 - 7);
+	const line = "x".repeat(49 * 1024);
 	await writeFile(join(directory, "target.txt"), `${line}\n`, "utf8");
 
 	const result = await readTool.execute(
@@ -593,8 +592,14 @@ test("multi-page proof recovery requests lightweight read continuation before ap
 	);
 	assert.equal(apply.details.disposition, "rejected");
 	assert.equal(apply.details.error?.code, "insufficient_read_proof");
-	assert.equal(apply.details.recoveredRead?.nextOffset, 2_001);
-	assert.match(apply.content[0]?.text ?? "", /Call hledit_read_anchors\(\{ path: "target.txt", offset: 2001, limit: 999 \}\)/);
+	const nextOffset = apply.details.recoveredRead?.nextOffset;
+	assert.ok(typeof nextOffset === "number" && nextOffset > 1 && nextOffset < 3_000);
+	const remainingLimit = 3_000 - nextOffset;
+	assert.ok(
+		(apply.content[0]?.text ?? "").includes(
+			`Call hledit_read_anchors({ path: "target.txt", offset: ${nextOffset}, limit: ${remainingLimit} })`,
+		),
+	);
 	assert.match(apply.content[0]?.text ?? "", /Do not resubmit apply before then/);
 	assert.doesNotMatch(apply.content[0]?.text ?? "", /Review the current source.*resubmit the batch/);
 });
@@ -618,9 +623,27 @@ test("multi-page proof continuation completes without rereading the payload", as
 	const params = { path: "target.txt", changes: [{ operation: "replace_range", start_anchor: startAnchor, end_anchor: endAnchor, lines: "replacement" }] } as never;
 	const initial = await applyTool.execute("apply-1", params, undefined, undefined, context);
 	assert.equal(initial.details.disposition, "rejected");
-	assert.equal(initial.details.recoveredRead?.nextOffset, 2_001);
-	const continuation = await readTool.execute("continuation", { path: "target.txt", offset: 2_001, limit: 999 } as never, undefined, undefined, context);
-	assert.equal(continuation.details.disposition, "succeeded");
+	const recoveredOffset = initial.details.recoveredRead?.nextOffset;
+	assert.ok(typeof recoveredOffset === "number" && recoveredOffset > 1 && recoveredOffset < 3_000);
+	let continuationOffset: number = recoveredOffset;
+	let page = 0;
+	while (continuationOffset < 3_000) {
+		const currentOffset: number = continuationOffset;
+		const continuation: TextResult = await readTool.execute(
+			`continuation-${++page}`,
+			{ path: "target.txt", offset: currentOffset, limit: 3_000 - currentOffset } as never,
+			undefined,
+			undefined,
+			context,
+		);
+		assert.equal(continuation.details.disposition, "succeeded");
+		const lastReadLine = continuation.details.read?.actual.lastLine;
+		assert.ok(typeof lastReadLine === "number" && lastReadLine >= currentOffset);
+		if (lastReadLine >= 2_999) break;
+		const nextOffset = continuation.details.read?.nextOffset;
+		assert.ok(typeof nextOffset === "number" && nextOffset > currentOffset);
+		continuationOffset = nextOffset;
+	}
 	const final = await applyTool.execute("apply-2", params, undefined, undefined, context);
 	assert.equal(final.details.disposition, "succeeded");
 	assert.equal(await readFile(target, "utf8"), "replacement\n");

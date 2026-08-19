@@ -117,6 +117,7 @@ pi-hledit-diff/
 - `lines` 只接受换行分隔字符串；一个末尾换行只终止末行，空字符串代表一行空文本；`delete_range` 不接受 `lines`；
 - apply 不接受数组 `lines`、序列化 `changes`、单 change 自动包装或带源码后缀的 anchor；旧 operation、别名和字段不迁移，object 使用严格额外字段拒绝；
 - 单次 batch 限 1–200 个 changes，replacement 总量限 1 MiB UTF-8，输出总量限 20,000 行；
+- batch stdin request 总大小限 8 MiB；`lines` 与 `proof.anchors` 的每个元素必须是 JSON 字符串，`null` 等类型会被拒绝；
 - 公开 schema 不含 revision/proof。插件从当前 branch evidence 注入每个消费行或 insert 依附行的完整 hidden proof；
 - proof 不完整时不启动 mutation batch；apply 在同一 canonical file queue 内完成一次定向只读。若仍有 `nextOffset`，只返回下一页 read 指引并禁止提前重提 apply；覆盖完整缺口后才通过顶层 `recoveredRead` 返回当前证据，调用方审阅后显式重提 batch。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；插件不自动重放修改；
 - 高风险单行范围扩展先执行一次 `batch --check`。check 成功只返回字段级修复，不继续真正写入；
@@ -205,7 +206,7 @@ CLI 写入逐行保留未修改 terminator、BOM 和 trailing-newline 状态；�
 - 确认退出后主动销毁本地 stdio handles，并清理 listener、abort listener 和 timer；
 - 若 OS 始终不确认退出，宁可阻塞该文件队列，也不在进程仍可能写入时提前返回。
 
-默认 wrapper 输出上限为 1 MiB，用于容纳 CLI 50 KiB / 2000 行 raw-output cap 经 JSON 控制字符转义后的膨胀。
+默认 wrapper 输出上限为 1 MiB，作为异常或不兼容 CLI 输出的进程级保护；read JSON 已按最终 UTF-8 序列化结果限制为 50 KiB，不依赖 wrapper 吸收控制字符转义膨胀。
 
 ## Preview、TUI 与 compaction
 
@@ -250,13 +251,13 @@ cd ../cli
 gofmt -d *.go
 go vet ./...
 go test ./...
-go build -trimpath -ldflags="-s -w" -o ../pi-hledit-diff/bin/hledit.exe .
+CGO_ENABLED=0 GOAMD64=v1 go build -buildvcs=false -trimpath -ldflags="-s -w" -o ../pi-hledit-diff/bin/hledit.exe .
 cd ../pi-hledit-diff
 npm run test:bundled
 npm run check
 ```
 
-`test:bundled` 必须覆盖 CLI contract、anchor hash 对拍、两工具激活与 tool-result 集成。CI 的 Windows job 必须在 build step 前安装 Node 依赖并运行该脚本，然后重建，再次运行 bundled 与 full check。
+`test:bundled` 必须覆盖 CLI contract、anchor hash 对拍、两工具激活与 tool-result 集成。tracked bundled CLI 固定使用 Go 1.26.3、`CGO_ENABLED=0`、`GOAMD64=v1` 与上述参数构建，`-buildvcs=false` 保证工作树状态不进入制品。CI 的 Windows job 必须在 build step 前安装 Node 依赖并运行该脚本，然后以同一工具链重建、逐字节校验 tracked binary，再次运行 bundled 与 full check。
 
 ## 真实 Pi 验收
 

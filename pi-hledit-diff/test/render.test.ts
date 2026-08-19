@@ -199,8 +199,8 @@ test("renderFileChangesResult renders an adaptive unified diff", () => {
 	const output = render(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }), 72);
 
 	assert.equal(output[0], "↳ 差异 +2 -1 • 1 个变更块 • 统一");
-	assert.ok(output.some((line) => line.includes("▌") && line.includes("beta")));
-	assert.ok(output.some((line) => line.includes("▌") && line.includes("BETA")));
+	assert.ok(output.some((line) => /^-\s+2\s+│/.test(line) && line.includes("beta")));
+	assert.ok(output.some((line) => /^\+\s+2\s+│/.test(line) && line.includes("BETA")));
 	assert.ok(output.every((line) => visibleWidth(line) <= 72));
 });
 
@@ -228,6 +228,81 @@ test("renderFileChangesResult prefers the structured change preview over legacy 
 	assert.ok(output.some((line) => line.includes("beta")));
 	assert.ok(output.some((line) => line.includes("BETA")));
 	assert.ok(output.every((line) => !line.includes("legacy") && !line.includes("LEGACY")));
+});
+
+// [喵喵喵]: 相同文本的删除/新增仍是普通编辑；旧、新行号必须在单双栏中清晰可见。
+test("renderFileChangesResult keeps old and new line numbers visible when changed text is identical", () => {
+	const text = "const value = 1;";
+	const result: TextResult = {
+		content: [{ type: "text", text: "Changes applied." }],
+		details: {
+			disposition: "succeeded",
+			changePreview: {
+				truncated: false,
+				lines: [
+					{ kind: "remove", oldLine: 30, text },
+					{ kind: "add", newLine: 50, text },
+				],
+			},
+			editsApplied: 2,
+		},
+	};
+	const component = renderFileChangesResult(result, options(), theme, { args: { path: "sample.ts" } });
+
+	const unifiedRows = render(component, 80).filter((line) => line.includes(text));
+	assert.equal(unifiedRows.length, 2);
+	assert.match(unifiedRows[0] ?? "", /^-\s+30\s+│/);
+	assert.match(unifiedRows[1] ?? "", /^\+\s+50\s+│/);
+
+	const splitRows = render(component, 120).filter((line) => line.includes(text));
+	assert.equal(splitRows.length, 1);
+	assert.match(splitRows[0] ?? "", /^-\s+30\s+│/);
+	assert.match(splitRows[0] ?? "", /\s│\s\+\s+50\s+│/);
+
+	const coloredRows = render(
+		renderFileChangesResult(result, options(), coloredTheme, { args: { path: "sample.ts" } }),
+		80,
+	).filter((line) => line.includes(text));
+	const backgroundPattern = /^\x1b\[48;2;\d+;\d+;\d+m/;
+	assert.equal(coloredRows.length, 2);
+	assert.notEqual(backgroundPattern.exec(coloredRows[0] ?? "")?.[0], backgroundPattern.exec(coloredRows[1] ?? "")?.[0]);
+});
+
+test("renderFileChangesResult separates unrelated mixed changes while aligning identical text", () => {
+	const text = "same text";
+	const result: TextResult = {
+		content: [{ type: "text", text: "Changes applied." }],
+		details: {
+			disposition: "succeeded",
+			changePreview: {
+				truncated: false,
+				lines: [
+					{ kind: "remove", oldLine: 2, text, changeIndex: 0 },
+					{ kind: "remove", oldLine: 3, text: "delete only", changeIndex: 0 },
+					{ kind: "add", newLine: 3, text, changeIndex: 1 },
+					{ kind: "add", newLine: 4, text: "add only", changeIndex: 1 },
+				],
+			},
+			editsApplied: 2,
+		},
+	};
+	const component = renderFileChangesResult(result, options(), theme, { args: { path: "sample.ts" } });
+
+	const unifiedRows = render(component, 80).filter((line) => line.includes(text) || line.includes("delete only") || line.includes("add only"));
+	assert.equal(unifiedRows.length, 4);
+	assert.match(unifiedRows[0] ?? "", /^-\s+2\s+│/);
+	assert.match(unifiedRows[1] ?? "", /^\+\s+3\s+│/);
+	assert.match(unifiedRows[2] ?? "", /^-\s+3\s+│/);
+	assert.match(unifiedRows[3] ?? "", /^\+\s+4\s+│/);
+
+	const splitRows = render(component, 120).filter((line) => line.includes(text) || line.includes("delete only") || line.includes("add only"));
+	assert.equal(splitRows.length, 3);
+	assert.match(splitRows[0] ?? "", /^-\s+2\s+│/);
+	assert.match(splitRows[0] ?? "", /\s│\s\+\s+3\s+│/);
+	assert.match(splitRows[1] ?? "", /^-\s+3\s+│/);
+	assert.doesNotMatch(splitRows[1] ?? "", /add only/);
+	assert.match(splitRows[2] ?? "", /\+\s+4\s+│/);
+	assert.doesNotMatch(splitRows[2] ?? "", /delete only/);
 });
 
 test("renderFileChangesResult switches to split layout on wide terminals", () => {

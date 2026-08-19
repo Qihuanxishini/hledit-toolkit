@@ -1040,11 +1040,11 @@ test("apply tool attaches a commit-bound change preview instead of a full-file d
 	assert.deepEqual(result.details.changePreview, {
 		truncated: false,
 		lines: [
-			{ kind: "remove", oldLine: 2, text: "two" },
-			{ kind: "add", newLine: 2, text: "TWO" },
-			{ kind: "add", newLine: 3, text: "TWO2" },
-			{ kind: "add", newLine: 6, text: "N" },
-			{ kind: "remove", oldLine: 5, text: "five" },
+			{ kind: "remove", oldLine: 2, text: "two", changeIndex: 0 },
+			{ kind: "add", newLine: 2, text: "TWO", changeIndex: 0 },
+			{ kind: "add", newLine: 3, text: "TWO2", changeIndex: 0 },
+			{ kind: "add", newLine: 6, text: "N", changeIndex: 1 },
+			{ kind: "remove", oldLine: 5, text: "five", changeIndex: 2 },
 		],
 	});
 	assert.equal("diff" in result.details, false);

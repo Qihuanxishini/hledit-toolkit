@@ -29,8 +29,17 @@ type DiffLineKind = "add" | "remove" | "context";
 
 type DiffLine = {
 	kind: DiffLineKind;
-	lineNumber?: number;
+	lineNumber: number;
 	content: string;
+	changeIndex?: number;
+};
+
+export type StructuredDiffLine = {
+	kind: DiffLineKind;
+	oldLine?: number;
+	newLine?: number;
+	text: string;
+	changeIndex?: number;
 };
 
 type HighlightedDiffLine = {
@@ -199,6 +208,11 @@ function parseGeneratedDiff(diff: string): ParsedDiff {
 
 		const marker = match[1];
 		const lineNumber = Number.parseInt(match[2]?.trim() ?? "", 10);
+		if (!Number.isSafeInteger(lineNumber) || lineNumber < 1) {
+			entries.push({ kind: "meta", content: rawLine.trim() || "…" });
+			insideChangeGroup = false;
+			continue;
+		}
 		const kind: DiffLineKind = marker === "+" ? "add" : marker === "-" ? "remove" : "context";
 		if (kind !== "context" && !insideChangeGroup) {
 			hunks++;
@@ -206,11 +220,7 @@ function parseGeneratedDiff(diff: string): ParsedDiff {
 		}
 		if (kind === "add") added++;
 		if (kind === "remove") removed++;
-		entries.push({
-			kind,
-			lineNumber: Number.isFinite(lineNumber) ? lineNumber : undefined,
-			content: match[3] ?? "",
-		});
+		entries.push({ kind, lineNumber, content: match[3] ?? "" });
 	}
 
 	return { entries, added, removed, hunks: Math.max(hunks, added + removed > 0 ? 1 : 0) };
@@ -260,12 +270,147 @@ function buildSplitRows(entries: DiffEntry[]): SplitDiffRow[] {
 	return rows;
 }
 
+function structuredLineKey(line: StructuredDiffLine): string {
+	const number = line.kind === "remove" ? line.oldLine : line.newLine ?? line.oldLine;
+	return `${line.kind}:${number ?? "?"}:${line.text}`;
+}
+
+function parsedLineKey(line: DiffLine): string {
+	return `${line.kind}:${line.lineNumber}:${line.content}`;
+}
+
+function attachStructuredGroups(entries: DiffEntry[], lines: readonly StructuredDiffLine[]): DiffEntry[] | undefined {
+	if (!lines.some((line) => line.changeIndex !== undefined)) return undefined;
+	const candidates = new Map<string, StructuredDiffLine[]>();
+	for (const line of lines) {
+		const key = structuredLineKey(line);
+		candidates.set(key, [...(candidates.get(key) ?? []), line]);
+	}
+	const used = new Set<StructuredDiffLine>();
+	const mapped: DiffEntry[] = [];
+	for (const entry of entries) {
+		if (entry.kind === "meta") {
+			mapped.push(entry);
+			continue;
+		}
+		const candidate = candidates.get(parsedLineKey(entry))?.find((line) => !used.has(line));
+		if (!candidate) return undefined;
+		used.add(candidate);
+		mapped.push(candidate.changeIndex === undefined ? entry : { ...entry, changeIndex: candidate.changeIndex });
+	}
+	return mapped;
+}
+
+function alignChangeRun(entries: DiffLine[]): SplitDiffRow[] {
+	const removes = entries.filter((entry) => entry.kind === "remove");
+	const adds = entries.filter((entry) => entry.kind === "add");
+	const pairedRemove = new Map<DiffLine, DiffLine>();
+	const pairedAdd = new Map<DiffLine, DiffLine>();
+	const groups = new Set<number>();
+	for (const entry of entries) {
+		if (entry.changeIndex !== undefined) groups.add(entry.changeIndex);
+	}
+
+	// 同一操作内仍按原有顺序配对：replace_range 的删除/新增是明确的替换关系。
+	for (const changeIndex of groups) {
+		const groupRemoves = removes.filter((entry) => entry.changeIndex === changeIndex);
+		const groupAdds = adds.filter((entry) => entry.changeIndex === changeIndex);
+		const pairCount = Math.min(groupRemoves.length, groupAdds.length);
+		for (let index = 0; index < pairCount; index += 1) {
+			const remove = groupRemoves[index]!;
+			const add = groupAdds[index]!;
+			pairedRemove.set(remove, add);
+			pairedAdd.set(add, remove);
+		}
+	}
+
+	// 不同操作之间只把“文本唯一相同”的删除/新增视觉配对；重复项保守地保持单侧。
+	const unmatchedRemoves = removes.filter((entry) => !pairedRemove.has(entry));
+	const unmatchedAdds = adds.filter((entry) => !pairedAdd.has(entry));
+	const removeByText = new Map<string, DiffLine[]>();
+	const addByText = new Map<string, DiffLine[]>();
+	for (const entry of unmatchedRemoves) removeByText.set(entry.content, [...(removeByText.get(entry.content) ?? []), entry]);
+	for (const entry of unmatchedAdds) addByText.set(entry.content, [...(addByText.get(entry.content) ?? []), entry]);
+	for (const [text, textRemoves] of removeByText) {
+		const textAdds = addByText.get(text);
+		if (textRemoves.length !== 1 || textAdds?.length !== 1) continue;
+		const remove = textRemoves[0]!;
+		const add = textAdds[0]!;
+		if (remove.changeIndex === add.changeIndex) continue;
+		pairedRemove.set(remove, add);
+		pairedAdd.set(add, remove);
+	}
+
+	const rows: SplitDiffRow[] = [];
+	let previousSingleSide: "left" | "right" | undefined;
+	const appendSingle = (side: "left" | "right", line: DiffLine): void => {
+		if (previousSingleSide !== undefined && previousSingleSide !== side) rows.push({ meta: "" });
+		rows.push(side === "left" ? { left: line } : { right: line });
+		previousSingleSide = side;
+	};
+	for (const entry of entries) {
+		if (entry.kind === "remove") {
+			const add = pairedRemove.get(entry);
+			if (add) {
+				rows.push({ left: entry, right: add });
+				previousSingleSide = undefined;
+			} else {
+				appendSingle("left", entry);
+			}
+		} else {
+			const remove = pairedAdd.get(entry);
+			if (!remove) appendSingle("right", entry);
+		}
+	}
+	return rows;
+}
+
+function buildStructuredSplitRows(entries: DiffEntry[], lines: readonly StructuredDiffLine[]): SplitDiffRow[] | undefined {
+	const groupedEntries = attachStructuredGroups(entries, lines);
+	if (!groupedEntries) return undefined;
+	const rows: SplitDiffRow[] = [];
+	let index = 0;
+	while (index < groupedEntries.length) {
+		const entry = groupedEntries[index]!;
+		if (entry.kind === "meta") {
+			rows.push({ meta: entry.content });
+			index += 1;
+		} else if (entry.kind === "context") {
+			rows.push({ left: entry, right: entry });
+			index += 1;
+		} else {
+			const run: DiffLine[] = [];
+			while (index < groupedEntries.length) {
+				const candidate = groupedEntries[index];
+				if (!candidate || candidate.kind === "meta" || candidate.kind === "context") break;
+				run.push(candidate);
+				index += 1;
+			}
+			rows.push(...alignChangeRun(run));
+		}
+	}
+	return rows;
+}
+
+function structuredUnifiedEntries(rows: SplitDiffRow[]): DiffEntry[] {
+	const entries: DiffEntry[] = [];
+	for (const row of rows) {
+		if (row.meta !== undefined) {
+			entries.push({ kind: "meta", content: row.meta });
+		} else if (row.left && row.right && row.left === row.right) {
+			entries.push(row.left);
+		} else {
+			if (row.left) entries.push(row.left);
+			if (row.right) entries.push(row.right);
+		}
+	}
+	return entries;
+}
+
 function lineNumberWidth(entries: DiffEntry[]): number {
 	let width = 2;
 	for (const entry of entries) {
-		if (entry.kind !== "meta" && entry.lineNumber !== undefined) {
-			width = Math.max(width, String(entry.lineNumber).length);
-		}
+		if (entry.kind !== "meta") width = Math.max(width, String(entry.lineNumber).length);
 	}
 	return width;
 }
@@ -318,8 +463,11 @@ function lineColor(kind: DiffLineKind): "toolDiffAdded" | "toolDiffRemoved" | "d
 	return "dim";
 }
 
+// [喵喵喵]: 相同文本在不同位置仍是删除和新增；显式 +/- 与行号共同呈现位置变化。
 function markerFor(kind: DiffLineKind): string {
-	return kind === "context" ? " " : "▌";
+	if (kind === "add") return "+";
+	if (kind === "remove") return "-";
+	return " ";
 }
 
 function renderUnifiedLine(
@@ -330,7 +478,7 @@ function renderUnifiedLine(
 	theme: HleditRenderTheme,
 	palette: DiffBackgroundPalette | undefined,
 ): string[] {
-	const plainNumber = line.lineNumber === undefined ? " ".repeat(numberWidth) : String(line.lineNumber).padStart(numberWidth, " ");
+	const plainNumber = String(line.lineNumber).padStart(numberWidth, " ");
 	const prefixWidth = 2 + numberWidth + 3;
 	const contentWidth = Math.max(1, width - prefixWidth);
 	const wrapped = wrapHighlightedLine(highlightLine(line), contentWidth);
@@ -374,7 +522,7 @@ function renderSplitCell(
 	palette: DiffBackgroundPalette | undefined,
 ): string[] {
 	if (!line) return [" ".repeat(width)];
-	const plainNumber = line.lineNumber === undefined ? " ".repeat(numberWidth) : String(line.lineNumber).padStart(numberWidth, " ");
+	const plainNumber = String(line.lineNumber).padStart(numberWidth, " ");
 	const prefixWidth = 2 + numberWidth + 3;
 	const contentWidth = Math.max(1, width - prefixWidth);
 	const wrapped = wrapHighlightedLine(highlightLine(line), contentWidth);
@@ -459,12 +607,16 @@ export function renderStandaloneDiff(
 	expanded: boolean,
 	theme: HleditRenderTheme,
 	summaryStats?: DiffSummaryStats,
+	structuredLines?: readonly StructuredDiffLine[],
 ): HleditRenderComponent | undefined {
 	if (!diff.trim()) return undefined;
 	const parsed = parseGeneratedDiff(diff);
 	if (parsed.entries.length === 0) return undefined;
 	const lineHighlighter = createLineHighlighter(resolveLanguage(path));
-	const splitRows = buildSplitRows(parsed.entries);
+	const structuredRows = structuredLines ? buildStructuredSplitRows(parsed.entries, structuredLines) : undefined;
+	const splitRows = structuredRows ?? buildSplitRows(parsed.entries);
+	const hasStructuredGroups = structuredRows !== undefined;
+	const unifiedEntries = hasStructuredGroups ? structuredUnifiedEntries(splitRows) : parsed.entries;
 	const numberWidth = lineNumberWidth(parsed.entries);
 	let paletteLoaded = false;
 	let palette: DiffBackgroundPalette | undefined;
@@ -495,7 +647,7 @@ export function renderStandaloneDiff(
 			const mode = safeWidth >= SPLIT_MIN_WIDTH ? "split" : "unified";
 			const body = mode === "split"
 				? renderSplit(splitRows, safeWidth, numberWidth, lineHighlighter.highlight, theme, currentPalette())
-				: renderUnified(parsed.entries, safeWidth, numberWidth, lineHighlighter.highlight, theme, currentPalette());
+				: renderUnified(unifiedEntries, safeWidth, numberWidth, lineHighlighter.highlight, theme, currentPalette());
 			const frame = theme.fg("dim", "─".repeat(safeWidth));
 			return storeRenderedLines(safeWidth, [
 				truncateToWidth(diffSummary(parsed, theme, mode, summaryStats), safeWidth, ""),

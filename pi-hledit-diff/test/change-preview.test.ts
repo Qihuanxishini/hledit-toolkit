@@ -27,11 +27,11 @@ test("anchored preview offsets multi-block edits with intra-block minimal diff",
 	assert.deepEqual(preview, {
 		truncated: false,
 		lines: [
-			{ kind: "remove", oldLine: 2, text: "two" },
-			{ kind: "add", newLine: 2, text: "TWO" },
-			{ kind: "add", newLine: 3, text: "TWO2" },
-			{ kind: "add", newLine: 6, text: "N" },
-			{ kind: "remove", oldLine: 5, text: "five" },
+			{ kind: "remove", oldLine: 2, text: "two", changeIndex: 0 },
+			{ kind: "add", newLine: 2, text: "TWO", changeIndex: 0 },
+			{ kind: "add", newLine: 3, text: "TWO2", changeIndex: 0 },
+			{ kind: "add", newLine: 6, text: "N", changeIndex: 1 },
+			{ kind: "remove", oldLine: 5, text: "five", changeIndex: 2 },
 		],
 	});
 });
@@ -44,8 +44,8 @@ test("anchored preview keeps the minimal diff inside a replacement block", () =>
 
 	// 未变化的首尾行不进入 preview：块内 diff 只保留真实变化。
 	assert.deepEqual(preview?.lines, [
-		{ kind: "remove", oldLine: 11, text: "beta" },
-		{ kind: "add", newLine: 11, text: "CHANGED" },
+		{ kind: "remove", oldLine: 11, text: "beta", changeIndex: 0 },
+		{ kind: "add", newLine: 11, text: "CHANGED", changeIndex: 0 },
 	]);
 });
 
@@ -127,4 +127,21 @@ test("changePreviewDiffText renders line-numbered hunks with fold markers", () =
 	);
 	assert.equal(changePreviewDiffText(emptyChangePreview()), "");
 	assert.match(changePreviewDiffText({ lines: [{ kind: "add", newLine: 1, text: "x" }], truncated: true }), /preview truncated/);
+
+
+test("changePreviewDiffText pairs unique identical text and separates unrelated changes", () => {
+	const preview = buildAnchoredChangePreview(
+		[
+			{ operation: "delete_range", start_anchor: "2#AAA", end_anchor: "3#BBB" },
+			{ operation: "insert_after", anchor: "4#CCC", lines: ["same", "added"] },
+		],
+		consumedLines([[2, "same"], [3, "removed"], [4, "kept"]]),
+	);
+
+	assert.ok(preview);
+	assert.equal(
+		changePreviewDiffText(preview),
+		["-2 same", "+3 same", "   ...", "-3 removed", "   ...", "+4 added"].join("\n"),
+	);
+});
 });

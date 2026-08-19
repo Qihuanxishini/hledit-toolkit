@@ -12,8 +12,9 @@ export type ChangePreviewLine = {
 	newLine?: number;
 	text: string;
 	textTruncated?: true;
+	// [喵喵喵]: 仅用于渲染阶段保留一次 apply 中的操作边界，不改变编辑语义。
+	changeIndex?: number;
 };
-
 export type VerifiedChangePreview = {
 	lines: ChangePreviewLine[];
 	truncated: boolean;
@@ -24,7 +25,9 @@ export const MAX_PREVIEW_BYTES = 256 * 1024;
 
 // 与 CLI editDeltas 相同的物理顺序区间：oldStart 为消费区间起点（纯插入是
 // oldEnd === oldStart-1 的空区间），oldLines/newLines 是该块的旧/新文本。
+
 type PreviewBlock = {
+	changeIndex: number;
 	oldStart: number;
 	oldLines: string[];
 	newLines: string[];
@@ -36,11 +39,11 @@ const BLOCK_DIFF_LINE = /^([ +\-])\s*(\d+)\s(.*)$/;
 // 平移回文件坐标。旧块/新块之一为空时直接展开，不经过 diff。
 function appendBlockLines(target: ChangePreviewLine[], block: PreviewBlock, newStart: number): void {
 	if (block.oldLines.length === 0) {
-		block.newLines.forEach((text, index) => target.push({ kind: "add", newLine: newStart + index, text }));
+		block.newLines.forEach((text, index) => target.push({ kind: "add", newLine: newStart + index, text, changeIndex: block.changeIndex }));
 		return;
 	}
 	if (block.newLines.length === 0) {
-		block.oldLines.forEach((text, index) => target.push({ kind: "remove", oldLine: block.oldStart + index, text }));
+		block.oldLines.forEach((text, index) => target.push({ kind: "remove", oldLine: block.oldStart + index, text, changeIndex: block.changeIndex }));
 		return;
 	}
 	const blockDiff = generateDiffString(`${block.oldLines.join("\n")}\n`, `${block.newLines.join("\n")}\n`, 0).diff;
@@ -50,15 +53,16 @@ function appendBlockLines(target: ChangePreviewLine[], block: PreviewBlock, newS
 		const relativeLine = Number.parseInt(match[2]!, 10);
 		if (!Number.isSafeInteger(relativeLine) || relativeLine < 1) continue;
 		if (match[1] === "-") {
-			target.push({ kind: "remove", oldLine: block.oldStart + relativeLine - 1, text: match[3] ?? "" });
+			target.push({ kind: "remove", oldLine: block.oldStart + relativeLine - 1, text: match[3] ?? "", changeIndex: block.changeIndex });
 		} else if (match[1] === "+") {
-			target.push({ kind: "add", newLine: newStart + relativeLine - 1, text: match[3] ?? "" });
+			target.push({ kind: "add", newLine: newStart + relativeLine - 1, text: match[3] ?? "", changeIndex: block.changeIndex });
 		} else {
 			target.push({
 				kind: "context",
 				oldLine: block.oldStart + relativeLine - 1,
 				newLine: newStart + relativeLine - 1,
 				text: match[3] ?? "",
+				changeIndex: block.changeIndex,
 			});
 		}
 	}
@@ -163,11 +167,12 @@ export function buildAnchoredChangePreview(
 	consumedLineText: ReadonlyMap<number, { text: string }>,
 ): VerifiedChangePreview | undefined {
 	const blocks: PreviewBlock[] = [];
-	for (const change of changes) {
+	for (const [changeIndex, change] of changes.entries()) {
 		if (change.operation === "insert_before" || change.operation === "insert_after") {
 			const anchorLine = lineFromAnchor(change.anchor);
 			if (anchorLine === undefined) return undefined;
 			blocks.push({
+				changeIndex,
 				oldStart: change.operation === "insert_before" ? anchorLine : anchorLine + 1,
 				oldLines: [],
 				newLines: change.lines,
@@ -184,6 +189,7 @@ export function buildAnchoredChangePreview(
 			oldLines.push(text);
 		}
 		blocks.push({
+			changeIndex,
 			oldStart: start,
 			oldLines,
 			newLines: change.operation === "replace_range" ? change.lines : [],
@@ -211,8 +217,10 @@ export function parseChangePreview(value: unknown): VerifiedChangePreview | unde
 		if ((line.kind !== "context" && line.kind !== "remove" && line.kind !== "add") || typeof line.text !== "string") return undefined;
 		const oldLine = line.oldLine;
 		const newLine = line.newLine;
+		const changeIndex = line.changeIndex;
 		if (oldLine !== undefined && (typeof oldLine !== "number" || !Number.isSafeInteger(oldLine) || oldLine < 1)) return undefined;
 		if (newLine !== undefined && (typeof newLine !== "number" || !Number.isSafeInteger(newLine) || newLine < 1)) return undefined;
+		if (changeIndex !== undefined && (typeof changeIndex !== "number" || !Number.isSafeInteger(changeIndex) || changeIndex < 0)) return undefined;
 		if (line.kind === "add" && (newLine === undefined || oldLine !== undefined)) return undefined;
 		if (line.kind === "remove" && (oldLine === undefined || newLine !== undefined)) return undefined;
 		if (line.kind === "context" && (oldLine === undefined || newLine === undefined)) return undefined;
@@ -225,27 +233,59 @@ export function parseChangePreview(value: unknown): VerifiedChangePreview | unde
 			...(newLine !== undefined ? { newLine } : {}),
 			text: line.text,
 			...(line.textTruncated === true ? { textTruncated: true as const } : {}),
+			...(changeIndex !== undefined ? { changeIndex } : {}),
 		});
 	}
 	if (!record.truncated && lines.some((line) => line.textTruncated)) return undefined;
 	return { lines, truncated: record.truncated };
 }
 
+function uniqueCrossChangeMatches(lines: ChangePreviewLine[]): Map<ChangePreviewLine, ChangePreviewLine> {
+	const removes = new Map<string, ChangePreviewLine[]>();
+	const adds = new Map<string, ChangePreviewLine[]>();
+	for (const line of lines) {
+		if (line.changeIndex === undefined || line.textTruncated === true) continue;
+		const target = line.kind === "remove" ? removes : line.kind === "add" ? adds : undefined;
+		if (!target) continue;
+		const matching = target.get(line.text) ?? [];
+		matching.push(line);
+		target.set(line.text, matching);
+	}
+
+	const matches = new Map<ChangePreviewLine, ChangePreviewLine>();
+	for (const [text, removed] of removes) {
+		const added = adds.get(text);
+		if (removed?.length !== 1 || added?.length !== 1) continue;
+		const remove = removed[0]!;
+		const add = added[0]!;
+		if (remove.changeIndex === add.changeIndex) continue;
+		matches.set(remove, add);
+		matches.set(add, remove);
+	}
+	return matches;
+}
+
 // TUI 渲染桥：把结构化 preview 转成 renderStandaloneDiff 消费的行号 diff 文本。
-// 不连续块之间插入折叠占位，truncated 时追加提示占位。
+// 不同编辑操作之间不再按数组下标强行配对；唯一相同文本只做视觉配对，剩余项分开显示。
 export function changePreviewDiffText(preview: VerifiedChangePreview): string {
 	const rendered: string[] = [];
+	const matches = uniqueCrossChangeMatches(preview.lines);
 	let previousOld: number | undefined;
 	let previousNew: number | undefined;
 	let previousKind: ChangePreviewLine["kind"] | undefined;
-	for (const line of preview.lines) {
+	let previousChangeIndex: number | undefined;
+
+	const appendLine = (line: ChangePreviewLine, forceAdjacent = false): void => {
 		const oldLine = line.kind === "add" ? undefined : line.oldLine;
 		const newLine = line.kind === "remove" ? undefined : line.newLine;
 		const continuesOld = oldLine !== undefined && previousOld !== undefined && oldLine <= previousOld + 1;
 		const continuesNew = newLine !== undefined && previousNew !== undefined && newLine <= previousNew + 1;
-		// 同一 hunk 内 removes 紧跟 adds，二者行号坐标系不同，不视为断点。
-		const continuesHunk = previousKind === "remove" && line.kind === "add";
-		if (rendered.length > 0 && !continuesOld && !continuesNew && !continuesHunk) {
+		const hasChangeIndex = line.changeIndex !== undefined;
+		const sameChange = hasChangeIndex && previousChangeIndex !== undefined && line.changeIndex === previousChangeIndex;
+		const continuesSameChange = sameChange && (continuesOld || continuesNew || (previousKind === "remove" && line.kind === "add"));
+		const continuesLegacyHunk = !hasChangeIndex && previousChangeIndex === undefined &&
+			(continuesOld || continuesNew || (previousKind === "remove" && line.kind === "add"));
+		if (rendered.length > 0 && !forceAdjacent && !continuesSameChange && !continuesLegacyHunk) {
 			rendered.push("   ...");
 		}
 		const marker = line.kind === "add" ? "+" : line.kind === "remove" ? "-" : " ";
@@ -253,6 +293,39 @@ export function changePreviewDiffText(preview: VerifiedChangePreview): string {
 		if (oldLine !== undefined) previousOld = oldLine;
 		if (newLine !== undefined) previousNew = newLine;
 		previousKind = line.kind;
+		previousChangeIndex = line.changeIndex;
+	};
+
+	for (let index = 0; index < preview.lines.length; index += 1) {
+		const line = preview.lines[index]!;
+		const match = matches.get(line);
+		if (line.kind === "add" && match) continue;
+		if (line.kind !== "remove" || !match) {
+			appendLine(line);
+			continue;
+		}
+
+		// 连续相同文本按“旧块后新块”输出：统一栏更易读，双栏再将两块横向配对。
+		const removedBlock = [line];
+		const addedBlock = [match];
+		while (index + 1 < preview.lines.length) {
+			const nextRemove = preview.lines[index + 1]!;
+			const nextAdd = matches.get(nextRemove);
+			const previousRemove = removedBlock.at(-1)!;
+			const previousAdd = addedBlock.at(-1)!;
+			if (
+				nextRemove.kind !== "remove" || !nextAdd ||
+				nextRemove.changeIndex !== previousRemove.changeIndex ||
+				nextAdd.changeIndex !== previousAdd.changeIndex ||
+				nextRemove.oldLine !== (previousRemove.oldLine ?? 0) + 1 ||
+				nextAdd.newLine !== (previousAdd.newLine ?? 0) + 1
+			) break;
+			removedBlock.push(nextRemove);
+			addedBlock.push(nextAdd);
+			index += 1;
+		}
+		for (const removed of removedBlock) appendLine(removed);
+		for (const added of addedBlock) appendLine(added, true);
 	}
 	if (preview.truncated) {
 		rendered.push("   … preview truncated …");

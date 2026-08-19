@@ -377,7 +377,7 @@ export function renderFileChangesResult(
     const summaryStats: DiffSummaryStats | undefined = changePreview && (changePreview.truncated || !hasPreviewChange) && added !== undefined && deleted !== undefined
         ? { added, removed: deleted, completeHunks: false }
         : undefined;
-    const diffComponent = renderStandaloneDiff(diff, path, options.expanded, theme, summaryStats);
+    const diffComponent = renderStandaloneDiff(diff, path, options.expanded, theme, summaryStats, changePreview?.lines);
     const changeBodyComponent = diffComponent ?? component((width) => {
         if (width === 0) return [];
         return [truncateToWidth(successfulChangeSummary(result, theme), width, "")];

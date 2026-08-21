@@ -138,21 +138,20 @@ func TestCmdSearchRejectsBroadRegexAndSupportsLiteral(t *testing.T) {
 	}
 }
 
-func TestCmdSearchRejectsPatternsThatActuallyMatchEveryLine(t *testing.T) {
+func TestCmdSearchRejectsUniversalPatterns(t *testing.T) {
 	dir := t.TempDir()
 	path := commandTestWriteFile(t, dir, "search.txt", "alpha\nbeta\n")
 	for _, testCase := range []struct {
 		name    string
 		pattern string
-		literal bool
 	}{
-		{name: "start anchor regex", pattern: "^"},
-		{name: "optional regex", pattern: "x?"},
-		{name: "literal on every line", pattern: "a", literal: true},
+		{name: "wildcard", pattern: ".*"},
+		{name: "anchored wildcard", pattern: "^.*$"},
+		{name: "optional wildcard", pattern: ".+"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			output := commandTestCaptureStdout(t, func() {
-				if err := cmdSearch(path, testCase.pattern, 1, 100, testCase.literal, 0, false); err != nil {
+				if err := cmdSearch(path, testCase.pattern, 1, 100, false, 0, false); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -163,17 +162,66 @@ func TestCmdSearchRejectsPatternsThatActuallyMatchEveryLine(t *testing.T) {
 			}
 		})
 	}
+}
 
-	emptyPath := commandTestWriteFile(t, dir, "empty.txt", "")
-	emptyOutput := commandTestCaptureStdout(t, func() {
-		if err := cmdSearch(emptyPath, "^", 1, 100, false, 0, false); err != nil {
+func TestCmdSearchAllowsConstrainedPatterns(t *testing.T) {
+	dir := t.TempDir()
+	path := commandTestWriteFile(t, dir, "search.txt", "alpha\nbeta\n")
+	for _, pattern := range []string{"^", "x?", "."} {
+		t.Run(pattern, func(t *testing.T) {
+			output := commandTestCaptureStdout(t, func() {
+				if err := cmdSearch(path, pattern, 1, 100, false, 0, false); err != nil {
+					t.Fatal(err)
+				}
+			})
+			var result SearchResult
+			commandTestDecode(t, output, &result)
+			if !result.OK || result.TotalMatches != 2 || len(result.Lines) != 2 {
+				t.Fatalf("search result = %#v; want both matching lines", result)
+			}
+		})
+	}
+}
+
+func TestCmdSearchAllowsMatchesAcrossEveryCurrentLine(t *testing.T) {
+	dir := t.TempDir()
+	path := commandTestWriteFile(t, dir, "search.txt", "alpha\nalpha\n")
+
+	for _, testCase := range []struct {
+		name    string
+		pattern string
+		literal bool
+	}{
+		{name: "literal", pattern: "alpha", literal: true},
+		{name: "anchored regex", pattern: "^alpha$"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			output := commandTestCaptureStdout(t, func() {
+				if err := cmdSearch(path, testCase.pattern, 1, 100, testCase.literal, 0, false); err != nil {
+					t.Fatal(err)
+				}
+			})
+			var result SearchResult
+			commandTestDecode(t, output, &result)
+			if !result.OK || result.TotalMatches != 2 || len(result.Lines) != 2 {
+				t.Fatalf("search result = %#v; want both matching lines", result)
+			}
+		})
+	}
+}
+
+func TestCmdSearchIgnoreCaseUsesUnicodeCaseFolding(t *testing.T) {
+	dir := t.TempDir()
+	path := commandTestWriteFile(t, dir, "search.txt", "ς\n")
+	output := commandTestCaptureStdout(t, func() {
+		if err := cmdSearch(path, "Σ", 1, 100, true, 0, true); err != nil {
 			t.Fatal(err)
 		}
 	})
-	var emptyResult SearchResult
-	commandTestDecode(t, emptyOutput, &emptyResult)
-	if !emptyResult.OK || emptyResult.TotalLines != 0 || emptyResult.TotalMatches != 0 || len(emptyResult.Lines) != 0 {
-		t.Fatalf("empty search = %#v", emptyResult)
+	var result SearchResult
+	commandTestDecode(t, output, &result)
+	if !result.OK || result.TotalMatches != 1 || len(result.Lines) != 1 {
+		t.Fatalf("unicode literal search = %#v; want one match", result)
 	}
 }
 

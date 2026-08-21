@@ -3,7 +3,7 @@ import test from "node:test";
 import { Value } from "typebox/value";
 
 import { decodeFileChangeInput, prepareReadAnchorsArguments, prepareSearchAnchorsArguments } from "../src/prepare-arguments.ts";
-import { HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, MAX_REPLACEMENT_LINE_COUNT } from "../src/schema.ts";
+import { HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, MAX_REPLACEMENT_LINE_COUNT, MAX_REPLACEMENT_TEXT_BYTES } from "../src/schema.ts";
 
 test("read and search argument preparation clamp only their own fields", () => {
 	const read = prepareReadAnchorsArguments({ path: "src/a.ts", offset: 0, limit: 5000 });
@@ -45,7 +45,19 @@ test("decodeFileChangeInput enforces aggregate UTF-8 and produced-line limits", 
     path: "src/a.ts",
     changes: [{ operation: "insert_after", anchor: "1#BHJ", lines: "🙂".repeat(300_000) }],
   });
-  assert.match("error" in oversizedBytes ? oversizedBytes.error : "", /1 MiB UTF-8/);
+  assert.match("error" in oversizedBytes ? oversizedBytes.error : "", /1 MiB canonical UTF-8/);
+
+  const canonicalAtLimit = decodeFileChangeInput({
+    path: "src/a.ts",
+    changes: [{ operation: "insert_after", anchor: "1#BHJ", lines: "a".repeat(MAX_REPLACEMENT_TEXT_BYTES) + "\n" }],
+  });
+  assert.ok("params" in canonicalAtLimit, JSON.stringify(canonicalAtLimit));
+
+  const canonicalOverLimit = decodeFileChangeInput({
+    path: "src/a.ts",
+    changes: [{ operation: "insert_after", anchor: "1#BHJ", lines: "a".repeat(MAX_REPLACEMENT_TEXT_BYTES + 1) + "\n" }],
+  });
+  assert.match("error" in canonicalOverLimit ? canonicalOverLimit.error : "", /1 MiB canonical UTF-8/);
 
   const oversizedLines = decodeFileChangeInput({
     path: "src/a.ts",

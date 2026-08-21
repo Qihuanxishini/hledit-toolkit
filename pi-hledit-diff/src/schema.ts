@@ -12,9 +12,7 @@ export const MAX_REPLACEMENT_LINE_COUNT = 20_000;
 const PATH_SCHEMA = Type.String({ minLength: 1, description: "Text file path." });
 const ANCHOR_SCHEMA = Type.String({ pattern: ANCHOR_PATTERN });
 const REPLACEMENT_TEXT_SCHEMA = Type.String({
-	maxLength: MAX_REPLACEMENT_TEXT_BYTES,
-	// 完整换行语义只在 apply 的 promptGuidelines 里定义一次；这里保留最短就近提示，
-	// 因为该 description 会在 3 个 union 分支各内联一次，直接抬高每次请求的协议开销。
+	// [喵喵喵]: 单项不设字符上限；UTF-8 字节数与 batch 聚合限制由 execute 边界精确校验。
 	description: "New text; \\n separates lines.",
 });
 

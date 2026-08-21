@@ -9,7 +9,12 @@ import (
 	"os"
 )
 
-const maxBatchRequestBytes = 8 * 1024 * 1024
+const (
+	maxBatchRequestBytes     = 8 * 1024 * 1024
+	maxBatchEditCount        = 200
+	maxBatchReplacementBytes = 1024 * 1024
+	maxBatchOutputLines      = 20_000
+)
 
 // BatchEditOp 是 batch wire v3 中的一项编辑；私有 presence 字段区分缺失与显式零值。
 type BatchEditOp struct {
@@ -203,6 +208,33 @@ func (request *BatchEditRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+func validateBatchRequestCapacity(request BatchEditRequest) error {
+	if len(request.Edits) > maxBatchEditCount {
+		return fmt.Errorf("batch request contains %d edits; maximum is %d", len(request.Edits), maxBatchEditCount)
+	}
+	replacementBytes := 0
+	outputLines := 0
+	for _, edit := range request.Edits {
+		if !edit.linesPresent {
+			continue
+		}
+		for index, line := range edit.Lines {
+			replacementBytes += len(line)
+			if index > 0 {
+				replacementBytes++
+			}
+			if replacementBytes > maxBatchReplacementBytes {
+				return fmt.Errorf("batch replacement text exceeds %d-byte canonical UTF-8 limit", maxBatchReplacementBytes)
+			}
+		}
+		outputLines += len(edit.Lines)
+		if outputLines > maxBatchOutputLines {
+			return fmt.Errorf("batch replacement output exceeds %d lines", maxBatchOutputLines)
+		}
+	}
+	return nil
+}
+
 // parseBatchRequest 只接受一个字段闭合的 JSON 对象，协议拼写错误不得降级为其他编辑。
 func parseBatchRequest() (BatchEditRequest, error) {
 	var request BatchEditRequest
@@ -224,6 +256,9 @@ func parseBatchRequest() (BatchEditRequest, error) {
 		if err == nil {
 			return request, errors.New("batch request must contain exactly one JSON object")
 		}
+		return request, err
+	}
+	if err := validateBatchRequestCapacity(request); err != nil {
 		return request, err
 	}
 	return request, nil

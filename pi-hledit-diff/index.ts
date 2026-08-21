@@ -42,8 +42,8 @@ import { buildReadArgs, MAX_READ_LIMIT, normalizeReadRequest, normalizeToolPath,
 import { runReadAnchorsTransaction, runSearchAnchorsTransaction } from "./src/read-transaction.ts";
 import {
 	applyFileChangesResult,
-	producedLineRangesFromEditDeltas,
 	fileChangeCheckFailure,
+	producedLineRangesFromEditDeltas,
 	shouldMarkHleditResultAsError,
 	parseEditDeltas,
 	readAnchorsResult,
@@ -307,14 +307,13 @@ async function runFileChangesWithDiff(
 		const request = buildFileChangeRequest(effectiveParams, proofSelection.proof);
 		const singleLineRangeExpansionIssue = findSingleLineRangeExpansionIssue(effectiveParams, proofSelection.consumedLines);
 
-		const checkRequest = buildFileChangeCheckRequest(effectiveParams, proofSelection.proof);
-		const checkRun = await runHledit(checkRequest.args, checkRequest.stdin, ctx.cwd, signal);
-		const checkFailure = fileChangeCheckFailure(checkRun, applyContext);
-		if (checkFailure) {
-			return attachEvidencePath(checkFailure, normalizedPath, evidencePath);
-		}
-
 		if (singleLineRangeExpansionIssue) {
+			const checkRequest = buildFileChangeCheckRequest(effectiveParams, proofSelection.proof);
+			const checkRun = await runHledit(checkRequest.args, checkRequest.stdin, ctx.cwd, signal);
+			const checkFailure = fileChangeCheckFailure(checkRun, applyContext);
+			if (checkFailure) {
+				return attachEvidencePath(checkFailure, normalizedPath, evidencePath);
+			}
 			const verifiedIssue = { ...singleLineRangeExpansionIssue, anchorsVerified: true as const };
 			const nearbyDeleteRange = verifiedIssue.nearbyDeleteRange;
 			return attachEvidencePath(

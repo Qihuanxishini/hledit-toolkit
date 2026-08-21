@@ -137,7 +137,7 @@ Batch wire v3 has one canonical shape:
 - `insert` requires non-empty `lines`; `after` is permitted only on `insert`, where only `true` has meaning.
 - `replace` and `delete` accept optional inclusive `end_pos`; without it they consume only `pos`.
 - Each anchor is exactly `LN#HHH`; annotations, whitespace, aliases, and older hash forms are rejected.
-- The decoder rejects unknown fields, trailing JSON values, non-string `lines`/proof anchors, and requests larger than 8 MiB.
+- The decoder rejects unknown fields, trailing JSON values, non-string `lines`/proof anchors, requests larger than 8 MiB, batches above 200 edits, more than 1 MiB of canonical replacement UTF-8, and more than 20,000 replacement output lines.
 
 `proof` is optional for standalone use. When supplied, its raw-byte revision must match the loaded file and its unique, strictly ascending anchors must cover each consumed `replace`/`delete` line and every insert attachment anchor. Missing coverage returns `insufficient_read_proof`; a mismatch returns `stale`.
 
@@ -176,7 +176,7 @@ The hash is the low 18 bits of FNV-1a-32 encoded with URL-safe Base64. Its input
 
 Raw-byte revisions use `sha256:<64 lowercase hex digits>` over the unchanged source bytes, including BOM, line-ending style, and trailing newline. Revisions are concurrency preconditions; they do not replace per-line anchor validation.
 
-A content-changing batch resolves symlink targets, rejects non-regular and multi-hard-link files, writes a synced temporary sibling, rechecks the raw-byte revision immediately before replacement, then atomically replaces the target. A detectable external change returns `source_changed_before_commit` without overwriting it. Untouched terminators, BOM state, and trailing-newline state are retained; mixed line endings are not globally normalized. A validated no-op reports `contentChanged:false` without touching the file.
+A content-changing batch resolves symlink targets, rejects non-regular and multi-hard-link files, writes a synced temporary sibling, rechecks the raw-byte revision immediately before replacement, then atomically replaces the target. A detectable external change returns `source_changed_before_commit` without overwriting it. Untouched terminators, BOM state for non-empty results, and trailing-newline state are retained; deleting all logical lines produces a truly empty file, and mixed line endings are not globally normalized. A validated no-op reports `contentChanged:false` without touching the file.
 
 ## 6. Source layout
 

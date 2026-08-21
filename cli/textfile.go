@@ -61,11 +61,7 @@ func loadTextFile(path string) (LoadedTextFile, error) {
 }
 
 func parseTextFile(content []byte) (LoadedTextFile, error) {
-	searchLimit := len(content)
-	if searchLimit > 8192 {
-		searchLimit = 8192
-	}
-	if bytes.IndexByte(content[:searchLimit], 0x00) >= 0 {
+	if bytes.IndexByte(content, 0x00) >= 0 {
 		return LoadedTextFile{}, errBinaryFile
 	}
 	if !utf8.Valid(content) {
@@ -121,14 +117,15 @@ func splitTextFile(text string) ([]string, []LineEnding) {
 // 不得再做 string/[]byte 往返转换。调用方保证 len(lines) == len(endings)。
 func (f LoadedTextFile) EncodeContent(lines []string, endings []LineEnding) []byte {
 	size := 0
-	if f.HasUTF8BOM {
+	preserveBOM := f.HasUTF8BOM && len(lines) > 0
+	if preserveBOM {
 		size += len(utf8BOM)
 	}
 	for i, line := range lines {
 		size += len(line) + len(endings[i].bytes())
 	}
 	encoded := make([]byte, 0, size)
-	if f.HasUTF8BOM {
+	if preserveBOM {
 		encoded = append(encoded, utf8BOM...)
 	}
 	for i, line := range lines {

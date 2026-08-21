@@ -17,6 +17,14 @@ func TestParseTextFileRejectsInvalidUTF8(t *testing.T) {
 	}
 }
 
+func TestParseTextFileRejectsNULBeyondFormerProbeWindow(t *testing.T) {
+	content := append(bytes.Repeat([]byte{'a'}, 9000), 0x00)
+	_, err := parseTextFile(content)
+	if !errors.Is(err, errBinaryFile) {
+		t.Fatalf("parseTextFile error = %v; want errBinaryFile", err)
+	}
+}
+
 func TestReadFileLinesReportsInvalidUTF8(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "invalid.txt")
@@ -55,6 +63,16 @@ func TestLoadedTextFilePreservesUTF8BOM(t *testing.T) {
 	}
 }
 
+func TestLoadedTextFileDropsBOMWhenAllLogicalLinesAreDeleted(t *testing.T) {
+	file, err := parseTextFile(append([]byte(utf8BOM), []byte("only\n")...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := file.EncodeContent(nil, nil); len(got) != 0 {
+		t.Fatalf("EncodeContent empty bytes = %v; want truly empty file", got)
+	}
+}
+
 func TestBatchEditPreservesUTF8BOM(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "bom.txt")
@@ -73,6 +91,26 @@ func TestBatchEditPreservesUTF8BOM(t *testing.T) {
 	want := append([]byte(utf8BOM), []byte("beta\n")...)
 	if !bytes.Equal(content, want) {
 		t.Fatalf("content = %v; want %v", content, want)
+	}
+}
+
+func TestBatchEditDropsUTF8BOMWhenAllLogicalLinesDeleted(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "bom-empty.txt")
+	original := append([]byte(utf8BOM), []byte("only\n")...)
+	if err := os.WriteFile(target, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	batchTestRun(t, target, BatchEditRequest{Edits: []BatchEditOp{{
+		OP: "delete", Pos: formatTag(1, "only"),
+	}}}, false)
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(content) != 0 {
+		t.Fatalf("content = %v; want truly empty file", content)
 	}
 }
 

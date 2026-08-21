@@ -142,8 +142,7 @@ pi-hledit-diff/
 - batch stdin request 总大小限 8 MiB；`lines` 与 `proof.anchors` 的每个元素必须是 JSON 字符串，`null` 等类型会被拒绝；
 - 公开 schema 要求 `proof_id`，但不暴露 raw revision 或 CLI `proof`；插件仅接受当前 canonical path 上最近有效 read generation 的 id，再从 branch evidence 注入每个消费行或 insert 依附行的完整 hidden proof；
 - proof id 无效或跨路径使用时不启动 CLI；proof 行覆盖不完整时，apply 在同一 canonical file queue 内自动分页执行定向只读，直到完整覆盖目标缺口或遇到终止性错误。成功恢复通过 `recoveredReads`、兼容字段 `recoveredRead` 与新的 `proof_id` 返回当前证据，调用方审阅后显式重提 batch。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；插件不自动重放修改；
-- 每个通过插件的 apply 都先执行一次 `batch --check`，验证当前 revision、hidden proof、全部锚点与操作冲突；check 失败确认零写入；
-- check 成功后才执行一次非 check `batch`，CLI 在原子替换前再次复检 raw-byte revision，插件本身不写目标文件。
+- 仅对命中 `single_line_range_expansion` 启发式的请求先执行一次 `batch --check`，用于确认当前 revision、hidden proof、全部锚点与操作冲突后再返回字段级指导；普通 apply 直接执行非 check `batch`，CLI 在同一路径完整验证并于原子替换前复检 raw-byte revision。
 
 内部请求：
 
@@ -205,7 +204,7 @@ Batch wire v3 是唯一 canonical 形状：`replace` 必须带 `lines`（可为�
 
 插件验证 revision、统计、warning、`updatedAnchors` 连续窗口和每项 `editDeltas`；delta 条数、区间、物理顺序、总和必须与公开 change 一一对应。malformed 或 request-inconsistent success 属于 `outcome_unknown`，不得用于 evidence。`contentChanged:false` 不触碰文件，但仍合并同 revision anchor window。
 
-CLI 写入逐行保留未修改 terminator、BOM 和 trailing-newline 状态；拒绝 multi-hardlink target，保留 symlink entry，并在 temp sync 后、atomic replace 前复检原始字节 revision。recheck 与 rename 之间仍有极短外部竞态，不宣称线性化 CAS。
+CLI 写入逐行保留未修改 terminator、非空结果的 BOM 和 trailing-newline 状态；删除全部逻辑行会生成真正空文件。CLI 拒绝 multi-hardlink target，保留 symlink entry，并在 temp sync 后、atomic replace 前复检原始字节 revision。recheck 与 rename 之间仍有极短外部竞态，不宣称线性化 CAS。
 
 ## 失败与子进程语义
 

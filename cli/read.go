@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"strings"
+	"regexp/syntax"
 	"unicode/utf8"
 )
 
@@ -50,46 +50,120 @@ func readJSONLineBudget(revision string, totalLines, maxBytes int) int {
 
 const jsonTextTruncationSuffix = "… [truncated]"
 
-// filterLines returns 1-indexed line numbers of lines matching the pattern.
-// If pattern is empty, nil is returned (meaning no filtering). The default
-// matcher is Go's RE2 implementation; literal mode is explicit so callers can
-// retain exact substring semantics when needed.
+// [喵喵喵]: matcher 同时持有编译结果和静态宽匹配分类，策略不再依赖当前文件是否恰好全命中。
+type searchMatcher struct {
+	regexp       *regexp.Regexp
+	broadPattern bool
+}
+
+func compileSearchMatcher(pattern string, literal, ignoreCase bool) (searchMatcher, error) {
+	expression := pattern
+	if literal {
+		expression = regexp.QuoteMeta(pattern)
+	}
+	if ignoreCase {
+		expression = "(?i)" + expression
+	}
+	compiled, err := regexp.Compile(expression)
+	if err != nil {
+		return searchMatcher{}, err
+	}
+	parsed, err := syntax.Parse(expression, syntax.Perl)
+	if err != nil {
+		return searchMatcher{}, err
+	}
+	return searchMatcher{regexp: compiled, broadPattern: regexpHasBroadWildcard(parsed.Simplify())}, nil
+}
+
+// [喵喵喵]: 只拦截带无界 dot 重复的无约束 wildcard；^、x? 与单个 . 仍是合法搜索。
+func regexpHasBroadWildcard(expression *syntax.Regexp) bool {
+	switch expression.Op {
+	case syntax.OpCapture:
+		return regexpHasBroadWildcard(expression.Sub[0])
+	case syntax.OpStar, syntax.OpPlus:
+		return regexpIsAnyChar(expression.Sub[0]) || regexpHasBroadWildcard(expression.Sub[0])
+	case syntax.OpRepeat:
+		return expression.Min <= 1 && expression.Max == -1 && (regexpIsAnyChar(expression.Sub[0]) || regexpHasBroadWildcard(expression.Sub[0]))
+	case syntax.OpConcat:
+		foundWildcard := false
+		for _, subexpression := range expression.Sub {
+			if regexpHasBroadWildcard(subexpression) {
+				foundWildcard = true
+				continue
+			}
+			if !regexpCanBeSkipped(subexpression) {
+				return false
+			}
+		}
+		return foundWildcard
+	case syntax.OpAlternate:
+		for _, subexpression := range expression.Sub {
+			if regexpHasBroadWildcard(subexpression) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func regexpIsAnyChar(expression *syntax.Regexp) bool {
+	if expression.Op == syntax.OpCapture {
+		return regexpIsAnyChar(expression.Sub[0])
+	}
+	return expression.Op == syntax.OpAnyChar || expression.Op == syntax.OpAnyCharNotNL
+}
+
+func regexpCanBeSkipped(expression *syntax.Regexp) bool {
+	switch expression.Op {
+	case syntax.OpEmptyMatch, syntax.OpBeginLine, syntax.OpEndLine, syntax.OpBeginText, syntax.OpEndText:
+		return true
+	case syntax.OpCapture:
+		return regexpCanBeSkipped(expression.Sub[0])
+	case syntax.OpStar, syntax.OpQuest:
+		return true
+	case syntax.OpPlus:
+		return regexpCanBeSkipped(expression.Sub[0])
+	case syntax.OpRepeat:
+		return expression.Min == 0 || regexpCanBeSkipped(expression.Sub[0])
+	case syntax.OpConcat:
+		for _, subexpression := range expression.Sub {
+			if !regexpCanBeSkipped(subexpression) {
+				return false
+			}
+		}
+		return true
+	case syntax.OpAlternate:
+		for _, subexpression := range expression.Sub {
+			if regexpCanBeSkipped(subexpression) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// filterLinesWithMode retains the small internal helper used by protocol tests.
+// Production search uses searchMatcher so it can also enforce broad-pattern policy.
 func filterLinesWithMode(lines []string, pattern string, literal, ignoreCase bool) ([]int, error) {
 	if pattern == "" {
 		return nil, nil
 	}
-
-	var matcher *regexp.Regexp
-	if !literal {
-		expression := pattern
-		if ignoreCase {
-			expression = "(?i)" + expression
-		}
-		compiled, err := regexp.Compile(expression)
-		if err != nil {
-			return nil, err
-		}
-		matcher = compiled
-	} else if ignoreCase {
-		pattern = strings.ToLower(pattern)
+	matcher, err := compileSearchMatcher(pattern, literal, ignoreCase)
+	if err != nil {
+		return nil, err
 	}
+	return filterLines(lines, matcher.regexp), nil
+}
 
+// filterLines returns 1-indexed line numbers of lines matching the compiled pattern.
+func filterLines(lines []string, matcher *regexp.Regexp) []int {
 	matches := make([]int, 0)
-	for i, line := range lines {
-		matched := false
-		if literal {
-			if ignoreCase {
-				line = strings.ToLower(line)
-			}
-			matched = strings.Contains(line, pattern)
-		} else {
-			matched = matcher.MatchString(line)
-		}
-		if matched {
-			matches = append(matches, i+1) // 1-indexed
+	for index, line := range lines {
+		if matcher.MatchString(line) {
+			matches = append(matches, index+1)
 		}
 	}
-	return matches, nil
+	return matches
 }
 
 // applyContext expands matchIdxs by including up to contextN lines before and
@@ -322,13 +396,14 @@ func cmdSearch(path, pattern string, offset, limit int, literal bool, contextN i
 		limit = 100
 	}
 
-	matches, matchErr := filterLinesWithMode(file.Lines, pattern, literal, ignoreCase)
+	matcher, matchErr := compileSearchMatcher(pattern, literal, ignoreCase)
 	if matchErr != nil {
 		return emitError("pattern", fmt.Sprintf("invalid search pattern: %v", matchErr))
 	}
-	if len(file.Lines) > 0 && len(matches) == len(file.Lines) {
-		return emitError("broad_pattern", "search pattern matches every source line; use a contiguous range read instead")
+	if matcher.broadPattern {
+		return emitError("broad_pattern", "search pattern is an unconstrained wildcard; use a contiguous range read instead")
 	}
+	matches := filterLines(file.Lines, matcher.regexp)
 	contextLines := applyContext(file.Lines, matches, contextN)
 	jsonLineBytes := searchJSONLineBudget(file.Revision, len(file.Lines), readOutputMaxBytes)
 	readLines, lineTruncated, nextOffset := collectMatchLines(file.Lines, contextLines, offset, limit, jsonLineBytes)

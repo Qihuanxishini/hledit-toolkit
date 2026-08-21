@@ -82,13 +82,16 @@ export function decodeFileChangeInput(input: FileChangeDecodeInput): FileChangeI
 			changes.push(change);
 			continue;
 		}
-		replacementBytes += Buffer.byteLength(change.lines, "utf8");
-		if (replacementBytes > MAX_REPLACEMENT_TEXT_BYTES) {
-			return { error: "Replacement text exceeds the 1 MiB UTF-8 limit." };
-		}
 		const lines = change.lines.split(/\r\n|\r|\n/);
 		// 一个尾换行只终止末行；空字符串仍代表一行空文本。
 		if (lines.length > 1 && lines.at(-1) === "") lines.pop();
+		for (const [index, line] of lines.entries()) {
+			replacementBytes += Buffer.byteLength(line, "utf8");
+			if (index > 0) replacementBytes++;
+		}
+		if (replacementBytes > MAX_REPLACEMENT_TEXT_BYTES) {
+			return { error: "Replacement text exceeds the 1 MiB canonical UTF-8 limit." };
+		}
 		producedLines += lines.length;
 		if (producedLines > MAX_REPLACEMENT_LINE_COUNT) {
 			return { error: `Replacement output exceeds ${MAX_REPLACEMENT_LINE_COUNT} lines.` };

@@ -217,6 +217,43 @@ func TestCmdBatchRejectsOversizedRequest(t *testing.T) {
 	}
 }
 
+func TestCmdBatchRejectsCapacityOverflow(t *testing.T) {
+	tests := []struct {
+		name    string
+		request BatchEditRequest
+		message string
+	}{
+		{
+			name:    "edit count",
+			request: BatchEditRequest{Edits: make([]BatchEditOp, maxBatchEditCount+1)},
+			message: "maximum is 200",
+		},
+		{
+			name: "replacement bytes",
+			request: BatchEditRequest{Edits: []BatchEditOp{{
+				OP: "replace", Pos: "1#abc", Lines: []string{strings.Repeat("界", maxBatchReplacementBytes/3+1)}, linesPresent: true,
+			}}},
+			message: "canonical UTF-8 limit",
+		},
+		{
+			name: "output lines",
+			request: BatchEditRequest{Edits: []BatchEditOp{{
+				OP: "replace", Pos: "1#abc", Lines: make([]string, maxBatchOutputLines+1), linesPresent: true,
+			}}},
+			message: "exceeds 20000 lines",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := validateBatchRequestCapacity(testCase.request)
+			if err == nil || !strings.Contains(err.Error(), testCase.message) {
+				t.Fatalf("validateBatchRequestCapacity error = %v; want message containing %q", err, testCase.message)
+			}
+		})
+	}
+}
+
 func TestCmdBatch(t *testing.T) {
 	t.Run("replace range uses end_pos", func(t *testing.T) {
 		dir := t.TempDir()

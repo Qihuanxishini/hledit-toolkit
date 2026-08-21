@@ -66,7 +66,7 @@ pi-hledit-diff/
 
 三个工具都声明 `constrainedSampling: { type: "json_schema", strict: "prefer" }`。CLI 健康时，active set 始终保留这三个工具、移除内置 `edit` 并保留无关工具；`session_tree` 和 `/reload` 后重新同步同一策略。CLI 不可用时恢复内置 `edit`。不存在 `/tools` 假设、动态 evidence 可见性、Plan Mode 联动或内置 `edit` 名称 override。
 
-当前公开协议按 `JSON.stringify(parameters) + description + promptGuidelines` 计量，回归上限为 4,200 characters；精确值由测试输出和最终验证记录，不在文档中固化。
+当前公开协议按 `JSON.stringify(parameters) + description + promptGuidelines` 计量，回归上限为 4,600 characters；精确值由测试输出和最终验证记录，不在文档中固化。
 
 ### `hledit_read_anchors`
 

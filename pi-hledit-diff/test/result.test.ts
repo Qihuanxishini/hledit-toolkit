@@ -548,7 +548,7 @@ test("applyFileChangesResult explains that directory paths are not editable file
 		exitCode: 0,
 	});
 
-	assert.equal(result.content[0]?.text, "The provided path is a directory, but hledit edits one concrete text file at a time.\nNo content was written.");
+	assert.equal(result.content[0]?.text, "The atomic batch was rejected; no content was written.\nReason: The provided path is a directory, but hledit edits one concrete text file at a time.\nError code: directory");
 	assert.deepEqual(result.details.error, {
 		code: "directory",
 		message: "The provided path is a directory, but hledit edits one concrete text file at a time.",

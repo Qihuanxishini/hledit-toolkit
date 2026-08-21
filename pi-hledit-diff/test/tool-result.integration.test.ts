@@ -93,7 +93,7 @@ test("registered tool metadata stays concise and names each flattened guideline"
 	assert.match(readGuidelines, /cover every source line[\s\S]*sparse endpoints are not proof/);
 	assert.match(readGuidelines, /Copy only LN#HASH tokens[\s\S]*hidden proof carries interior lines/);
 	assert.match(searchTool.description, /literal text[\s\S]*RE2 matches/);
-	assert.match(searchGuidelines, /not to review broad contiguous ranges[\s\S]*hledit_read_anchors/);
+	assert.match(searchGuidelines, /locate matching lines[\s\S]*not to inspect broad contiguous text[\s\S]*hledit_read_anchors/);
 	assert.match(searchGuidelines, /Zero-match or truncated results do not prove unseen lines/);
 	assert.match(applyTool.description, /boundary anchors[\s\S]*complete read proof/);
 	assert.match(applyGuidelines, /proof_id from the latest successful hledit_read_anchors or hledit_search_anchors result for that path/);
@@ -104,6 +104,9 @@ test("registered tool metadata stays concise and names each flattened guideline"
 	assert.match(applySchema, /latest successful read\/search result for this path/);
 	assert.match(applySchema, /New text; \\\\n separates lines\./i);
 
+	assert.match(searchTool.description, /one text file[\s\S]*not a directory/i);
+	assert.match(searchGuidelines, /one file[\s\S]*never a directory[\s\S]*enumerate files first[\s\S]*project-wide search/);
+	assert.match(JSON.stringify(searchTool.parameters), /One text file path[\s\S]*not a directory/);
 	const protocolCharacters = [readTool, searchTool, applyTool].reduce(
 		(total, tool) => total
 			+ JSON.stringify(tool.parameters).length
@@ -111,7 +114,7 @@ test("registered tool metadata stays concise and names each flattened guideline"
 			+ (tool.promptGuidelines ?? []).join("").length,
 		0,
 	);
-	assert.ok(protocolCharacters <= 4200, `registered hledit protocol uses ${protocolCharacters} characters; expected at most 4200`);
+	assert.ok(protocolCharacters <= 4600, `registered hledit protocol uses ${protocolCharacters} characters; expected at most 4600`);
 });
 
 

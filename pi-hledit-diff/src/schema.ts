@@ -10,6 +10,7 @@ export const MAX_REPLACEMENT_TEXT_BYTES = 1024 * 1024;
 export const MAX_REPLACEMENT_LINE_COUNT = 20_000;
 
 const PATH_SCHEMA = Type.String({ minLength: 1, description: "Text file path." });
+const SEARCH_PATH_SCHEMA = Type.String({ minLength: 1, description: "One text file path; not a directory." });
 const ANCHOR_SCHEMA = Type.String({ pattern: ANCHOR_PATTERN });
 const REPLACEMENT_TEXT_SCHEMA = Type.String({
 	// [喵喵喵]: 单项不设字符上限；UTF-8 字节数与 batch 聚合限制由 execute 边界精确校验。
@@ -64,7 +65,7 @@ export const HLEDIT_READ_ANCHORS_PARAMS_SCHEMA = Type.Object(
 
 export const HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA = Type.Object(
 	{
-		path: PATH_SCHEMA,
+		path: SEARCH_PATH_SCHEMA,
 		pattern: Type.String({ minLength: 1, description: "RE2 regular expression; use literal:true for exact text." }),
 		offset: Type.Optional(Type.Integer({ minimum: 1, description: "First source line to search (1-based)." })),
 		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_SEARCH_LIMIT, description: `Maximum matching/context lines (${MAX_SEARCH_LIMIT} max).` })),

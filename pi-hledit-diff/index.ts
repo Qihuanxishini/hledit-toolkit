@@ -415,9 +415,9 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 	pi.registerTool(({
 		name: HLEDIT_SEARCH_ANCHORS_TOOL,
 		label: "Search Anchors",
-		description: "Locate literal text or RE2 matches and return anchored source lines.",
+		description: "Search one text file (not a directory) for literal text or RE2 matches.",
 		promptGuidelines: [
-			"Use hledit_search_anchors to locate literal text or RE2 matches, not to review broad contiguous ranges; use hledit_read_anchors for those. Zero-match or truncated results do not prove unseen lines.",
+			"Use hledit_search_anchors on one file, never a directory; enumerate files first for project-wide search. Use it to locate matching lines, not to inspect broad contiguous text; use hledit_read_anchors for that. Zero-match or truncated results do not prove unseen lines.",
 		],
 		parameters: HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },

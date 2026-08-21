@@ -1,113 +1,18 @@
 # hledit
 
-`hledit` is a tiny hash-anchored line editor for AI coding agents.
+`hledit` is a small hash-anchored editor for coding agents. It has one structured protocol: read contiguous source with `read-range`, find locations with `search`, and submit all changes for a file in one atomic `batch`.
 
-Instead of asking an agent to reproduce old text exactly, `hledit read` annotates each line with a stable anchor:
+Every source row contains a stable `LN#HHH` anchor. A batch validates its anchors and optional snapshot proof against one original file state before it can write. Stale or incomplete requests are rejected without partial changes.
 
-```text
-5#aB3:func main() {
-6#xY7:    fmt.Println("hello")
-7#Qw_:}
-```
-
-Write commands reference anchors such as `6#xY7`. Before changing the file, `hledit` recomputes the hash at that line. If the file changed since it was read, the anchor is rejected and no write happens.
-
-## Why
-
-Traditional text-matching edits fail silently when a file shifts between read and write. `hledit` fails loud on stale anchors so agents patch the right line or stop.
-
-Built for AI coding agents: small local tools, typed inputs, deterministic text output, bounded context, and explicit failure modes.
-
-## Demo
-
-![hledit stale-edit demo](docs/demo/hledit.gif)
-
-Recorded terminal demo source: [`docs/demo/hledit.cast`](docs/demo/hledit.cast)
-
-Play locally:
-
-```bash
-asciinema play docs/demo/hledit.cast
-```
-
-The demo shows:
-
-- `hledit read` producing `LN#ANCHOR` references
-- another actor changing the target line
-- stale edit rejection with `{"ok":false,"error":"stale"}`
-- re-read with fresh anchor
-- successful edit after anchor refresh
-
-## Install
-
-`hledit` is a standalone CLI. You do not need Pi or the bundled extension to use it.
-
-## Requirements
-
-- Go 1.21+
-- A POSIX-like shell for the examples
-- Pi is optional; only needed for the extension in [`../pi-hledit-diff`](../pi-hledit-diff/)
-
-### Option 1: install with Go
+## Install and develop
 
 ```bash
 go install github.com/Qihuanxishini/hledit-toolkit/cli@latest
-```
-
-Go installs the binary into `$GOBIN`, or `$GOPATH/bin` when `GOBIN` is unset. For a default Go setup, that is usually:
-
-```text
-$HOME/go/bin/hledit
-```
-
-Recommended: add Go's bin directory to your shell `PATH`:
-
-```bash
-export PATH="$HOME/go/bin:$PATH"
-hledit --version
-```
-
-To make that persistent, add it to your shell startup file, for example:
-
-```bash
-# zsh (macOS default)
-echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.zshrc
-
-# bash
-echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.bashrc
-```
-
-Optional: if an integration specifically looks in `~/.local/bin`, create a compatibility symlink. The `mkdir -p` line is only there to create the directory if it does not already exist:
-
-```bash
-mkdir -p "$HOME/.local/bin"
-ln -sf "$HOME/go/bin/hledit" "$HOME/.local/bin/hledit"
-```
-
-You do not need the symlink for normal CLI use when `$HOME/go/bin` is on `PATH`.
-
-### Option 2: build from source
-
-For local development, build into `dist/` and symlink into `~/.local/bin`:
-
-```bash
-make install
-```
-
-Override the target bin directory if needed:
-
-```bash
-make install LOCAL_BIN="$HOME/bin"
-```
-
-Build without installing:
-
-```bash
+# or, from this directory:
 make build
-# writes dist/hledit
 ```
 
-## Development
+Requirements: Go 1.21+.
 
 ```bash
 go test ./...
@@ -115,209 +20,86 @@ go vet ./...
 make check
 ```
 
-## Optional Pi integration
-
-This monorepo includes the [`pi-hledit-diff`](../pi-hledit-diff/) extension. It bundles this CLI and exposes two strict tools:
-
-- `hledit_read_anchors`
-- `hledit_apply_file_changes`
-
-The extension requires CLI 3.x with `anchorProtocolV2:true`, `readRangeMetadata:true`, `batchInsertAfter:true`, `batchCheck:true`, `batchUpdatedAnchors:true`, `batchStaleContext:true`, `batchWireV3:true`, `batchReadProof:true`, `batchEditDeltas:true`, and `readIgnoreCase:true`. The removed `contentReplaceOnce` field must be absent. It consumes revision-bearing structured reads and requires complete hidden read proof for anchored batches; it does not use content matching, the legacy single-tool `op` protocol, or an edits-only write path.
-
-After installing the extension in Pi, reload it:
-
-```text
-/reload
-```
-
-## Optional MCP integration
-
-The MCP server is a separate package: [`hledit-mcp`](https://github.com/dabito/hledit-mcp). It wraps this CLI for MCP-compatible clients such as Claude Code, Claude Desktop, and Cursor.
-
-Install after installing the CLI:
-
-```bash
-claude mcp add hledit npx hledit-mcp
-```
-
 ## Commands
 
 ```text
 hledit capabilities
-hledit read <file> [--grep pattern] [--literal] [--context N] [--ignore-case] [--json] [--pretty]
-hledit read-range <file> [--offset N] [--limit M] [--grep pattern] [--literal] [--context N] [--ignore-case] [--json] [--pretty]
-hledit anchors <file> [--offset N] [--limit M] [--grep pattern] [--literal] [--context N] [--ignore-case] [--json] [--pretty]
-hledit replace <file> <anchor> <content-source>
-hledit replace-range <file> <anchor> <end-anchor> <content-source>
-hledit insert [--before|--after] <file> <anchor> <content-source>
+hledit version
+hledit help
+hledit read-range <file> [--offset N] [--limit M]
+hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N] [--ignore-case]
 hledit batch [--check] <file>
 ```
 
-`--grep` uses Go's RE2 regular-expression syntax by default; `--literal` switches to exact substring matching and `--ignore-case` enables case-insensitive matching. `--context N` adds N lines before/after each match. `--pretty` adds ANSI styling for human reading; `--json` stays machine-readable and unstyled.
-`<content-source>` is either `-` for stdin or a file path.
+`read-range`, `search`, and `batch` are JSON-only. There are no unstructured read, single-edit, ANSI, or compatibility command paths.
 
-`hledit capabilities` emits machine-readable JSON for integrations. This tree reports version `3.1.0` and the complete positive capability set listed above; integrations must reject 2.x, unreviewed future major versions, missing capability fields, and the removed `contentReplaceOnce` field.
-
-## Examples
-
-Read a file:
-
-```bash
-hledit read main.go
-```
-
-Read a window of a large file:
+### Read a contiguous window
 
 ```bash
 hledit read-range main.go --offset 40 --limit 20
 ```
 
-Read styled output for humans:
-
-```bash
-hledit read main.go --pretty
-```
-
-Replace one line using stdin:
-
-```bash
-printf '    fmt.Println("hello world")\n' | hledit replace main.go 6#xY7 -
-```
-
-Replace a range using a prepared file:
-
-```bash
-hledit replace-range main.go 12#aB3 18#xY7 /tmp/new-block.txt
-```
-
-Insert before or after an anchor:
-
-```bash
-cat header.txt | hledit insert --before main.go 1#Qw_ -
-printf '// done\n' | hledit insert --after main.go 99#nK2 -
-```
-Apply multiple edits atomically with JSON on stdin:
-
-```bash
-printf '%s\n' '{"edits":[{"op":"replace","pos":"12#aB3","end_pos":"18#xY7","lines":["new block"]},{"op":"insert","pos":"22#Qw_","after":true,"lines":["// inserted"]}]}' | hledit batch main.go
-echo '{"edits":[{"op":"replace","pos":"12#aB3","lines":["fixed"]}]}' | hledit batch --check main.go
-```
-
-Batch `insert` places lines before its anchor by default. Set `"after": true` to place them after it.
-
-Batch wire v3 has one canonical shape: `replace` requires `lines` (an empty array deletes), `delete` omits `lines`, and `insert` requires non-empty `lines`; only insert may carry `after:true`. An optional `proof` object supplies a lowercase raw-byte SHA-256 `revision` and strictly increasing `anchors` covering every consumed or insertion-anchor line.
-Delete a line or range by piping empty stdin and using `-` as the content source:
-
-```bash
-printf '' | hledit replace main.go 6#xY7 -
-printf '' | hledit replace-range main.go 12#aB3 18#xY7 -
-```
-
-## Output
-
-Read emits `LN#HHH:TEXT`; anchors emits `ANCHOR<TAB>TEXT`.
-`--json` emits `{ok, revision, totalLines, lines:[{line,anchor,text,textTruncated?}], truncated, nextOffset?}`. `revision` hashes the exact raw bytes, including BOM and newline style; an offset past EOF returns `requestedOffset` and `totalLines`.
-
-```text
-1#aB3:package main
-2#xY7:
-3#Qw_:import "fmt"
-```
-
-Write commands emit JSON:
-
-```json
-{"ok":true,"contentChanged":true,"firstChangedLine":6,"lastChangedLine":6}
-```
-
-Batch adds `revision` and `editsApplied`. A successful write also returns a bounded `updatedAnchors` window; `--check` returns the loaded revision with `checked:true` and does not write. A no-op returns the unchanged raw-byte revision with `contentChanged:false` and does not touch the target.
-
 ```json
 {
   "ok": true,
-  "revision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-  "contentChanged": true,
-  "firstChangedLine": 2,
-  "lastChangedLine": 4,
-  "editsApplied": 2,
-  "updatedAnchors": {
-    "lines": [{"line":2,"anchor":"2#aB3","text":"updated"}],
-    "offset": 2,
-    "limit": 1,
-    "desiredLimit": 1,
-    "truncated": false
-  }
+  "revision": "sha256:<digest>",
+  "totalLines": 120,
+  "lines": [{"line":40,"anchor":"40#aB3","text":"package main"}],
+  "truncated": false
 }
 ```
 
-Stale anchors are rejected atomically:
+The `nextOffset` field appears when another page is needed. A `textTruncated:true` row is too long for an empty 50 KiB JSON page and must not be used as edit proof.
 
-```json
+### Search anchors
+
+```bash
+hledit search main.go 'func\\s+main' --context 2
+hledit search main.go 'fmt.Println' --literal --ignore-case
+```
+
+The required pattern uses Go RE2 syntax unless `--literal` is given. Search pagination uses a physical source-line cursor, so a returned `nextOffset` can be passed directly as `--offset`. `totalMatches` counts matches before context expansion. Empty patterns and whole-file patterns such as `.*` are rejected; use `read-range` to read source contiguously.
+
+### Apply an atomic batch
+
+`batch` reads one strict JSON document from stdin:
+
+```bash
+cat <<'JSON' | hledit batch main.go
 {
-  "ok": false,
-  "error": "stale",
-  "message": "anchor 6#xY7: stale",
-  "remaps": [{"requested":"6#xY7","current":"6#xY8"}],
-  "currentRevision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-  "currentAnchors": {
-    "lines": [{"line":6,"anchor":"6#xY8","text":"current line"}],
-    "offset": 4, "limit": 5, "desiredLimit": 5, "truncated": false
+  "edits": [
+    {"op":"replace","pos":"12#aB3","lines":["new line"]},
+    {"op":"insert","pos":"22#Qw_","after":true,"lines":["// inserted"]}
+  ],
+  "proof": {
+    "revision":"sha256:<digest>",
+    "anchors":["12#aB3","22#Qw_"]
   }
 }
+JSON
 ```
 
-## Hash format
+Use `batch --check main.go` with the same request to validate without writing. Batch wire v3 is exact:
 
-Anchors are `LN#HHH`:
+- `replace` requires a `lines` array; an empty array deletes its target range.
+- `delete` omits `lines`.
+- `insert` requires non-empty `lines`; only `insert` may use `"after": true`.
+- `end_pos`, when present on `replace` or `delete`, is an inclusive range end.
+- All anchors are exact `LN#HHH` tokens; annotations and whitespace are rejected.
 
-- `LN` is the 1-indexed line number.
-- `HHH` is a 3-character URL-safe Base64 content hash.
-- The hash uses FNV-1a 32-bit, normalized trailing whitespace, and the alphabet `A-Z`, `a-z`, `0-9`, `-`, `_`; it encodes the low 18 hash bits.
-- Blank or punctuation-only lines mix the line number into the hash so identical structural lines are easier for models to distinguish.
+The optional proof is required by the Pi extension. Its revision and strictly increasing anchors must cover every consumed range line and each insert attachment anchor. Missing proof is `insufficient_read_proof`; an older snapshot is `stale`.
 
-## Behavior notes
+## Output and safety
 
-- Writes resolve symlink targets, use unique temporary siblings, preserve existing permission bits, and atomically replace the real target.
-- Every content-changing write rechecks the target's exact raw-byte revision immediately before replacement and returns `source_changed_before_commit` rather than overwriting a detected external change.
-- All anchors in a write are validated before writing.
-- Input must be valid UTF-8; an existing UTF-8 BOM is hidden from line text and preserved across writes.
-- Batch JSON rejects unknown fields and trailing values so misspelled protocol fields cannot silently change edit semantics.
-- Files with multiple hard links are rejected rather than silently breaking link identity or weakening atomicity.
-- Validated no-op replacements return `contentChanged:false` without touching the filesystem.
-- Batch insert supports `"after": true`; insert and replace/delete operations may not target the same anchor or range.
-- Logical failures (`stale`, `source_changed_before_commit`, `invalid`, `binary`, `encoding`, `range`, `io`) are reported as JSON on stdout.
-- CLI misuse exits `2`; unrecoverable infrastructure failures exit `1`; normal logical outcomes exit `0`.
+A successful batch includes `revision`, `contentChanged`, edit counts, `editDeltas`, and a bounded `updatedAnchors` window. `--check` adds `checked:true` and never writes. A no-op reports `contentChanged:false` without changing the target.
 
-## Failure modes
+Logical failures return JSON on stdout with exit code `0`; malformed command-line usage exits `2`. Read paths reject binary or invalid UTF-8 files. Revisions hash original bytes, including BOM, line endings, and trailing newline. Writes preserve untouched terminators and BOM state, use a temporary sibling plus atomic replacement, and recheck the original revision immediately before commit.
 
-- stale anchor -> inspect `currentAnchors`; only explicitly retry when its complete window still covers the intended target and range, otherwise re-read the affected range
-- binary file -> stop and use a text file
-- invalid UTF-8 -> convert the file explicitly before editing; hledit will not rewrite undecodable bytes
-- invalid anchor or CLI misuse -> fix args
-- I/O error -> check path and permissions
-- hard-link rejection -> choose a regular single-link target; hledit will not pick between atomicity and shared-inode updates
-- text `read` output may append a truncation sentinel; use `--json` for machine parsing
+## Pi extension
 
-## When not to use it
+[`../pi-hledit-diff`](../pi-hledit-diff/) bundles this CLI and exposes `hledit_read_anchors`, `hledit_search_anchors`, and `hledit_apply_file_changes`. It requires CLI 3.x with all capabilities in [`SPEC.md`](./SPEC.md), including `searchIgnoreCase`, `searchRegex`, `searchLiteral`, and `search`; `contentReplaceOnce` must be absent.
 
-- binary files
-- minified or positional-only edits where anchors add no value
-- workflows that need fuzzy matching instead of stale-safe rejection
+## Further reference
 
-## Credits and prior art
-
-The core hashline-edit idea comes from Can Bölük / @can1357's work on coding-agent harnesses, especially [“I Improved 15 LLMs at Coding in One Afternoon. Only the Harness Changed.”](https://blog.can.ac/2026/02/12/the-harness-problem/) and [`oh-my-pi`](https://github.com/can1357/oh-my-pi). Read that article for the deeper technical rationale and benchmark discussion.
-
-This version is maintained in the [`hledit-toolkit`](https://github.com/Qihuanxishini/hledit-toolkit) monorepo and is derived from [`dabito/hledit`](https://github.com/dabito/hledit). Its scope remains intentionally narrow:
-
-- standalone stdlib Go CLI, not a full agent harness;
-- stable JSON outputs for agent/tool integration;
-- deterministic stale-checking edits with no fuzzy matching;
-- Pi integration provided by [`pi-hledit-diff`](../pi-hledit-diff/).
-
-Additional prior art: [`aron/hashline`](https://github.com/aron/hashline), a reference Go implementation/spec for hash-anchored line editing.
-
-## Project docs
-
-- [`SPEC.md`](./SPEC.md) — implementation contract
-- [`CHANGELOG.md`](./CHANGELOG.md) — release history
+- [`SPEC.md`](./SPEC.md) — complete machine protocol
+- [`CHANGELOG.md`](./CHANGELOG.md) — version history

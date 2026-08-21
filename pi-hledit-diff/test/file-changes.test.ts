@@ -34,7 +34,7 @@ test("buildFileChangeRequest translates every supported change", () => {
   };
 
   assert.deepEqual(buildFileChangeRequest(params), {
-    args: ["batch", "src/a.ts"],
+    args: ["batch", "--", "src/a.ts"],
     stdin: JSON.stringify({
       edits: [
         { op: "replace", pos: "1#BHJ", end_pos: "2#BBK", lines: ["next"] },
@@ -48,11 +48,11 @@ test("buildFileChangeRequest translates every supported change", () => {
 
 test("buildFileChangeCheckRequest adds validate-only mode", () => {
   const request = buildFileChangeCheckRequest({
-    path: "src/a.ts",
+    path: "--check",
     changes: [{ operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: ["next"] }],
   });
 
-  assert.deepEqual(request.args, ["batch", "--check", "src/a.ts"]);
+  assert.deepEqual(request.args, ["batch", "--check", "--", "--check"]);
   assert.equal(request.stdin, '{"edits":[{"op":"replace","pos":"1#BHJ","end_pos":"1#BHJ","lines":["next"]}]}');
 });
 

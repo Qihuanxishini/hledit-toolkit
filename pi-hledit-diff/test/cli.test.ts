@@ -11,7 +11,7 @@ import { applyFileChangesResult } from "../src/result.ts";
 
 // CLI 声明的完整能力集；解析结果只保留 version，其余字段仅用于构造被校验的输入。
 const DECLARED_CAPABILITIES = {
-	version: "3.1.0",
+	version: "3.2.0",
 	anchorProtocolV2: true,
 	readRangeMetadata: true,
 	batchInsertAfter: true,
@@ -21,9 +21,10 @@ const DECLARED_CAPABILITIES = {
 	batchWireV3: true,
 	batchReadProof: true,
 	batchEditDeltas: true,
-	readIgnoreCase: true,
-	readRegex: true,
-	readLiteral: true,
+	searchIgnoreCase: true,
+	searchRegex: true,
+	searchLiteral: true,
+	search: true,
 } as const;
 
 test("resolveHleditBin uses the fixed bundled CLI path", () => {
@@ -51,22 +52,20 @@ test("runHledit reports an already-aborted invocation", async () => {
 	assert.equal(typeof run.started, "boolean");
 });
 
-test("parseHleditCapabilities requires the reviewed CLI 3.x two-tool contract", () => {
+test("parseHleditCapabilities requires the reviewed CLI 3.x read/search/apply contract", () => {
 	assert.deepEqual(
 		parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...DECLARED_CAPABILITIES }), stderr: "", exitCode: 0 }),
 		{ version: DECLARED_CAPABILITIES.version },
 	);
 	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...DECLARED_CAPABILITIES, version: "2.3.1" }), stderr: "", exitCode: 0 }), undefined);
 	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...DECLARED_CAPABILITIES, version: "4.0.0" }), stderr: "", exitCode: 0 }), undefined);
-	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...DECLARED_CAPABILITIES, contentReplaceOnce: true }), stderr: "", exitCode: 0 }), undefined);
-	assert.equal(parseHleditCapabilities({ stdout: JSON.stringify({ ok: true, ...DECLARED_CAPABILITIES, contentReplaceOnce: false }), stderr: "", exitCode: 0 }), undefined);
 	assert.equal(parseHleditCapabilities({ stdout: "not json", stderr: "", exitCode: 0 }), undefined);
 });
 
 // 单一 REQUIRED_CAPABILITIES 列表必须真的逐项生效：任何一项缺失都要拒绝整个 CLI。
 test("parseHleditCapabilities rejects a CLI missing any single required capability", () => {
 	const capabilities = Object.keys(DECLARED_CAPABILITIES).filter((name) => name !== "version");
-	assert.equal(capabilities.length, 12);
+	assert.equal(capabilities.length, 13);
 	for (const capability of capabilities) {
 		const declaration = { ok: true, ...DECLARED_CAPABILITIES, [capability]: false };
 		assert.equal(
@@ -83,7 +82,7 @@ test("bundled read-range emits structured range metadata", async (t) => {
 	const target = join(directory, "target.txt");
 	await writeFile(target, "one\ntwo\nthree\n", "utf8");
 
-	const run = await runHledit(["read-range", target, "--offset", "2", "--limit", "1", "--json"], undefined, directory, undefined);
+	const run = await runHledit(["read-range", target, "--offset", "2", "--limit", "1"], undefined, directory, undefined);
 	const parsed = JSON.parse(run.stdout) as Record<string, unknown>;
 
 	assert.equal(parsed.ok, true);
@@ -99,9 +98,10 @@ test("bundled batch emits plugin-compatible updated anchors", async (t) => {
 	await writeFile(target, "one\ntwo\nthree\n", "utf8");
 
 	const read = await runHledit(["read-range", target, "--offset", "2", "--limit", "1"], undefined, directory, undefined);
-	const renderedAnchor = read.stdout.trim().split(/\r?\n/, 1)[0]!;
-	assert.match(renderedAnchor, /^2#[A-Za-z0-9_-]{3}:two$/);
-	const anchor = renderedAnchor.split(":", 1)[0]!;
+	const readResult = JSON.parse(read.stdout) as { lines: Array<{ anchor: string }> };
+	const anchor = readResult.lines[0]?.anchor;
+	assert.match(anchor ?? "", /^2#[A-Za-z0-9_-]{3}$/);
+	assert.ok(anchor);
 	const request = JSON.stringify({ edits: [{ op: "replace", pos: anchor, lines: ["TWO"] }] });
 
 	const applied = await runHledit(["batch", target], request, directory, undefined);
@@ -135,10 +135,7 @@ test("bundled batch is atomic when a later anchor is stale", async (t) => {
 	await writeFile(target, original, "utf8");
 
 	const read = await runHledit(["read-range", target, "--offset", "2", "--limit", "2"], undefined, directory, undefined);
-	const anchors = read.stdout
-		.trim()
-		.split(/\r?\n/)
-		.map((line) => line.split(":", 1)[0]!);
+	const anchors = (JSON.parse(read.stdout) as { lines: Array<{ anchor: string }> }).lines.map((line) => line.anchor);
 	const staleAnchor = `${anchors[1]!.slice(0, -1)}${anchors[1]!.endsWith("Z") ? "Y" : "Z"}`;
 	const request = JSON.stringify({
 		edits: [
@@ -165,7 +162,7 @@ test("wrapper accepts CLI-capped worst-case JSON escaping", async (t) => {
 	const lineCount = 600;
 	await writeFile(target, `${Array.from({ length: lineCount }, () => line).join("\n")}\n`, "utf8");
 
-	const run = await runHledit(["read-range", target, "--json"], undefined, directory, undefined);
+	const run = await runHledit(["read-range", target], undefined, directory, undefined);
 
 	assert.equal(run.exitCode, 0);
 	assert.notEqual(run.started, false);
@@ -188,7 +185,8 @@ test("output overflow after a started write keeps outcome unknown", async (t) =>
 	await writeFile(target, "one\ntwo\nthree\n", "utf8");
 
 	const read = await runHledit(["read-range", target, "--offset", "2", "--limit", "1"], undefined, directory, undefined);
-	const anchor = read.stdout.trim().split(/\r?\n/, 1)[0]!.split(":", 1)[0]!;
+	const anchor = (JSON.parse(read.stdout) as { lines: Array<{ anchor: string }> }).lines[0]?.anchor;
+	assert.ok(anchor);
 	const request = JSON.stringify({ edits: [{ op: "replace", pos: anchor, lines: ["TWO"] }] });
 
 	// 64 字节上限保证成功 JSON 响应必然触发 overflow 终止，但 CLI 在输出前已完成原子写入。

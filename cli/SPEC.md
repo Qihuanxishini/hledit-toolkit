@@ -1,171 +1,119 @@
-# hledit — Spec
+# hledit — Protocol Specification
 
-## 1. Binary & Invocation
+## 1. Invocation and outcomes
 
-```
+```text
 hledit <verb> [arguments]
 ```
 
-- Logical outcomes (success, stale anchors, invalid anchors/content, binary/encoding/range/io errors) exit 0 and are reported on stdout.
-- CLI misuse exits 2 with usage on stderr; unrecoverable infrastructure failures exit 1.
+The public command surface is deliberately small:
 
-### 1.1 `capabilities`
-
-```
+```text
 hledit capabilities
-```
-
-Outputs one JSON object describing behavior that integrations may require:
-
-```json
-{ "ok": true, "version": "3.1.0", "anchorProtocolV2": true, "readRangeMetadata": true, "batchInsertAfter": true, "batchCheck": true, "batchUpdatedAnchors": true, "batchStaleContext": true, "batchWireV3": true, "batchReadProof": true, "batchEditDeltas": true, "readIgnoreCase": true, "readRegex": true, "readLiteral": true }
-```
-
-The bundled Pi extension requires version 3.x and every capability shown above. The removed `contentReplaceOnce` field must be absent; a successful `help` command alone is not a compatibility guarantee.
-
-## 2. Verbs
-
-### 2.1 `read`
-
-```
-hledit read <file> [--grep <pattern>] [--literal] [--context N] [--ignore-case] [--json]
-```
-
-Reads the entire file. Each line is emitted as:
-
-```
-<LN>#<HHH>:<content>
-```
-
-- `LN` — 1-indexed line number.
-- `HHH` — 3-character URL-safe Base64 hash (see §3).
-- `:` — literal separator.
-- Content includes the original line without trailing `\n` or `\r`.
-- `--grep` — RE2 regular-expression match; only matching lines are emitted. An invalid expression is a logical `grep` error.
-- `--literal` — treat `--grep` as an exact literal substring instead of a regular expression.
-- `--ignore-case` — apply case-insensitive matching to `--grep`.
-- `--context` — include N lines before/after each match; overlapping windows merge.
-- `--json` — emit JSON `{ok, revision, totalLines, lines:[{line,anchor,text,textTruncated?}], truncated, nextOffset?}`. `revision` is `sha256:<64 lowercase hex digits>` over the exact original bytes, including UTF-8 BOM, line endings, and trailing newline.
-
-**Truncation:** Stop at 50 KB of output or 2,000 lines, whichever is first. Append a trailing line:
-
-```
--- truncated: use read-range --offset <next> --
-```
-
-**Binary detection:** If the file is detected as binary (contains NUL byte in first 8 KB), emit:
-
-```json
-{ "ok": false, "error": "binary", "message": "file appears to be binary" }
-```
-
-**Text encoding:** Non-binary input must be valid UTF-8. Invalid UTF-8 emits:
-
-```json
-{ "ok": false, "error": "encoding", "message": "file is not valid UTF-8" }
-```
-
-An existing UTF-8 BOM is excluded from line text and hashes, then restored on write.
-
-### 2.2 `read-range`
-
-```
-hledit read-range <file> [--offset <N>] [--limit <M>] [--grep <pattern>] [--literal] [--context N] [--ignore-case] [--json]
-```
-
-- `--offset` — 1-indexed starting line (default 1).
-- `--limit` — max lines to return (default 2000).
-- `--grep` — RE2 regular-expression match; only matching lines are emitted.
-- `--literal` — treat `--grep` as an exact literal substring instead of a regular expression.
-- `--ignore-case` — apply case-insensitive matching to `--grep`.
-- `--context` — include N lines before/after each match; overlapping windows merge.
-
-Same output format as `read`. Same truncation behavior at 50 KB / 2,000 lines from the offset.
-- `--json` — same JSON shape.
-
-If `--offset` exceeds file length, emit:
-
-```json
-{ "ok": false, "error": "range", "message": "offset 500 exceeds file length 120", "requestedOffset": 500, "totalLines": 120 }
-```
-
-### 2.3 `anchors`
-
-```
-hledit anchors <file> [--offset <N>] [--limit <M>] [--grep <pattern>] [--literal] [--context N] [--ignore-case] [--json]
-```
-
-- Same flags and filtering as `read-range`.
-- Emits `ANCHOR<TAB>TEXT` instead of `LN#HHH:TEXT`.
-- Same truncation behavior at 50 KB / 2,000 lines from the offset.
-- `--json` — same JSON shape.
-
-If `--offset` exceeds file length, emit:
-
-```json
-{ "ok": false, "error": "range", "message": "offset 500 exceeds file length 120", "requestedOffset": 500, "totalLines": 120 }
-```
-
-### 2.4 `replace`
-
-```
-hledit replace <file> <anchor> <content-source>
-```
-
-- `anchor` — `LN#HHH` targeting a single line.
-- `content-source` — `-` for stdin, or a file path.
-- Reads replacement content from the source (one or more lines).
-- If content is empty, the line is **deleted**.
-- If content has multiple lines, the single targeted line is replaced with all of them (net insert).
-
-**Behavior:**
-
-1. Validate anchor against current file.
-2. If hash mismatches, return stale error (see §5).
-3. Replace the line at `LN` with the new content.
-4. Write atomically (temp + rename).
-
-### 2.5 `replace-range`
-
-```
-hledit replace-range <file> <anchor> <end-anchor> <content-source>
-```
-
-- `anchor` — start `LN#HHH` (inclusive).
-- `end-anchor` — end `LN#HHH` (inclusive).
-- Replaces all lines from `anchor.Line` through `end-anchor.Line` with the new content.
-- If content is empty, the range is **deleted**.
-
-**Validation:**
-
-- `anchor.Line <= end-anchor.Line`.
-- Both anchors must match current file hashes.
-
-### 2.6 `insert`
-
-```
-hledit insert [--before|--after] <file> <anchor> <content-source>
-```
-
-- `--before` (default) — insert lines before the anchored line.
-- `--after` — insert lines after the anchored line.
-- Anchor is used **only for validation**, not for replacement. The anchored line stays untouched.
-- Content must be non-empty.
-
-**Behavior:**
-
-1. Validate anchor against current file.
-2. Insert new lines at the specified position.
-3. Write atomically.
-
-### 2.7 `batch`
-
-```
+hledit version
+hledit help
+hledit read-range <file> [--offset N] [--limit M]
+hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N] [--ignore-case]
 hledit batch [--check] <file>
 ```
 
-Reads a JSON `BatchEditRequest` from stdin:
-`--check` validates stdin JSON, anchors, and ops without writing; success adds `checked:true`.
+`read-range`, `search`, and `batch` always write one structured JSON response to stdout. They have no text, ANSI, or compatibility output mode.
+
+- Logical command outcomes, including `stale`, `invalid`, `binary`, `encoding`, `range`, and I/O errors, exit `0` and return `{ "ok": false, ... }` on stdout.
+- Invalid command-line shape exits `2` with usage on stderr.
+- Failures that prevent emitting a normal response exit `1`.
+
+## 2. Capabilities
+
+```text
+hledit capabilities
+```
+
+The response is the compatibility gate for the Pi extension:
+
+```json
+{
+  "ok": true,
+  "version": "3.2.0",
+  "anchorProtocolV2": true,
+  "readRangeMetadata": true,
+  "batchInsertAfter": true,
+  "batchCheck": true,
+  "batchUpdatedAnchors": true,
+  "batchStaleContext": true,
+  "batchWireV3": true,
+  "batchReadProof": true,
+  "batchEditDeltas": true,
+  "searchIgnoreCase": true,
+  "searchRegex": true,
+  "searchLiteral": true,
+  "search": true
+}
+```
+
+A compatible integration requires CLI 3.x and every positive field above. `contentReplaceOnce` must be absent.
+
+## 3. Read protocol
+
+### 3.1 `read-range`
+
+```text
+hledit read-range <file> [--offset N] [--limit M]
+```
+
+`read-range` is the only contiguous-source read verb. `offset` is a 1-indexed physical source line and defaults to `1`; `limit` defaults to `160` and bounds returned source lines. It always returns JSON:
+
+```json
+{
+  "ok": true,
+  "revision": "sha256:<64 lowercase hex digits>",
+  "totalLines": 120,
+  "lines": [
+    { "line": 51, "anchor": "51#aB3", "text": "source" }
+  ],
+  "truncated": false
+}
+```
+
+`revision` hashes the original bytes before BOM removal or newline parsing. `lines` are ordered physical source lines, and every `anchor` is an exact `LN#HHH` token. `nextOffset`, when present, is the physical source-line cursor for the next page. A source line that cannot fit in an otherwise empty 50 KiB JSON page is returned with `textTruncated:true`; that line is not usable as edit proof. When a complete line does not fit in the remaining page, it is left for the next page instead of being truncated.
+
+Offset past a non-empty file returns:
+
+```json
+{ "ok": false, "error": "range", "message": "offset 500 exceeds file length 120", "requestedOffset": 500, "totalLines": 120 }
+```
+
+### 3.2 `search`
+
+```text
+hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N] [--ignore-case]
+```
+
+`search` is the only search verb. `pattern` uses Go RE2 syntax by default; `--literal` treats it as a substring. `--ignore-case` enables case folding and `--context N` includes adjacent physical source lines, merging overlapping windows. `offset` is a physical source-line cursor (default `1`), not a match index; `limit` defaults to `100` and bounds returned matching/context lines.
+
+```json
+{
+  "ok": true,
+  "revision": "sha256:<64 lowercase hex digits>",
+  "totalLines": 120,
+  "totalMatches": 2,
+  "lines": [{ "line": 51, "anchor": "51#aB3", "text": "source" }],
+  "truncated": true,
+  "nextOffset": 52
+}
+```
+
+`totalMatches` counts matching lines before context expansion. Zero matches return success with `totalMatches:0`, an empty `lines` array, `truncated:false`, and no `nextOffset`. Empty or invalid patterns return `error:"pattern"`. Broad whole-file expressions such as `.*`, `.+`, and their anchored or dot-all variants return `error:"broad_pattern"`; callers must use `read-range` for contiguous source.
+
+Both read verbs reject binary files and invalid UTF-8 with structured `binary` or `encoding` errors. They cap the serialized JSON page at 50 KiB.
+
+## 4. Batch edit protocol
+
+```text
+hledit batch [--check] <file>
+```
+
+`batch` reads exactly one strict JSON request from stdin. `--check` performs the entire validation and planning path without writing, and adds `checked:true` to success.
 
 ```json
 {
@@ -176,213 +124,72 @@ Reads a JSON `BatchEditRequest` from stdin:
     { "op": "insert", "pos": "8#Qw_", "after": true, "lines": ["inserted"] }
   ],
   "proof": {
-    "revision": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "revision": "sha256:<64 lowercase hex digits>",
     "anchors": ["2#rT4", "5#nK2", "8#Qw_", "12#aB3", "13#Ab1", "14#Ab2", "15#Ab3", "16#Ab4", "17#Ab5", "18#xY7"]
   }
 }
 ```
 
-Validation:
+Batch wire v3 has one canonical shape:
 
-- All anchors are validated against the original file state before any write.
-- The JSON decoder rejects unknown fields and any additional top-level JSON value; protocol typos never degrade into a different edit.
-- The complete stdin request is limited to 8 MiB; every `lines` and `proof.anchors` element must be a JSON string.
-- `proof` is optional for standalone CLI use. When present, it must contain a valid raw-byte SHA-256 `revision` and unique, strictly increasing anchors.
-- Proof must cover every original line consumed by each replace/delete range and the anchor line used by each insert. Missing coverage returns `error:"insufficient_read_proof"`; revision or proof-anchor changes return `error:"stale"`.
-- Batch wire v3 has one canonical shape: `replace` requires `lines` (an empty array deletes the range), while `delete` must omit `lines`.
-- `replace` and `delete` use optional `end_pos` as an inclusive range end; if omitted, they target only `pos`.
-- `replace` and `delete` require `pos.Line <= end_pos.Line` when `end_pos` is provided.
-- `replace` and `delete` reject `after`; `delete` also rejects any present `lines` field.
-- `insert` requires non-empty `lines`, rejects `end_pos`, and inserts before `pos` unless `after:true` is set; a present `after` must be `true`.
-- Inserts that map to the same physical boundary (including `insert_after(N)` and `insert_before(N+1)`) return `error: "invalid"`. An insert whose boundary falls strictly inside a replace/delete range's consumed interior also returns `error: "invalid"`; inserts at a range's leading or trailing physical boundary are deterministic (the inserted lines stay attached to their anchor line, emitted before or after the range output) and are accepted.
-- Unknown operations or invalid anchors return `error: "invalid"`; stale anchors return `error: "stale"` with remaps.
+- `replace` requires `lines`; an empty array deletes its target range.
+- `delete` omits `lines`.
+- `insert` requires non-empty `lines`; `after` is permitted only on `insert`, where only `true` has meaning.
+- `replace` and `delete` accept optional inclusive `end_pos`; without it they consume only `pos`.
+- Each anchor is exactly `LN#HHH`; annotations, whitespace, aliases, and older hash forms are rejected.
+- The decoder rejects unknown fields, trailing JSON values, non-string `lines`/proof anchors, and requests larger than 8 MiB.
 
-Application:
+`proof` is optional for standalone use. When supplied, its raw-byte revision must match the loaded file and its unique, strictly ascending anchors must cover each consumed `replace`/`delete` line and every insert attachment anchor. Missing coverage returns `insufficient_read_proof`; a mismatch returns `stale`.
 
-- Check and apply share the same pure planner: strict request decoding, proof validation, edit-anchor validation, physical conflict detection, statistics, and one cursor-based rebuild.
-- `--check` returns the loaded revision without writing. Apply prepares and syncs one temporary replacement, rechecks the target's raw-byte revision, and then performs one atomic replacement.
-- A detectable change between planning and commit returns `error:"source_changed_before_commit"` with `currentRevision`; the temporary file is removed and external content is preserved.
+All edits are validated against one original snapshot before writing. Conflicting ranges, duplicate insertion boundaries, inserts inside a consumed range, invalid anchors, and stale anchors reject the entire request with zero writes. The planner orders non-conflicting edits by physical boundary and rebuilds the file once.
 
-
-## 3. Hash Algorithm
-
-```
-computeLineHash(lineNum, line):
-  1. line = trimRight(line, '\r')
-  2. line = trimRight(line, whitespace)
-  3. h = FNV-1a-32()
-  4. if line has NO letter AND NO digit:
-       mix lineNum into h before content
-  5. h.write(line)
-  6. sum = h.sum32()
-  7. low18 = sum & 0x3FFFF
-  8. return base64url((low18 >> 12) & 0x3F) + base64url((low18 >> 6) & 0x3F) + base64url(low18 & 0x3F)
-```
-
-**URL-safe Base64 alphabet:** `ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_` (index 0–63)
-
-**Anchor grammar:** `LN#HHH` has no internal whitespace. CLI parsing additionally permits either a direct `:source-text` annotation from rendered output or trailing whitespace; the Pi tool schema accepts only the bare anchor.
-
-**Line-number mixing** (step 4): Write the line number as a varint-style sequence of bytes (little-endian, stopping at first zero high byte) into the hash state before the line content. This ensures structurally identical non-significant lines (e.g. two blank lines, or `}` at different positions) produce different hashes.
-
-**Detection of "significant" lines:** A line is significant if it contains at least one Unicode letter (`IsLetter`) or one Unicode digit (`IsDigit`). Blank lines, `{`, `}`, `),` etc. are non-significant.
-
-### 3.1 Raw-byte file revision
-
-JSON reads and batch results identify a file snapshot as `sha256:<64 lowercase hex digits>`. The digest is computed before BOM removal or newline parsing, so BOM, CRLF/LF, trailing newline, and all other byte changes produce a different revision. Revision is a conservative concurrency precondition; it does not replace line anchors.
-
-## 4. Edit Application
-
-### 4.1 Batch semantics
-
-Every write invocation validates all anchors and content before writing. If any anchor is stale or any operation is invalid, nothing is written.
-
-### 4.2 Application order
-
-Single-edit verbs apply one operation. `batch` sorts non-overlapping edits by original-file boundary and rebuilds the output once with a forward cursor. This preserves all original anchor references without repeatedly copying the file.
-
-### 4.3 No-op detection
-
-After rebuilding a validated edit, compare its logical lines with the loaded lines. If they are identical, return `contentChanged:false` and do not create, sync, rename, or otherwise touch a filesystem entry. Operation counts and attempted line metadata remain available for diagnostics.
-
-### 4.4 Line terminators
-
-Files are parsed into per-line terminators (`LF`, `CRLF`, or none for an unterminated last line). A lone `\r` not followed by `\n` is line text, not a terminator. Rebuild rules:
-
-- Untouched source lines keep their own terminator bytes; mixed CRLF/LF files are never normalized as a whole.
-- New lines from an edit use the local terminator style near the consumed interval (first real terminator scanning backward from the interval end, then forward); the last replacement line inherits the terminator of the last replaced line. Pure inserts use the local style for every inserted line.
-- When content is added after an unterminated last line, that line receives the local terminator and the new last line stays unterminated.
-- The presence or absence of the original trailing newline is preserved; deleting every logical line produces a truly empty file (plus BOM if the original had one).
-- The UTF-8 BOM is preserved.
-
-### 4.5 Atomic writes
-
-1. Resolve an existing symlink to its real target so replacement preserves the symlink entry.
-2. Reject non-regular targets and files with more than one hard link. Preserving hard-link identity would require a non-atomic in-place write.
-3. Create a unique temporary sibling, preserve existing permission bits, write all content, sync, and close it.
-4. For every content-changing write, re-read the resolved target and compare its exact raw-byte revision with the revision loaded for planning. Mismatch or read failure rejects before replacement and removes the temporary file.
-5. Replace the real target with the temporary sibling. POSIX implementations rename then sync the parent directory; Windows uses `MoveFileExW` with replace-existing and write-through flags.
-6. A post-rename parent-sync failure is returned as a successful write with a durability warning, never as a zero-change rejection.
-
-The revision recheck substantially narrows the external-writer window, but a very short race remains between recheck and rename. The CLI does not claim linearizable compare-and-swap against arbitrary non-cooperating processes.
-
-## 5. Stale Detection & Error Response
-
-When any anchor's hash doesn't match the current file content:
-
-```json
-{
-  "ok": false,
-  "error": "stale",
-  "remaps": [
-    { "requested": "5#nK2", "current": "5#nK3" },
-    { "requested": "8#Qw_", "current": "9#xY7" }
-  ],
-  "currentRevision": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-  "currentAnchors": {
-    "lines": [{ "line": 5, "anchor": "5#nK3", "text": "current line" }],
-    "offset": 3, "limit": 5, "desiredLimit": 5, "truncated": false
-  },
-  "message": "anchor 5#nK2: expected hash nK2, got nK3"
-}
-```
-
-- `remaps` helps locate the current content; `currentAnchors` is a bounded window captured from the same file snapshot that rejected the batch.
-- Inspect `currentAnchors` before an explicit retry. It may supply the new anchors only when its complete window still covers the intended target and range; otherwise re-read. It must never trigger automatic retry or overwrite concurrent changes.
-- The whole edit is rejected — no partial writes.
-- `source_changed_before_commit` is a confirmed zero-write rejection for any content-changing write; it reports `currentRevision` when available and does not overwrite the externally changed target.
-
-## 6. Success Response
-
-Single writes include `contentChanged`; successful writes may also include `lastChangedLine` and `warnings`:
-
-```json
-{ "ok": true, "contentChanged": true, "firstChangedLine": 5, "lastChangedLine": 5 }
-```
-
-Batch writes include the resulting raw-byte `revision`, `contentChanged`, changed-line statistics, `editsApplied`, `editDeltas`, and a bounded `updatedAnchors` object. `editDeltas` lists, in physical output order (boundary ascending, insert before range at the same boundary), each edit's consumed original-line interval and line-count delta; a pure insert is the empty interval `oldEnd == oldStart-1`. `--check` returns the current revision with `checked:true`, does not write, and omits `updatedAnchors`. A no-op batch returns the unchanged revision and fresh `updatedAnchors`, but does not touch the target file.
+Success includes the resulting revision, `contentChanged`, aggregate edit statistics, one `editDeltas` entry per request edit, and—except for `--check`—a bounded `updatedAnchors` window:
 
 ```json
 {
   "ok": true,
-  "revision": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "revision": "sha256:<64 lowercase hex digits>",
   "contentChanged": true,
-  "firstChangedLine": 5,
-  "lastChangedLine": 5,
   "editsApplied": 1,
-  "editDeltas": [{"oldStart":5,"oldEnd":5,"delta":0}],
+  "editDeltas": [{ "oldStart": 12, "oldEnd": 12, "delta": 0 }],
   "updatedAnchors": {
-    "lines": [{"line":5,"anchor":"5#aB3","text":"updated"}],
-    "offset": 3,
-    "limit": 5,
-    "desiredLimit": 5,
+    "lines": [{ "line": 12, "anchor": "12#aB3", "text": "updated" }],
+    "offset": 10,
+    "limit": 1,
+    "desiredLimit": 1,
     "truncated": false
   }
 }
 ```
 
-## 7. Content Source
+A stale response may include `remaps`, `currentRevision`, and a bounded same-snapshot `currentAnchors` window. These are diagnostic data only: the caller must explicitly re-read and submit a new batch.
 
-The `<content-source>` argument:
+## 5. Hashes, revisions, and writes
 
-| Value | Meaning |
-|---|---|
-| `-` | Read content from stdin |
-| Any other path | Read content from that file |
+An anchor has the exact grammar:
 
-Content is read as-is, split by `\n`. Trailing `\n` on the last line is stripped (does not introduce an extra empty line). `\r\n` is normalized to `\n`.
-
-For `replace` / `replace-range` with empty content, the effect is deletion.
-
-For `insert`, content must be non-empty. Empty content returns:
-
-```json
-{ "ok": false, "error": "invalid", "message": "insert requires non-empty content" }
+```text
+^(\d+)#([A-Za-z0-9_-]{3})$
 ```
 
-## 8. Anchor Parsing
+The hash is the low 18 bits of FNV-1a-32 encoded with URL-safe Base64. Its input trims trailing `\r` and whitespace. Lines with no Unicode letter or digit additionally mix their 1-indexed line number into the hash, distinguishing otherwise identical structural lines.
 
-Anchors match the regex:
+Raw-byte revisions use `sha256:<64 lowercase hex digits>` over the unchanged source bytes, including BOM, line-ending style, and trailing newline. Revisions are concurrency preconditions; they do not replace per-line anchor validation.
 
-```
-^(\d+)#([A-Za-z0-9_-]{3})(?::.*)?\s*$
-```
+A content-changing batch resolves symlink targets, rejects non-regular and multi-hard-link files, writes a synced temporary sibling, rechecks the raw-byte revision immediately before replacement, then atomically replaces the target. A detectable external change returns `source_changed_before_commit` without overwriting it. Untouched terminators, BOM state, and trailing-newline state are retained; mixed line endings are not globally normalized. A validated no-op reports `contentChanged:false` without touching the file.
 
-The parser accepts an exact `LN#HHH` anchor, with either a direct colon-delimited rendered annotation such as `5#aB3:func main() {` or trailing whitespace. It rejects whitespace inside the anchor, legacy two-character anchors, and trailing text without a colon delimiter.
+## 6. Source layout
 
-Invalid anchors return:
-
-```json
-{ "ok": false, "error": "invalid", "message": "invalid anchor \"foo\": expected LN#HHH" }
-```
-
-## 9. Exit Codes
-
-| Code | Meaning |
-|---|---|
-| 0 | Normal command outcome — check JSON `ok` for success vs logical error |
-| 1 | Unrecoverable process/infrastructure failure, such as failure to emit the JSON response |
-| 2 | CLI misuse or invalid command-line shape — usage is written to stderr |
-
-Command-level failures, including `stale`, `invalid`, `binary`, `encoding`, `range`, `io`, file-not-found, and permission errors, return exit 0 with `ok:false` in JSON. Exit code 1 is reserved for failures that prevent the CLI from reporting a normal protocol outcome.
-
-## 10. File Layout
-
-```
-.
-├── main.go               # Entry point and explicit check/apply dispatch
-├── batch_request.go      # Strict batch wire v3 and optional proof decoding
-├── batch_plan.go         # Pure proof/edit validation, conflict detection, and rebuild plan
-├── batch_command.go      # Shared plan loading with separate check/apply commit paths
-├── read.go               # read + read-range + anchors verbs and revision output
-├── edit.go               # replace, replace-range, insert verbs
-├── textfile.go           # UTF-8/BOM/newline parsing and raw-byte revision
-├── hash.go               # FNV-1a line hash and Base64url anchor format
-├── types.go              # Shared response types
-├── anchor.go             # Anchor parsing + validation
-├── write.go              # Atomic replacement and pre-commit revision recheck
-├── go.mod
-├── CHANGELOG.md
-├── README.md
-└── SPEC.md
+```text
+main.go               command dispatch and capability response
+read.go               structured read-range and search implementation
+batch_request.go      strict batch wire v3 decoding
+batch_plan.go         proof/edit validation and one-pass rebuild planning
+batch_command.go      check/apply command flow
+anchor.go             exact anchor parsing and validation
+hash.go               anchor hash calculation
+textfile.go           UTF-8, BOM, line terminators, raw-byte revision
+write.go              atomic replacement and revision recheck
+updated_anchors.go    bounded post-edit anchor window
+types.go              shared JSON response types
 ```

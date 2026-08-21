@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Reduce the public CLI surface to JSON-only `read-range`, `search`, and `batch`; remove legacy `read`, `anchors`, `replace`, `replace-range`, `insert`, `--grep`, `--json`, and `--pretty` command paths.
+- Add the dedicated `search` verb and `search:true` capability for RE2/literal anchored lookup with context, case folding, `totalMatches`, and physical-line pagination. Broad whole-file regexes are rejected so integrations use contiguous range reads instead.
+- Rename search capabilities to `searchIgnoreCase`, `searchRegex`, and `searchLiteral` to reflect their exclusive ownership by the `search` verb.
+
+### Fixed
+
+- Keep JSON read/search proof lines complete across the 50 KiB page boundary: a line that does not fit the remaining page now moves to `nextOffset`, while only a source line that cannot fit an otherwise empty page is marked `textTruncated`.
+
 ## [3.0.0] — 2026-07-30
 
 ### Removed

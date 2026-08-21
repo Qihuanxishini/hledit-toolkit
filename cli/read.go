@@ -3,20 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"unicode/utf8"
 )
-
-func emitError(errType, message string) error {
-	return emitJSON(EditError{
-		OK:      false,
-		Error:   errType,
-		Message: message,
-	})
-}
 
 func emitReadRangeError(offset, totalLines int) error {
 	return emitJSON(ReadRangeError{
@@ -57,32 +48,7 @@ func readJSONLineBudget(revision string, totalLines, maxBytes int) int {
 	return budget
 }
 
-const lineTruncationSuffix = "… [line truncated]"
 const jsonTextTruncationSuffix = "… [truncated]"
-
-// readCommandFile loads one validated text snapshot for read output and revision metadata.
-func readCommandFile(path string) (LoadedTextFile, bool) {
-	file, err := loadTextFile(path)
-	if err == nil {
-		return file, false
-	}
-	if errors.Is(err, errBinaryFile) {
-		emitError("binary", "file appears to be binary")
-		return LoadedTextFile{}, true
-	}
-	if errors.Is(err, errInvalidUTF8) {
-		emitError("encoding", "file is not valid UTF-8")
-		return LoadedTextFile{}, true
-	}
-	emitError("io", err.Error())
-	return LoadedTextFile{}, true
-}
-
-// readFileLines preserves the line-only boundary used by focused read error tests.
-func readFileLines(path string) ([]string, bool) {
-	file, errored := readCommandFile(path)
-	return file.Lines, errored
-}
 
 // filterLines returns 1-indexed line numbers of lines matching the pattern.
 // If pattern is empty, nil is returned (meaning no filtering). The default
@@ -124,12 +90,6 @@ func filterLinesWithMode(lines []string, pattern string, literal, ignoreCase boo
 		}
 	}
 	return matches, nil
-}
-
-// filterLines keeps the original test/helper contract for literal matching.
-func filterLines(lines []string, pattern string, ignoreCase bool) []int {
-	matches, _ := filterLinesWithMode(lines, pattern, true, ignoreCase)
-	return matches
 }
 
 // applyContext expands matchIdxs by including up to contextN lines before and
@@ -179,8 +139,7 @@ func applyContext(lines []string, matchIdxs []int, contextN int) []int {
 	return result
 }
 
-// emitAnnotatedLines writes LN#HASH:content lines to a buffer with truncation.
-// Returns the number of content lines emitted.
+// utf8PrefixByBytes returns the longest valid UTF-8 prefix within maxBytes.
 func utf8PrefixByBytes(text string, maxBytes int) string {
 	if maxBytes <= 0 {
 		return ""
@@ -194,93 +153,6 @@ func utf8PrefixByBytes(text string, maxBytes int) string {
 	}
 	return prefix
 }
-
-func appendLimitedString(buf *bytes.Buffer, text string, maxBytes int) (int, bool) {
-	remaining := maxBytes - buf.Len()
-	if remaining <= 0 {
-		return 0, false
-	}
-	if len(text) <= remaining {
-		buf.WriteString(text)
-		return len(text), true
-	}
-	prefix := utf8PrefixByBytes(text, remaining)
-	buf.WriteString(prefix)
-	return len(prefix), false
-}
-
-func appendLimitedNotice(buf *bytes.Buffer, notice string, maxBytes int, pretty bool) {
-	if pretty {
-		notice = formatPrettyNotice(notice)
-	}
-	appendLimitedString(buf, notice+"\n", maxBytes)
-}
-
-func appendLimitedLine(buf *bytes.Buffer, line string, maxBytes int) (int, bool) {
-	remaining := maxBytes - buf.Len()
-	if remaining <= 0 {
-		return 0, false
-	}
-	if len(line) <= remaining {
-		buf.WriteString(line)
-		return len(line), true
-	}
-
-	suffix := lineTruncationSuffix
-	if strings.HasSuffix(line, "\n") {
-		suffix += "\n"
-		line = strings.TrimSuffix(line, "\n")
-	}
-	if remaining <= len(suffix) {
-		prefix := utf8PrefixByBytes(line, remaining)
-		buf.WriteString(prefix)
-		return len(prefix), false
-	}
-
-	prefix := utf8PrefixByBytes(line, remaining-len(suffix))
-	buf.WriteString(prefix + suffix)
-	return len(prefix) + len(suffix), false
-}
-
-// emitAnnotatedLines writes LN#HASH:content lines to a buffer with strict byte truncation.
-// Returns the number of content lines emitted.
-func emitAnnotatedLines(buf *bytes.Buffer, lines []string, startIdx, maxLines, maxBytes int, pretty bool) int {
-	emittedCount := 0
-	usePretty := prettyEnabled(pretty)
-	for i := startIdx; i < len(lines) && emittedCount < maxLines && buf.Len() < maxBytes; i++ {
-		lineNum := i + 1
-		line := lines[i]
-		lineStr := formatPlainReadLine(lineNum, line) + "\n"
-		if usePretty {
-			lineStr = formatPrettyReadLine(lineNum, line) + "\n"
-		}
-		if i < len(lines)-1 && emittedCount > 0 {
-			notice := fmt.Sprintf("-- truncated: use read-range --offset %d --", i+1)
-			if usePretty {
-				notice = formatPrettyNotice(notice)
-			}
-			if buf.Len()+len(lineStr)+len(notice)+1 > maxBytes {
-				appendLimitedString(buf, notice+"\n", maxBytes)
-				break
-			}
-		}
-
-		written, full := appendLimitedLine(buf, lineStr, maxBytes)
-		if written > 0 {
-			emittedCount++
-		}
-		if !full {
-			break
-		}
-
-		if emittedCount >= maxLines && i < len(lines)-1 {
-			appendLimitedNotice(buf, fmt.Sprintf("-- truncated: use read-range --offset %d --", i+2), maxBytes, usePretty)
-			break
-		}
-	}
-	return emittedCount
-}
-
 func appendJSONReadLine(result []ReadLine, byteCount int, lineNum int, line string, maxBytes int) ([]ReadLine, int, bool) {
 	tag := formatTag(lineNum, line)
 	separatorBytes := 0
@@ -289,17 +161,19 @@ func appendJSONReadLine(result []ReadLine, byteCount int, lineNum int, line stri
 	}
 	available := maxBytes - byteCount - separatorBytes
 	if available <= 0 {
-		return result, byteCount, true
+		return result, byteCount, false
 	}
 
-	// [喵喵喵]: 编码后的 JSON 文本不会短于原始 UTF-8 文本；超预算的长行无需先完整序列化。
-	if len(line) <= available {
-		full := ReadLine{Line: lineNum, Anchor: tag, Text: line}
-		if size := jsonReadLineSize(full); size <= available {
-			return append(result, full), byteCount + separatorBytes + size, false
-		}
+	full := ReadLine{Line: lineNum, Anchor: tag, Text: line}
+	if size := jsonReadLineSize(full); size <= available {
+		return append(result, full), byteCount + separatorBytes + size, true
+	}
+	if len(result) > 0 {
+		// [喵喵喵]: 当前页放不下并不等于源代码行过长；留给下一页可保持 proof 完整。
+		return result, byteCount, false
 	}
 
+	// [喵喵喵]: 只有单独占据整页仍放不下的行才允许内联截断，并明确排除其 proof。
 	truncatedText := jsonTextTruncationSuffix
 	withSuffix := func(text string) ReadLine {
 		return ReadLine{Line: lineNum, Anchor: tag, Text: text + truncatedText, TextTruncated: true}
@@ -344,29 +218,33 @@ func appendJSONReadLine(result []ReadLine, byteCount int, lineNum int, line stri
 		}
 	}
 	if bestSize == 0 {
-		return result, byteCount, true
+		return result, byteCount, false
 	}
 	return append(result, best), byteCount + separatorBytes + bestSize, true
 }
 
-// collectAnnotatedLines gathers lines into ReadLine structs with truncation metadata.
+// collectAnnotatedLines gathers full lines unless a single source line exceeds
+// the complete page budget. The final boolean reports only that true line case.
 func collectAnnotatedLines(lines []string, startIdx, maxLines, maxBytes int) ([]ReadLine, bool, int) {
 	result := make([]ReadLine, 0)
 	byteCount := 0
 	for i := startIdx; i < len(lines) && len(result) < maxLines && byteCount < maxBytes; i++ {
 		lineNum := i + 1
 		previousCount := len(result)
-		var textTruncated bool
-		result, byteCount, textTruncated = appendJSONReadLine(result, byteCount, lineNum, lines[i], maxBytes)
-		if textTruncated {
-			if len(result) == previousCount {
-				return result, true, lineNum
-			}
+		var appended bool
+		result, byteCount, appended = appendJSONReadLine(result, byteCount, lineNum, lines[i], maxBytes)
+		if !appended {
+			return result, false, lineNum
+		}
+		if result[len(result)-1].TextTruncated {
 			return result, true, 0
+		}
+		if len(result) == previousCount {
+			return result, false, lineNum
 		}
 		if byteCount >= maxBytes || len(result) >= maxLines {
 			if i < len(lines)-1 {
-				return result, true, i + 2
+				return result, false, i + 2
 			}
 			break
 		}
@@ -374,8 +252,8 @@ func collectAnnotatedLines(lines []string, startIdx, maxLines, maxBytes int) ([]
 	return result, false, 0
 }
 
-// collectMatchLines gathers matching lines into ReadLine structs with truncation metadata.
-// matchIdxs are 1-indexed line numbers into lines.
+// collectMatchLines gathers matching/context lines. The final boolean reports
+// only a source line that cannot fit even on an otherwise empty page.
 func collectMatchLines(lines []string, matchIdxs []int, offset, maxLines, maxBytes int) ([]ReadLine, bool, int) {
 	startIdx := len(matchIdxs)
 	for i, ln := range matchIdxs {
@@ -388,307 +266,97 @@ func collectMatchLines(lines []string, matchIdxs []int, offset, maxLines, maxByt
 	byteCount := 0
 	for i := startIdx; i < len(matchIdxs) && len(result) < maxLines && byteCount < maxBytes; i++ {
 		ln := matchIdxs[i]
-		previousCount := len(result)
-		var textTruncated bool
-		result, byteCount, textTruncated = appendJSONReadLine(result, byteCount, ln, lines[ln-1], maxBytes)
-		if textTruncated {
-			if len(result) == previousCount {
-				return result, true, ln
+		var appended bool
+		result, byteCount, appended = appendJSONReadLine(result, byteCount, ln, lines[ln-1], maxBytes)
+		if !appended {
+			if len(result) > 0 {
+				return result, false, result[len(result)-1].Line + 1
 			}
+			return result, false, ln
+		}
+		if result[len(result)-1].TextTruncated {
 			return result, true, 0
 		}
 		if byteCount >= maxBytes {
-			if i < len(matchIdxs)-1 {
-				return result, true, ln + 1
+			if len(result) > 0 {
+				return result, false, result[len(result)-1].Line + 1
 			}
-			return result, false, 0
+			return result, false, matchIdxs[i+1]
 		}
 	}
 	remaining := len(matchIdxs) - startIdx - len(result)
 	if remaining > 0 && len(result) > 0 {
-		lastLn := matchIdxs[startIdx+len(result)-1]
-		return result, true, lastLn + 1
+		return result, false, result[len(result)-1].Line + 1
 	}
 	return result, false, 0
 }
 
-// emitMatchLines writes only matching LN#HASH:content lines with pagination info.
-// matchIdxs are 1-indexed line numbers into lines.
-func emitMatchLines(buf *bytes.Buffer, lines []string, matchIdxs []int, offset, maxLines, maxBytes int, pretty bool) {
-	startIdx := len(matchIdxs)
-	for i, ln := range matchIdxs {
-		if ln >= offset {
-			startIdx = i
-			break
-		}
+func searchJSONLineBudget(revision string, totalLines, maxBytes int) int {
+	// [喵喵喵]: 搜索结果比连续读取多一个 totalMatches 字段，必须按自己的 JSON 外壳预留预算。
+	empty := SearchResult{
+		OK: true, Revision: revision, TotalLines: totalLines, TotalMatches: 0,
+		Lines: []ReadLine{}, Truncated: true, NextOffset: totalLines + 1,
 	}
-
-	usePretty := prettyEnabled(pretty)
-	count := 0
-	lastLn := 0
-	for i := startIdx; i < len(matchIdxs) && count < maxLines && buf.Len() < maxBytes; i++ {
-		ln := matchIdxs[i]
-		line := lines[ln-1]
-		lineStr := formatPlainReadLine(ln, line) + "\n"
-		if usePretty {
-			lineStr = formatPrettyReadLine(ln, line) + "\n"
-		}
-		if i < len(matchIdxs)-1 && count > 0 {
-			notice := fmt.Sprintf("-- %d more matches, use offset %d --", len(matchIdxs)-i, ln)
-			if usePretty {
-				notice = formatPrettyNotice(notice)
-			}
-			if buf.Len()+len(lineStr)+len(notice)+1 > maxBytes {
-				appendLimitedString(buf, notice+"\n", maxBytes)
-				break
-			}
-		}
-
-		written, full := appendLimitedLine(buf, lineStr, maxBytes)
-		if written > 0 {
-			count++
-			lastLn = ln
-		}
-		if !full {
-			break
-		}
+	budget := maxBytes - jsonValueSize(empty) - 1
+	if budget < 0 {
+		return 0
 	}
-
-	remaining := len(matchIdxs) - startIdx - count
-	if remaining > 0 && lastLn > 0 {
-		appendLimitedNotice(buf, fmt.Sprintf("-- %d more matches, use offset %d --", remaining, lastLn+1), maxBytes, usePretty)
-	}
+	return budget
 }
 
-func cmdReadPrettyWithMode(path, grep string, literal bool, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
-	file, errored := readCommandFile(path)
-	lines := file.Lines
-	if errored {
+func cmdSearch(path, pattern string, offset, limit int, literal bool, contextN int, ignoreCase bool) error {
+	file, ok := loadCommandTextFile(path)
+	if !ok {
 		return nil
 	}
-
-	matchIdxs, matchErr := filterLinesWithMode(lines, grep, literal, ignoreCase)
-	if matchErr != nil {
-		return emitError("grep", fmt.Sprintf("invalid grep pattern: %v", matchErr))
+	if pattern == "" {
+		return emitError("pattern", "search pattern must not be empty")
 	}
-
-	if jsonOut {
-		jsonLineBytes := readJSONLineBudget(file.Revision, len(lines), readOutputMaxBytes)
-		var readLines []ReadLine
-		var truncated bool
-		var nextOffset int
-		if matchIdxs != nil {
-			matchIdxs = applyContext(lines, matchIdxs, contextN)
-			readLines, truncated, nextOffset = collectMatchLines(lines, matchIdxs, 1, 2000, jsonLineBytes)
-		} else {
-			readLines, truncated, nextOffset = collectAnnotatedLines(lines, 0, 2000, jsonLineBytes)
-		}
-		return emitJSON(ReadResult{OK: true, Revision: file.Revision, TotalLines: len(lines), Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
-	}
-
-	var buf bytes.Buffer
-	if matchIdxs != nil {
-		matchIdxs = applyContext(lines, matchIdxs, contextN)
-		emitMatchLines(&buf, lines, matchIdxs, 1, 2000, readOutputMaxBytes, pretty)
-	} else {
-		emitAnnotatedLines(&buf, lines, 0, 2000, readOutputMaxBytes, pretty)
-	}
-	fmt.Print(buf.String())
-	return nil
-}
-
-func cmdReadPretty(path, grep string, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
-	return cmdReadPrettyWithMode(path, grep, false, contextN, ignoreCase, jsonOut, pretty)
-}
-
-// emitAnchorLines writes ANCHOR\tTEXT lines (completion-friendly) with truncation.
-func emitAnchorLines(buf *bytes.Buffer, lines []string, startIdx, maxLines, maxBytes int, pretty bool) {
-	emittedCount := 0
-	usePretty := prettyEnabled(pretty)
-	for i := startIdx; i < len(lines) && emittedCount < maxLines && buf.Len() < maxBytes; i++ {
-		lineNum := i + 1
-		line := lines[i]
-		lineStr := formatPlainAnchorLine(lineNum, line) + "\n"
-		if usePretty {
-			lineStr = formatPrettyAnchorLine(lineNum, line) + "\n"
-		}
-		if i < len(lines)-1 && emittedCount > 0 {
-			notice := fmt.Sprintf("-- truncated: use anchors --offset %d --", i+1)
-			if usePretty {
-				notice = formatPrettyNotice(notice)
-			}
-			if buf.Len()+len(lineStr)+len(notice)+1 > maxBytes {
-				appendLimitedString(buf, notice+"\n", maxBytes)
-				break
-			}
-		}
-
-		written, full := appendLimitedLine(buf, lineStr, maxBytes)
-		if written > 0 {
-			emittedCount++
-		}
-		if !full {
-			break
-		}
-
-		if emittedCount >= maxLines && i < len(lines)-1 {
-			appendLimitedNotice(buf, fmt.Sprintf("-- truncated: use anchors --offset %d --", i+2), maxBytes, usePretty)
-			break
-		}
-	}
-}
-
-// emitAnchorMatchLines writes matching ANCHOR\tTEXT lines with pagination notice.
-func emitAnchorMatchLines(buf *bytes.Buffer, lines []string, matchIdxs []int, offset, maxLines, maxBytes int, pretty bool) {
-	startIdx := len(matchIdxs)
-	for i, ln := range matchIdxs {
-		if ln >= offset {
-			startIdx = i
-			break
-		}
-	}
-
-	usePretty := prettyEnabled(pretty)
-	count := 0
-	lastLn := 0
-	for i := startIdx; i < len(matchIdxs) && count < maxLines && buf.Len() < maxBytes; i++ {
-		ln := matchIdxs[i]
-		line := lines[ln-1]
-		lineStr := formatPlainAnchorLine(ln, line) + "\n"
-		if usePretty {
-			lineStr = formatPrettyAnchorLine(ln, line) + "\n"
-		}
-		if i < len(matchIdxs)-1 && count > 0 {
-			notice := fmt.Sprintf("-- %d more matches, use offset %d --", len(matchIdxs)-i, ln)
-			if usePretty {
-				notice = formatPrettyNotice(notice)
-			}
-			if buf.Len()+len(lineStr)+len(notice)+1 > maxBytes {
-				appendLimitedString(buf, notice+"\n", maxBytes)
-				break
-			}
-		}
-
-		written, full := appendLimitedLine(buf, lineStr, maxBytes)
-		if written > 0 {
-			count++
-			lastLn = ln
-		}
-		if !full {
-			break
-		}
-	}
-
-	remaining := len(matchIdxs) - startIdx - count
-	if remaining > 0 && lastLn > 0 {
-		appendLimitedNotice(buf, fmt.Sprintf("-- %d more matches, use offset %d --", remaining, lastLn+1), maxBytes, usePretty)
-	}
-}
-
-func cmdAnchorsPrettyWithMode(path string, offset, limit int, grep string, literal bool, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
-	file, errored := readCommandFile(path)
-	lines := file.Lines
-	if errored {
-		return nil
-	}
-
 	if offset < 1 {
 		offset = 1
 	}
-	if offset > len(lines) {
-		return emitReadRangeError(offset, len(lines))
+	if len(file.Lines) > 0 && offset > len(file.Lines) {
+		return emitReadRangeError(offset, len(file.Lines))
+	}
+	if limit <= 0 {
+		limit = 100
 	}
 
-	maxLines := limit
-	if maxLines <= 0 {
-		maxLines = 2000
-	}
-
-	matchIdxs, matchErr := filterLinesWithMode(lines, grep, literal, ignoreCase)
+	matches, matchErr := filterLinesWithMode(file.Lines, pattern, literal, ignoreCase)
 	if matchErr != nil {
-		return emitError("grep", fmt.Sprintf("invalid grep pattern: %v", matchErr))
+		return emitError("pattern", fmt.Sprintf("invalid search pattern: %v", matchErr))
 	}
-
-	if jsonOut {
-		jsonLineBytes := readJSONLineBudget(file.Revision, len(lines), readOutputMaxBytes)
-		var readLines []ReadLine
-		var truncated bool
-		var nextOffset int
-		if matchIdxs != nil {
-			matchIdxs = applyContext(lines, matchIdxs, contextN)
-			readLines, truncated, nextOffset = collectMatchLines(lines, matchIdxs, offset, maxLines, jsonLineBytes)
-		} else {
-			readLines, truncated, nextOffset = collectAnnotatedLines(lines, offset-1, maxLines, jsonLineBytes)
-		}
-		return emitJSON(ReadResult{OK: true, Revision: file.Revision, TotalLines: len(lines), Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
+	if len(file.Lines) > 0 && len(matches) == len(file.Lines) {
+		return emitError("broad_pattern", "search pattern matches every source line; use a contiguous range read instead")
 	}
-
-	var buf bytes.Buffer
-	if matchIdxs != nil {
-		matchIdxs = applyContext(lines, matchIdxs, contextN)
-		emitAnchorMatchLines(&buf, lines, matchIdxs, offset, maxLines, readOutputMaxBytes, pretty)
-	} else {
-		emitAnchorLines(&buf, lines, offset-1, maxLines, readOutputMaxBytes, pretty)
-	}
-
-	fmt.Print(buf.String())
-	return nil
+	contextLines := applyContext(file.Lines, matches, contextN)
+	jsonLineBytes := searchJSONLineBudget(file.Revision, len(file.Lines), readOutputMaxBytes)
+	readLines, lineTruncated, nextOffset := collectMatchLines(file.Lines, contextLines, offset, limit, jsonLineBytes)
+	return emitJSON(SearchResult{
+		OK: true, Revision: file.Revision, TotalLines: len(file.Lines), TotalMatches: len(matches),
+		Lines: readLines, Truncated: lineTruncated || nextOffset > 0, NextOffset: nextOffset,
+	})
 }
 
-func cmdAnchorsPretty(path string, offset, limit int, grep string, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
-	return cmdAnchorsPrettyWithMode(path, offset, limit, grep, false, contextN, ignoreCase, jsonOut, pretty)
-}
-
-func cmdReadRangePrettyWithMode(path string, offset, limit int, grep string, literal bool, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
-	file, errored := readCommandFile(path)
-	lines := file.Lines
-	if errored {
+func cmdReadRange(path string, offset, limit int) error {
+	file, ok := loadCommandTextFile(path)
+	if !ok {
 		return nil
 	}
-
 	if offset < 1 {
 		offset = 1
 	}
-	if offset > len(lines) {
-		return emitReadRangeError(offset, len(lines))
+	if len(file.Lines) == 0 || offset > len(file.Lines) {
+		return emitReadRangeError(offset, len(file.Lines))
+	}
+	if limit <= 0 {
+		limit = 160
 	}
 
-	maxLines := limit
-	if maxLines <= 0 {
-		maxLines = 2000
-	}
-
-	matchIdxs, matchErr := filterLinesWithMode(lines, grep, literal, ignoreCase)
-	if matchErr != nil {
-		return emitError("grep", fmt.Sprintf("invalid grep pattern: %v", matchErr))
-	}
-
-	if jsonOut {
-		jsonLineBytes := readJSONLineBudget(file.Revision, len(lines), readOutputMaxBytes)
-		var readLines []ReadLine
-		var truncated bool
-		var nextOffset int
-		if matchIdxs != nil {
-			matchIdxs = applyContext(lines, matchIdxs, contextN)
-			readLines, truncated, nextOffset = collectMatchLines(lines, matchIdxs, offset, maxLines, jsonLineBytes)
-		} else {
-			readLines, truncated, nextOffset = collectAnnotatedLines(lines, offset-1, maxLines, jsonLineBytes)
-		}
-		return emitJSON(ReadResult{OK: true, Revision: file.Revision, TotalLines: len(lines), Lines: readLines, Truncated: truncated, NextOffset: nextOffset})
-	}
-
-	var buf bytes.Buffer
-	if matchIdxs != nil {
-		matchIdxs = applyContext(lines, matchIdxs, contextN)
-		emitMatchLines(&buf, lines, matchIdxs, offset, maxLines, readOutputMaxBytes, pretty)
-	} else {
-		emitAnnotatedLines(&buf, lines, offset-1, maxLines, readOutputMaxBytes, pretty)
-	}
-
-	fmt.Print(buf.String())
-	return nil
-}
-
-func cmdReadRangePretty(path string, offset, limit int, grep string, contextN int, ignoreCase bool, jsonOut bool, pretty bool) error {
-	return cmdReadRangePrettyWithMode(path, offset, limit, grep, false, contextN, ignoreCase, jsonOut, pretty)
+	lineBudget := readJSONLineBudget(file.Revision, len(file.Lines), readOutputMaxBytes)
+	lines, sourceLineTruncated, nextOffset := collectAnnotatedLines(file.Lines, offset-1, limit, lineBudget)
+	return emitJSON(ReadResult{
+		OK: true, Revision: file.Revision, TotalLines: len(file.Lines), Lines: lines,
+		Truncated: sourceLineTruncated || nextOffset > 0, NextOffset: nextOffset,
+	})
 }

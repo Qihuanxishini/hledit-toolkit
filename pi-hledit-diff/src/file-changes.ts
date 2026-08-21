@@ -62,11 +62,11 @@ function serializeCliBatchRequest(params: FileChangeParams, proof?: HleditBatchR
 }
 
 export function buildFileChangeRequest(params: FileChangeParams, proof?: HleditBatchReadProof): { args: string[]; stdin: string } {
-	return { args: ["batch", params.path], stdin: serializeCliBatchRequest(params, proof) };
+	return { args: ["batch", "--", params.path], stdin: serializeCliBatchRequest(params, proof) };
 }
 
 export function buildFileChangeCheckRequest(params: FileChangeParams, proof?: HleditBatchReadProof): { args: string[]; stdin: string } {
-	return { args: ["batch", "--check", params.path], stdin: serializeCliBatchRequest(params, proof) };
+	return { args: ["batch", "--check", "--", params.path], stdin: serializeCliBatchRequest(params, proof) };
 }
 
 

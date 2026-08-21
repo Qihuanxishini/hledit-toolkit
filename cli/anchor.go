@@ -5,9 +5,9 @@ import (
 	"regexp"
 )
 
-var anchorRE = regexp.MustCompile(`^(\d+)#([A-Za-z0-9_-]{3})(?::.*)?\s*$`)
+var anchorRE = regexp.MustCompile(`^(\d+)#([A-Za-z0-9_-]{3})$`)
 
-// parseAnchor accepts a strict LN#HHH anchor with an optional direct :text annotation.
+// parseAnchor accepts only an exact LN#HHH token from the structured protocol.
 func parseAnchor(s string) (Anchor, error) {
 	matches := anchorRE.FindStringSubmatch(s)
 	if len(matches) != 3 {

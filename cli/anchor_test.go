@@ -13,10 +13,10 @@ func TestParseAnchor(t *testing.T) {
 		wantErr string
 	}{
 		{name: "valid", input: "5#aB3", want: Anchor{Line: 5, Hash: "aB3"}},
-		{name: "annotated line", input: "5#aB3:func main() {", want: Anchor{Line: 5, Hash: "aB3"}},
+		{name: "annotated line", input: "5#aB3:func main() {", wantErr: "expected LN#HHH"},
 		{name: "whitespace inside anchor", input: "  12 # xY7 :suffix", wantErr: "expected LN#HHH"},
 		{name: "whitespace before annotation", input: "5#aB3 :suffix", wantErr: "expected LN#HHH"},
-		{name: "trailing whitespace", input: "5#aB3   ", want: Anchor{Line: 5, Hash: "aB3"}},
+		{name: "trailing whitespace", input: "5#aB3   ", wantErr: "expected LN#HHH"},
 		{name: "legacy two-character hash", input: "5#WS", wantErr: "expected LN#HHH"},
 		{name: "trailing garbage", input: "5#aB3garbage", wantErr: "expected LN#HHH"},
 		{name: "invalid format", input: "not-an-anchor", wantErr: "expected LN#HHH"},

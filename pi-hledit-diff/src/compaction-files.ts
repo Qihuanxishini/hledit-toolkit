@@ -1,6 +1,7 @@
 import {
 	HLEDIT_APPLY_FILE_CHANGES_TOOL,
 	HLEDIT_READ_ANCHORS_TOOL,
+	HLEDIT_SEARCH_ANCHORS_TOOL,
 } from "./active-tools.ts";
 import { parseRecoveredRead } from "./result.ts";
 
@@ -31,7 +32,7 @@ export function recordAnchoredFileOperations(messages: unknown[], fileOps: Ancho
 		const { disposition, path, contentChanged } = record;
 		if (typeof path !== "string" || path.length === 0) continue;
 
-		if (candidate.toolName === HLEDIT_READ_ANCHORS_TOOL) {
+		if (candidate.toolName === HLEDIT_READ_ANCHORS_TOOL || candidate.toolName === HLEDIT_SEARCH_ANCHORS_TOOL) {
 			if (disposition === "succeeded") fileOps.read.add(path);
 			continue;
 		}

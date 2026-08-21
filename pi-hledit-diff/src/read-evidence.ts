@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import {
 	HLEDIT_APPLY_FILE_CHANGES_TOOL,
 	HLEDIT_READ_ANCHORS_TOOL,
+	HLEDIT_SEARCH_ANCHORS_TOOL,
 } from "./active-tools.ts";
 import { computeAnchorTag } from "./anchor-hash.ts";
 import { lineFromAnchor, type HleditBatchReadProof } from "./file-changes.ts";
@@ -12,7 +13,7 @@ import { parseAnchorContext, type BatchAnchorContext } from "./post-edit-context
 import {
 	parseEditDeltas,
 	parseHleditReadMetadata,
-	parseRecoveredRead,
+	parseRecoveredReads,
 	type HleditDetails,
 	type HleditEditDelta,
 	type HleditReadMetadata,
@@ -479,7 +480,7 @@ export class ReadEvidenceStore {
 	}
 
 	recordRead(path: string, read: HleditReadMetadata, proofId?: string): void {
-		if (read.requested.grep !== undefined && read.lines.length === 0) {
+		if (read.requested.pattern !== undefined && read.lines.length === 0) {
 			// [喵喵喵]: 0 命中不是一次成功的编辑证明；必须清除该文件的旧 proof，
 			// 防止模型在查询失败后误用历史锚点。(2026-08-01)
 			this.files.delete(path);
@@ -790,7 +791,7 @@ export class ReadEvidenceStore {
 			const path = evidencePathFromDetails(details, ctx.cwd);
 			if (!path) continue;
 
-			if (entry.message.toolName === HLEDIT_READ_ANCHORS_TOOL) {
+			if (entry.message.toolName === HLEDIT_READ_ANCHORS_TOOL || entry.message.toolName === HLEDIT_SEARCH_ANCHORS_TOOL) {
 				if (details.disposition === "succeeded") {
 					const read = parseHleditReadMetadata(details.read);
 					if (read) this.recordRead(path, read, typeof details.proofId === "string" ? details.proofId : undefined);
@@ -803,8 +804,7 @@ export class ReadEvidenceStore {
 
 			if (entry.message.toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) continue;
 			const applyDetails = details as HleditDetails;
-			const recoveredRead = parseRecoveredRead(applyDetails);
-			if (recoveredRead) {
+			for (const recoveredRead of parseRecoveredReads(applyDetails)) {
 				this.recordRead(path, recoveredRead, typeof applyDetails.proofId === "string" ? applyDetails.proofId : undefined);
 			}
 			this.recordApplyResult(path, applyDetails);
@@ -817,7 +817,7 @@ export class ReadEvidenceStore {
 		const path = evidencePathFromDetails(details, cwd);
 		if (!path) return;
 
-		if (toolName === HLEDIT_READ_ANCHORS_TOOL) {
+		if (toolName === HLEDIT_READ_ANCHORS_TOOL || toolName === HLEDIT_SEARCH_ANCHORS_TOOL) {
 			if (details.disposition === "succeeded" && details.read) {
 				this.recordRead(path, details.read, typeof details.proofId === "string" ? details.proofId : undefined);
 			} else {
@@ -826,8 +826,7 @@ export class ReadEvidenceStore {
 			return;
 		}
 		if (toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) return;
-		const recoveredRead = parseRecoveredRead(details);
-		if (recoveredRead) {
+		for (const recoveredRead of parseRecoveredReads(details)) {
 			this.recordRead(path, recoveredRead, typeof details.proofId === "string" ? details.proofId : undefined);
 		}
 		this.recordApplyResult(path, details);

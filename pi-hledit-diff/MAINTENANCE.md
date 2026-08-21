@@ -29,7 +29,7 @@ pi-hledit-diff/
 ```json
 {
   "ok": true,
-  "version": "3.1.0",
+  "version": "3.2.0",
   "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,
@@ -39,9 +39,10 @@ pi-hledit-diff/
   "batchWireV3": true,
   "batchReadProof": true,
   "batchEditDeltas": true,
-  "readIgnoreCase": true,
-  "readRegex": true,
-  "readLiteral": true
+  "searchIgnoreCase": true,
+  "searchRegex": true,
+  "searchLiteral": true,
+  "search": true
 }
 ```
 
@@ -55,14 +56,15 @@ pi-hledit-diff/
 
 ## 工具协议与激活
 
-插件只注册两个 LLM 工具：
+插件注册三个 LLM 工具：
 
 | 工具 | 职责 |
 | --- | --- |
-| `hledit_read_anchors` | 读取文本文件并返回 `LN#HASH` 锚点及结构化 snapshot。 |
+| `hledit_read_anchors` | 读取连续文本范围并返回 `LN#HASH` 锚点及结构化 snapshot。 |
+| `hledit_search_anchors` | 按 RE2 正则或字面量模式搜索，并返回匹配/上下文锚点行。 |
 | `hledit_apply_file_changes` | 对一个文件提交完整非冲突 change batch，原子应用并返回新锚点。 |
 
-两个工具都声明 `constrainedSampling: { type: "json_schema", strict: "prefer" }`。CLI 健康时，active set 始终保留这两个工具、移除内置 `edit` 并保留无关工具；`session_tree` 和 `/reload` 后重新同步同一策略。CLI 不可用时恢复内置 `edit`。不存在 `/tools` 假设、动态 evidence 可见性、Plan Mode 联动或内置 `edit` 名称 override。
+三个工具都声明 `constrainedSampling: { type: "json_schema", strict: "prefer" }`。CLI 健康时，active set 始终保留这三个工具、移除内置 `edit` 并保留无关工具；`session_tree` 和 `/reload` 后重新同步同一策略。CLI 不可用时恢复内置 `edit`。不存在 `/tools` 假设、动态 evidence 可见性、Plan Mode 联动或内置 `edit` 名称 override。
 
 当前公开协议按 `JSON.stringify(parameters) + description + promptGuidelines` 计量，回归上限为 4,200 characters；精确值由测试输出和最终验证记录，不在文档中固化。
 
@@ -73,17 +75,12 @@ pi-hledit-diff/
   path: string,
   offset?: number,
   limit?: number,
-  grep?: string,
-  literal?: boolean,
-  context?: number,
-  ignore_case?: boolean,
 }
 ```
 
-- 编辑现有非空可读文本文件前，使用该工具读取会被消费的全部原始行；普通 `read` 只用于参考或目标未定的探索。
-- 默认 `limit` 为 160，公开上限 2000；`grep` 默认使用 Go RE2 正则，`literal:true` 显式切换字面子串匹配，`context` 可贡献离散局部 proof，`ignore_case` 透传 `--ignore-case`。
-- `prepareArguments` 仅用于 read：宽容转换不改变语义的数字字符串和边界值；非整数仍由严格 schema 拒绝。apply 不做兼容预处理。
-- 固定调用 `read-range --json`。响应验证 revision、总行数、连续性/递增顺序、锚点格式、分页和 source-line truncation；模型正文和 `details.read` 都由已验证结构生成。
+- 编辑现有非空可读文本文件前，使用该工具读取会被消费的全部连续原始行；普通 `read` 只用于参考或目标未定的探索。
+- 默认 `limit` 为 160，公开上限 2000；它只执行连续范围读取，不接受 grep、literal、context 或 ignore_case。
+- 固定调用 `read-range`。响应验证 revision、总行数、连续性/递增顺序、锚点格式、分页和 source-line truncation；模型正文和 `details.read` 都由已验证结构生成。
 - CLI 执行、响应验证和 evidence 更新是同一个 canonical file queue 事务。不得在队列外记录晚到 snapshot。
 
 成功响应示例：
@@ -99,8 +96,26 @@ pi-hledit-diff/
 }
 ```
 
+### `hledit_search_anchors`
 
-插件对非零命中或普通范围 read 生成 `proof_id`，同时写入模型正文与 `details.proofId`；零命中 grep 不生成 proof，并清除该 canonical path 的旧 proof generation。分页或后续显式 read 会轮换 proof id，同时在同 revision 下合并已验证行。
+```ts
+{
+  path: string,
+  pattern: string,
+  offset?: number,
+  limit?: number,
+  literal?: boolean,
+  context?: number,
+  ignore_case?: boolean,
+}
+```
+
+- 默认 `pattern` 使用 Go RE2 正则；`literal:true` 切换为字面子串，`context` 添加匹配行前后的物理行，`ignore_case` 启用大小写不敏感匹配。
+- 宽匹配模式会被 CLI 拒绝为 `broad_pattern`，不能用搜索工具伪装连续整文件读取；需要查看连续文件范围时改用 `hledit_read_anchors`。
+- 固定调用 `search`。结果额外包含 `totalMatches`，`nextOffset` 仍是物理行游标；零命中不生成 proof 并清除该 canonical path 的旧 proof generation。
+- 搜索返回的完整匹配/上下文行可以贡献局部 proof；搜索结果不保证连续覆盖，范围编辑缺口由 apply 内部自动分页补读。
+
+读取结果的 proof 规则：插件对非零命中或普通范围 read 生成 `proof_id`，同时写入模型正文与 `details.proofId`；分页或后续显式 read/search 会轮换 proof id，同时在同 revision 下合并已验证行。`textTruncated` 行不建立 proof。
 
 ### `hledit_apply_file_changes`
 
@@ -126,7 +141,7 @@ pi-hledit-diff/
 - 单次 batch 限 1–200 个 changes，replacement 总量限 1 MiB UTF-8，输出总量限 20,000 行；
 - batch stdin request 总大小限 8 MiB；`lines` 与 `proof.anchors` 的每个元素必须是 JSON 字符串，`null` 等类型会被拒绝；
 - 公开 schema 要求 `proof_id`，但不暴露 raw revision 或 CLI `proof`；插件仅接受当前 canonical path 上最近有效 read generation 的 id，再从 branch evidence 注入每个消费行或 insert 依附行的完整 hidden proof；
-- proof id 无效或跨路径使用时不启动 CLI；proof 行覆盖不完整时，apply 在同一 canonical file queue 内完成一次定向只读。若仍有 `nextOffset`，只返回下一页 read 指引并禁止提前重提 apply；覆盖完整缺口后通过顶层 `recoveredRead` 与新的 `proof_id` 返回当前证据，调用方审阅后显式重提 batch。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；插件不自动重放修改；
+- proof id 无效或跨路径使用时不启动 CLI；proof 行覆盖不完整时，apply 在同一 canonical file queue 内自动分页执行定向只读，直到完整覆盖目标缺口或遇到终止性错误。成功恢复通过 `recoveredReads`、兼容字段 `recoveredRead` 与新的 `proof_id` 返回当前证据，调用方审阅后显式重提 batch。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；插件不自动重放修改；
 - 每个通过插件的 apply 都先执行一次 `batch --check`，验证当前 revision、hidden proof、全部锚点与操作冲突；check 失败确认零写入；
 - check 成功后才执行一次非 check `batch`，CLI 在原子替换前再次复检 raw-byte revision，插件本身不写目标文件。
 
@@ -143,8 +158,8 @@ pi-hledit-diff/
 
 Evidence 以 resolved canonical path 为 key，每个文件状态包含当前 `proofId` generation、raw-byte revision、完整观察行、verified rename alias 和 ambiguous token：
 
-- 普通范围和 grep 同 revision 按行合并；新 revision 替换旧 state。`textTruncated` 行不建立 proof；
-- 零命中 grep 立即清除该路径旧 proof；非零显式 read 轮换 proof id，同 revision 下可继续合并已验证窗口。apply 必须提交匹配当前 generation 的 id；成功 apply 产生的新 revision 延续同一 generation，使受控更新锚点可继续使用；
+- 普通范围和搜索结果同 revision 按行合并；新 revision 替换旧 state。`textTruncated` 行不建立 proof；
+- 零命中搜索立即清除该路径旧 proof；非零显式 read/search 轮换 proof id，同 revision 下可继续合并已验证窗口。apply 必须提交匹配当前 generation 的 id；成功 apply 产生的新 revision 延续同一 generation，使受控更新锚点可继续使用；
 - apply 成功后，消费区间 evidence 被删除，区间外行按已验证 `editDeltas` 平移并用 `anchor-hash.ts` 自校验重算，再合并 `updatedAnchors`；
 - verified rename 仅在目标唯一、非歧义、同 revision，且替换后完整 proof 再次成立时内部规范化；CLI 仍复验 raw revision、proof 和全部 anchors，成功结果通过 `details.resolvedAnchors` 报告映射；
 - 持续存活且可验证平移的目标保留 verified rename；旧 token 被当前行重新占用，或其源行/alias 最终目标被消费失联时进入 ambiguous set 并持续到显式重读，以防立即或延迟复用。`selectProof` 在 CLI 启动前拒绝 ambiguous token；只有直接读取覆盖当前行时才删除同 token 的旧身份并建立当前语义。`updatedAnchors` 不自动消歧；
@@ -224,15 +239,15 @@ CLI 写入逐行保留未修改 terminator、BOM 和 trailing-newline 状态；�
 - 模型正文只列出落在本次编辑产出区间（由已验证 `editDeltas` 换算到新坐标）内的 updated anchors；区间外的行已由 evidence 平移与 verified rename 覆盖，不重复发给模型。纯删除产出空区间，不输出 anchor 块；不完整提示只在产出行未被实际返回窗口覆盖、或产出行自身文本被截断时追加（仅砍掉上下文行的 CLI `truncated` 不触发），且不再给出跨度可能达百行的 `desiredLimit` 重读建议；
 - expanded updated-anchor rows 只来自 `details.updatedAnchors`，不解析模型正文；
 - diff 在 120 列切换 split/unified，主题色、布局和高亮缓存必须在 `invalidate()` 正确清理；
-- `session_before_compact` 从两个工具的结构化结果补充 fileOps：read 成功 → read；带严格验证 `recoveredRead` 的零写入 apply → read；apply content change → modified；apply no-op → read；`outcome_unknown` → modified；其余确认零写入结果不记录。
+- `session_before_compact` 从三个工具的结构化结果补充 fileOps：read/search 成功 → read；带严格验证 `recoveredReads` 的零写入 apply → read；apply content change → modified；apply no-op → read；`outcome_unknown` → modified；其余确认零写入结果不记录。
 
 ## 源码结构
 
 | 文件 | 职责 |
 | --- | --- |
-| `index.ts` | 两工具注册、apply queue 主流程、错误升级与 active-tool 生命周期。 |
-| `src/schema.ts` | 两工具的严格 schema 与参数类型。 |
-| `src/read-transaction.ts` | read CLI、结果校验和 evidence 更新的 canonical queue 事务。 |
+| `index.ts` | 三工具注册、apply queue 主流程、错误升级与 active-tool 生命周期。 |
+| `src/schema.ts` | 三工具的严格 schema 与参数类型。 |
+| `src/read-transaction.ts` | read/search CLI、结果校验和 evidence 更新的 canonical queue 事务。 |
 | `src/read-evidence.ts` | revision proof、rename/ambiguity、容量、重映射、失效与 branch replay。 |
 | `src/file-changes.ts` | 四种公开 change → CLI batch，以及单行范围护栏。 |
 | `src/cli.ts` | CLI 3.x capability 门禁、bounded output 和 exit-confirmed 进程终止。 |
@@ -240,7 +255,7 @@ CLI 写入逐行保留未修改 terminator、BOM 和 trailing-newline 状态；�
 | `src/change-preview.ts` | 提交绑定 preview、UTF-8 cap、结构重验和 diff 文本桥。 |
 | `src/post-edit-context.ts` | `updatedAnchors` 验证与模型正文格式化。 |
 | `src/render.ts` / `src/diff-renderer.ts` | 结构化锚点与自适应 diff TUI。 |
-| `src/compaction-files.ts` | 两工具结构化结果的 compaction fileOps。 |
+| `src/compaction-files.ts` | 三工具结构化结果的 compaction fileOps。 |
 
 ## 验证与 binary 更新
 
@@ -265,7 +280,7 @@ npm run test:bundled
 npm run check
 ```
 
-`test:bundled` 必须覆盖 CLI contract、anchor hash 对拍、两工具激活与 tool-result 集成。tracked bundled CLI 固定使用 Go 1.26.3、`CGO_ENABLED=0`、`GOAMD64=v1` 与上述参数构建，`-buildvcs=false` 保证工作树状态不进入制品。CI 的 Windows job 必须在 build step 前安装 Node 依赖并运行该脚本，然后以同一工具链重建、逐字节校验 tracked binary，再次运行 bundled 与 full check。
+`test:bundled` 必须覆盖 CLI contract、anchor hash 对拍、三工具激活与 tool-result 集成。tracked bundled CLI 固定使用 Go 1.26.3、`CGO_ENABLED=0`、`GOAMD64=v1` 与上述参数构建，`-buildvcs=false` 保证工作树状态不进入制品。CI 的 Windows job 必须在 build step 前安装 Node 依赖并运行该脚本，然后以同一工具链重建、逐字节校验 tracked binary，再次运行 bundled 与 full check。
 
 ## 真实 Pi 验收
 
@@ -275,9 +290,9 @@ npm run check
 pi --no-extensions -e ./pi-hledit-diff/index.ts
 ```
 
-用 `/hledit-status` 确认 CLI 3.1.0 与 capability 健康，并覆盖：
+用 `/hledit-status` 确认 CLI 3.2.0 与 capability 健康，并覆盖：
 
-1. range、grep/context read 和四种 anchored operation；
+1. 连续 range read、正则/字面量 search/context 和四种 anchored operation；
 2. proof 缺失、stale、token 复用零写入、显式重读后成功；
 3. session branch 切换与 `/reload` 后 evidence/active set；
 4. mixed EOL、BOM、trailing newline、中文/emoji preview；

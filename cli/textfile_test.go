@@ -24,10 +24,10 @@ func TestReadFileLinesReportsInvalidUTF8(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	output := readTestCaptureStdout(t, func() {
-		lines, errored := readFileLines(target)
-		if !errored || lines != nil {
-			t.Fatalf("readFileLines = %#v, %v; want nil, true", lines, errored)
+	output := commandTestCaptureStdout(t, func() {
+		_, ok := loadCommandTextFile(target)
+		if ok {
+			t.Fatal("loadCommandTextFile unexpectedly succeeded")
 		}
 	})
 	if !strings.Contains(output, `"error":"encoding"`) {

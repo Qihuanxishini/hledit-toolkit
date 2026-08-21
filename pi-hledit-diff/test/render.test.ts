@@ -27,16 +27,16 @@ function render(component: { render(width: number): string[] }, width = 120): st
 	return component.render(width);
 }
 
-test("renderHleditCall includes read range and grep", () => {
-	assert.deepEqual(render(renderHleditCall("read_anchors", { path: "src/a.ts", offset: 3, limit: 5, grep: "token", context: 2 }, theme)), [
-		'read for edit src/a.ts 匹配 "token"（正则匹配；上下文 ±2 行；从第 3 行开始；最多 5 行）',
+test("renderHleditCall includes search range and pattern", () => {
+	assert.deepEqual(render(renderHleditCall("search_anchors", { path: "src/a.ts", offset: 3, limit: 5, pattern: "token", context: 2 }, theme)), [
+		'search anchors src/a.ts 匹配 "token"（正则匹配；上下文 ±2 行；从第 3 行开始；最多 5 行）',
 	]);
 });
 
 
-test("renderHleditCall labels literal and case-insensitive grep", () => {
-	assert.deepEqual(render(renderHleditCall("read_anchors", { path: "src/a.ts", grep: "Token", literal: true, ignore_case: true }, theme)), [
-		'read for edit src/a.ts 包含 "Token"（字面匹配；忽略大小写）',
+test("renderHleditCall labels literal and case-insensitive search", () => {
+	assert.deepEqual(render(renderHleditCall("search_anchors", { path: "src/a.ts", pattern: "Token", literal: true, ignore_case: true }, theme)), [
+		'search anchors src/a.ts 包含 "Token"（字面匹配；忽略大小写）',
 	]);
 });
 

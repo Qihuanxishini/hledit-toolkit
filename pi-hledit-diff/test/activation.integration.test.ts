@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import piHleditDiffExtension from "../index.ts";
-import { HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_READ_ANCHORS_TOOL } from "../src/active-tools.ts";
+import { HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL } from "../src/active-tools.ts";
 import type { TextResult } from "../src/result.ts";
 
 type ExtensionListener = (event: unknown, context: TestContext) => unknown | Promise<unknown>;
@@ -77,7 +77,7 @@ test("anchored editing tools stay active regardless of current read evidence", a
 		sessionManager: { getBranch: () => branch },
 	};
 	const harness = registerActivationHarness();
-	const expectedActiveTools = ["read", "bash", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL];
+	const expectedActiveTools = ["read", "bash", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL];
 	await harness.listener("session_start")({}, context);
 	assert.deepEqual(harness.activeTools(), expectedActiveTools);
 
@@ -158,8 +158,8 @@ test("anchored editing tools stay active regardless of current read evidence", a
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
 });
 
-test("grep reads provide partial proof without a second range read", async (t) => {
-	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-grep-proof-"));
+test("search results provide partial proof without a second range read", async (t) => {
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-search-proof-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
 	const partialTarget = join(directory, "partial.txt");
 	const contextTarget = join(directory, "context.txt");
@@ -173,14 +173,13 @@ test("grep reads provide partial proof without a second range read", async (t) =
 	};
 	const harness = registerActivationHarness();
 	await harness.listener("session_start")({}, context);
-	const readTool = harness.tools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const searchTool = harness.tools.get(HLEDIT_SEARCH_ANCHORS_TOOL);
 	const applyTool = harness.tools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
-	assert.ok(readTool);
-	assert.ok(applyTool);
+	assert.ok(searchTool && applyTool);
 
-	const partialRead = await readTool.execute(
-		"grep-partial",
-		{ path: "partial.txt", grep: "hit", context: 0 } as never,
+	const partialRead = await searchTool.execute(
+		"search-partial",
+		{ path: "partial.txt", pattern: "hit", context: 0 } as never,
 		undefined,
 		undefined,
 		context,
@@ -191,7 +190,7 @@ test("grep reads provide partial proof without a second range read", async (t) =
 	assert.ok(hitAnchor);
 
 	const uncoveredApply = await applyTool.execute(
-		"grep-uncovered-range",
+		"search-uncovered-range",
 		{
 			path: "partial.txt",
 			proof_id: partialRead.details.proofId,
@@ -206,7 +205,7 @@ test("grep reads provide partial proof without a second range read", async (t) =
 	assert.equal(await readFile(partialTarget, "utf8"), "before\nhit\nafter\n");
 
 	const singleLineApply = await applyTool.execute(
-		"grep-covered-line",
+		"search-covered-line",
 		{
 			path: "partial.txt",
 			proof_id: uncoveredApply.details.proofId,
@@ -219,9 +218,9 @@ test("grep reads provide partial proof without a second range read", async (t) =
 	assert.equal(singleLineApply.details.disposition, "succeeded");
 	assert.equal(await readFile(partialTarget, "utf8"), "before\nchanged\nafter\n");
 
-	const contextRead = await readTool.execute(
-		"grep-with-context",
-		{ path: "context.txt", grep: "hit", context: 1 } as never,
+	const contextRead = await searchTool.execute(
+		"search-with-context",
+		{ path: "context.txt", pattern: "hit", context: 1 } as never,
 		undefined,
 		undefined,
 		context,
@@ -230,11 +229,10 @@ test("grep reads provide partial proof without a second range read", async (t) =
 	assert.equal(contextLines?.length, 3);
 	const firstAnchor = contextLines?.[0]?.anchor;
 	const lastAnchor = contextLines?.[2]?.anchor;
-	assert.ok(firstAnchor);
-	assert.ok(lastAnchor);
+	assert.ok(firstAnchor && lastAnchor);
 
 	const contextApply = await applyTool.execute(
-		"grep-covered-range",
+		"search-covered-range",
 		{
 			path: "context.txt",
 			proof_id: contextRead.details.proofId,

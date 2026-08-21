@@ -1,11 +1,18 @@
 export const DEFAULT_READ_LIMIT = 160;
+export const DEFAULT_SEARCH_LIMIT = 100;
 export const MAX_READ_LIMIT = 2000;
-
+export const MAX_SEARCH_LIMIT = MAX_READ_LIMIT;
 export type ReadArgsParams = {
 	path: string;
 	offset?: number;
 	limit?: number;
-	grep?: string;
+};
+
+export type SearchArgsParams = {
+	path: string;
+	pattern: string;
+	offset?: number;
+	limit?: number;
 	context?: number;
 	ignore_case?: boolean;
 	literal?: boolean;
@@ -15,7 +22,14 @@ export type NormalizedReadRequest = {
 	path: string;
 	offset: number;
 	limit: number;
-	grep?: string;
+};
+
+// Search requests carry their dedicated CLI contract; they are never represented as reads.
+export type NormalizedSearchRequest = {
+	path: string;
+	offset: number;
+	limit: number;
+	pattern: string;
 	context?: number;
 	ignoreCase?: boolean;
 	literal?: boolean;
@@ -38,55 +52,56 @@ function toNonNegativeInteger(v: number | undefined): number | undefined {
 	return v !== undefined && Number.isInteger(v) && v >= 0 ? v : undefined;
 }
 
-function toReadLimit(v: number | undefined): number | undefined {
+function toBoundedLimit(v: number | undefined, fallback: number, maximum: number): number {
 	const limit = toPositiveInteger(v);
-	return limit === undefined ? undefined : Math.min(limit, MAX_READ_LIMIT);
+	return limit === undefined ? fallback : Math.min(limit, maximum);
 }
 
 export function normalizeReadRequest(params: ReadArgsParams): NormalizedReadRequest {
-	const grep = params.grep || undefined;
-	const context = toNonNegativeInteger(params.context);
-	// literal 只在 grep 生效时有意义；默认正则与 Pi 内置 grep 对齐。
-	const literal = grep !== undefined && params.literal === true;
-	const ignoreCase = grep !== undefined && params.ignore_case === true;
 	return {
 		path: normalizeToolPath(params.path),
 		offset: toPositiveInteger(params.offset) ?? 1,
-		limit: toReadLimit(params.limit) ?? DEFAULT_READ_LIMIT,
-		...(grep ? { grep } : {}),
-		...(literal ? { literal: true } : {}),
-		...(context !== undefined ? { context } : {}),
-		...(ignoreCase ? { ignoreCase: true } : {}),
+		limit: toBoundedLimit(params.limit, DEFAULT_READ_LIMIT, MAX_READ_LIMIT),
 	};
 }
 
-// 只接受 normalizeReadRequest 的输出：入参已在边界完成归一化，这里不得再次归一化。
-// [喵喵喵]: 曾因入参误标为原始 shape 并二次归一化，丢失 ignore_case → ignoreCase
-// 的改名字段，导致生产路径的大小写开关从未到达 CLI。(2026-07-25)
+export function normalizeSearchRequest(params: SearchArgsParams): NormalizedSearchRequest {
+	const context = toNonNegativeInteger(params.context);
+	return {
+		path: normalizeToolPath(params.path),
+		pattern: params.pattern,
+		offset: toPositiveInteger(params.offset) ?? 1,
+		limit: toBoundedLimit(params.limit, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT),
+		...(params.literal === true ? { literal: true } : {}),
+		...(context !== undefined ? { context } : {}),
+		...(params.ignore_case === true ? { ignoreCase: true } : {}),
+	};
+}
+
 export function buildReadArgs(request: NormalizedReadRequest): string[] {
-	const args = [
+	return [
 		"read-range",
-		request.path,
 		"--offset",
 		String(request.offset),
 		"--limit",
 		String(request.limit),
-		"--json",
+		"--",
+		request.path,
 	];
+}
 
-	if (request.grep) {
-		args.push("--grep", request.grep);
-		if (request.literal) {
-			args.push("--literal");
-		}
-	}
-	if (request.context !== undefined) {
-		args.push("--context", String(request.context));
-	}
-	if (request.ignoreCase) {
-		args.push("--ignore-case");
-	}
-
+export function buildSearchArgs(request: NormalizedSearchRequest): string[] {
+	const args = [
+		"search",
+		"--offset",
+		String(request.offset),
+		"--limit",
+		String(request.limit),
+	];
+	if (request.literal) args.push("--literal");
+	if (request.context !== undefined) args.push("--context", String(request.context));
+	if (request.ignoreCase) args.push("--ignore-case");
+	args.push("--", request.path, request.pattern);
 	return args;
 }
 

@@ -21,25 +21,11 @@ type Remap struct {
 	Current   string `json:"current"`
 }
 
-// EditResult is written to stdout after a successful edit.
-type EditResult struct {
-	OK               bool     `json:"ok"`
-	FirstChangedLine int      `json:"firstChangedLine,omitempty"`
-	LastChangedLine  int      `json:"lastChangedLine,omitempty"`
-	LinesAdded       int      `json:"linesAdded"`
-	LinesDeleted     int      `json:"linesDeleted"`
-	ContentChanged   bool     `json:"contentChanged"`
-	Warnings         []string `json:"warnings,omitempty"`
-}
-
-// EditError is written to stdout when a single-edit operation fails validation
-// or detects a concurrent source change. Always paired with exit code 0.
-type EditError struct {
-	OK              bool    `json:"ok"`
-	Error           string  `json:"error"`
-	Message         string  `json:"message"`
-	Remaps          []Remap `json:"remaps,omitempty"`
-	CurrentRevision string  `json:"currentRevision,omitempty"`
+// CommandError is the shared logical-error envelope for every CLI verb.
+type CommandError struct {
+	OK      bool   `json:"ok"`
+	Error   string `json:"error"`
+	Message string `json:"message"`
 }
 
 // AnchorContext is a bounded, annotated source window used in batch responses.
@@ -88,7 +74,7 @@ type BatchEditError struct {
 	CurrentRevision string         `json:"currentRevision,omitempty"`
 }
 
-// CLICapabilities 描述插件启动前必须验证的 CLI 行为。
+// CLICapabilities describes the strict protocol required by the Pi extension.
 type CLICapabilities struct {
 	OK                  bool   `json:"ok"`
 	Version             string `json:"version"`
@@ -101,13 +87,14 @@ type CLICapabilities struct {
 	BatchWireV3         bool   `json:"batchWireV3"`
 	BatchReadProof      bool   `json:"batchReadProof"`
 	BatchEditDeltas     bool   `json:"batchEditDeltas"`
-	ReadIgnoreCase      bool   `json:"readIgnoreCase"`
-	ReadRegex           bool   `json:"readRegex"`
-	ReadLiteral         bool   `json:"readLiteral"`
+	SearchIgnoreCase    bool   `json:"searchIgnoreCase"`
+	SearchRegex         bool   `json:"searchRegex"`
+	SearchLiteral       bool   `json:"searchLiteral"`
+	Search              bool   `json:"search"`
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Read result types (JSON output for --json flag)
+// Structured read/search results
 // ────────────────────────────────────────────────────────────────────────────
 
 // ReadLine is a single annotated line in a JSON read result.
@@ -127,7 +114,19 @@ type ReadRangeError struct {
 	TotalLines      int    `json:"totalLines"`
 }
 
-// ReadResult is written to stdout by read/read-range when --json is set.
+// SearchResult is written by the dedicated search verb. NextOffset remains a
+// physical line cursor so callers can continue without carrying match indexes.
+type SearchResult struct {
+	OK           bool       `json:"ok"`
+	Revision     string     `json:"revision"`
+	TotalLines   int        `json:"totalLines"`
+	TotalMatches int        `json:"totalMatches"`
+	Lines        []ReadLine `json:"lines"`
+	Truncated    bool       `json:"truncated"`
+	NextOffset   int        `json:"nextOffset,omitempty"`
+}
+
+// ReadResult is written by the contiguous read-range verb.
 type ReadResult struct {
 	OK         bool       `json:"ok"`
 	Revision   string     `json:"revision"`

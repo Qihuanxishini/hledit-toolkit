@@ -59,7 +59,6 @@ test("computeAnchorTag matches every anchor emitted by the bundled CLI", async (
 			"1",
 			"--limit",
 			"2000",
-			"--json",
 		]);
 		const parsed = JSON.parse(stdout) as { ok: boolean; lines: Array<{ line: number; anchor: string; text: string }> };
 		assert.equal(parsed.ok, true);

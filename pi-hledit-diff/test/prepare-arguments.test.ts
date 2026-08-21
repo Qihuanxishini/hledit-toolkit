@@ -2,16 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Value } from "typebox/value";
 
-import { decodeFileChangeInput, prepareReadAnchorsArguments } from "../src/prepare-arguments.ts";
-import { HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, MAX_REPLACEMENT_LINE_COUNT } from "../src/schema.ts";
+import { decodeFileChangeInput, prepareReadAnchorsArguments, prepareSearchAnchorsArguments } from "../src/prepare-arguments.ts";
+import { HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, MAX_REPLACEMENT_LINE_COUNT } from "../src/schema.ts";
 
-test("prepareReadAnchorsArguments clamps recoverable numeric mistakes", () => {
-  const prepared = prepareReadAnchorsArguments({ path: "src/a.ts", offset: 0, limit: 5000, context: -2 });
-  assert.deepEqual(prepared, { path: "src/a.ts", offset: 1, limit: 2000, context: 0 });
-  assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, prepared), true);
+test("read and search argument preparation clamp only their own fields", () => {
+	const read = prepareReadAnchorsArguments({ path: "src/a.ts", offset: 0, limit: 5000 });
+	assert.deepEqual(read, { path: "src/a.ts", offset: 1, limit: 2000 });
+	assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, read), true);
 
-  const fractional = prepareReadAnchorsArguments({ path: "src/a.ts", offset: 1.5 });
-  assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, fractional), false);
+	const search = prepareSearchAnchorsArguments({ path: "src/a.ts", pattern: "token", offset: 0, limit: 5000, context: -2 });
+	assert.deepEqual(search, { path: "src/a.ts", pattern: "token", offset: 1, limit: 2000, context: 0 });
+	assert.equal(Value.Check(HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, search), true);
+
+	const fractional = prepareReadAnchorsArguments({ path: "src/a.ts", offset: 1.5 });
+	assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, fractional), false);
 });
 
 test("decodeFileChangeInput converts newline-delimited text once at the execute boundary", () => {

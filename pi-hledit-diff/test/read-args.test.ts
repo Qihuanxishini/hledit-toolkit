@@ -1,55 +1,50 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DEFAULT_READ_LIMIT, MAX_READ_LIMIT, buildReadArgs, normalizeReadRequest, normalizeToolPath } from "../src/read-args.ts";
+import {
+	DEFAULT_READ_LIMIT,
+	DEFAULT_SEARCH_LIMIT,
+	MAX_READ_LIMIT,
+	buildReadArgs,
+	buildSearchArgs,
+	normalizeReadRequest,
+	normalizeSearchRequest,
+	normalizeToolPath,
+} from "../src/read-args.ts";
 
-test("buildReadArgs applies bounded defaults", () => {
-    assert.deepEqual(buildReadArgs(normalizeReadRequest({ path: "src/a.ts" })), ["read-range", "src/a.ts", "--offset", "1", "--limit", String(DEFAULT_READ_LIMIT), "--json"]);
+test("buildReadArgs protects flag-like paths with the positional separator", () => {
+	assert.deepEqual(buildReadArgs(normalizeReadRequest({ path: "--limit" })), ["read-range", "--offset", "1", "--limit", String(DEFAULT_READ_LIMIT), "--", "--limit"]);
 });
 
 test("buildReadArgs accepts positive integer offset and limit", () => {
-    assert.deepEqual(buildReadArgs(normalizeReadRequest({ path: "src/a.ts", offset: 10, limit: 20 })), ["read-range", "src/a.ts", "--offset", "10", "--limit", "20", "--json"]);
+	assert.deepEqual(buildReadArgs(normalizeReadRequest({ path: "src/a.ts", offset: 10, limit: 20 })), ["read-range", "--offset", "10", "--limit", "20", "--", "src/a.ts"]);
 });
 
 test("buildReadArgs ignores invalid offset and clamps oversized limit", () => {
-    assert.deepEqual(buildReadArgs(normalizeReadRequest({ path: "src/a.ts", offset: 0, limit: MAX_READ_LIMIT + 100 })), ["read-range", "src/a.ts", "--offset", "1", "--limit", String(MAX_READ_LIMIT), "--json"]);
+	assert.deepEqual(buildReadArgs(normalizeReadRequest({ path: "src/a.ts", offset: 0, limit: MAX_READ_LIMIT + 100 })), ["read-range", "--offset", "1", "--limit", String(MAX_READ_LIMIT), "--", "src/a.ts"]);
 });
 
-test("buildReadArgs passes grep filters and context", () => {
-    assert.deepEqual(buildReadArgs(normalizeReadRequest({ path: "src/a.ts", grep: "function", context: 2 })), ["read-range", "src/a.ts", "--offset", "1", "--limit", String(DEFAULT_READ_LIMIT), "--json", "--grep", "function", "--context", "2"]);
+test("buildSearchArgs applies regex defaults and protects flag-like patterns", () => {
+	const request = normalizeSearchRequest({ path: "src/a.ts", pattern: "--literal" });
+	assert.deepEqual(buildSearchArgs(request), ["search", "--offset", "1", "--limit", String(DEFAULT_SEARCH_LIMIT), "--", "src/a.ts", "--literal"]);
 });
 
-
-test("buildReadArgs uses regex by default and supports explicit literal matching", () => {
-    const regexRequest = normalizeReadRequest({ path: "src/a.ts", grep: "from \\\"./(a|b)" });
-    assert.equal(regexRequest.literal, undefined);
-    assert.deepEqual(buildReadArgs(regexRequest), ["read-range", "src/a.ts", "--offset", "1", "--limit", String(DEFAULT_READ_LIMIT), "--json", "--grep", "from \\\"./(a|b)"]);
-
-    const literalRequest = normalizeReadRequest({ path: "src/a.ts", grep: "from \\\"./", literal: true });
-    assert.equal(literalRequest.literal, true);
-    assert.deepEqual(buildReadArgs(literalRequest), ["read-range", "src/a.ts", "--offset", "1", "--limit", String(DEFAULT_READ_LIMIT), "--json", "--grep", "from \\\"./", "--literal"]);
+test("buildSearchArgs supports literal matching, context, and ignore_case", () => {
+	const request = normalizeSearchRequest({ path: "src/a.ts", pattern: "from ./", literal: true, context: 2, ignore_case: true });
+	assert.deepEqual(buildSearchArgs(request), [
+		"search", "--offset", "1", "--limit", String(DEFAULT_SEARCH_LIMIT),
+		"--literal", "--context", "2", "--ignore-case", "--", "src/a.ts", "from ./",
+	]);
 });
 
-// 回归：ignore_case 必须经过 normalizeReadRequest → buildReadArgs 的生产路径到达 CLI。
-test("buildReadArgs forwards ignore_case only for grep reads", () => {
-    assert.deepEqual(
-        buildReadArgs(normalizeReadRequest({ path: "src/a.ts", grep: "token", ignore_case: true })),
-        ["read-range", "src/a.ts", "--offset", "1", "--limit", String(DEFAULT_READ_LIMIT), "--json", "--grep", "token", "--ignore-case"],
-    );
-    assert.deepEqual(
-        buildReadArgs(normalizeReadRequest({ path: "src/a.ts", ignore_case: true })),
-        ["read-range", "src/a.ts", "--offset", "1", "--limit", String(DEFAULT_READ_LIMIT), "--json"],
-    );
-});
-
-test("normalizeReadRequest exposes the exact requested range", () => {
-    assert.deepEqual(normalizeReadRequest({ path: "@src/a.ts", offset: 10, limit: MAX_READ_LIMIT + 10, grep: "token", context: 0 }), {
-        path: "src/a.ts",
-        offset: 10,
-        limit: MAX_READ_LIMIT,
-        grep: "token",
-        context: 0,
-    });
+test("normalizeSearchRequest preserves the exact requested search contract", () => {
+	assert.deepEqual(normalizeSearchRequest({ path: "@src/a.ts", pattern: "token", offset: 10, limit: MAX_READ_LIMIT + 10, context: 0 }), {
+		path: "src/a.ts",
+		offset: 10,
+		limit: MAX_READ_LIMIT,
+		pattern: "token",
+		context: 0,
+	});
 });
 
 test("normalizeToolPath strips @ prefix", () => {

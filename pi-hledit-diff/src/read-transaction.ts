@@ -1,11 +1,11 @@
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 
-import { HLEDIT_READ_ANCHORS_TOOL } from "./active-tools.ts";
+import { HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL } from "./active-tools.ts";
 import type { HleditRun } from "./cli.ts";
 import { ReadEvidenceStore, resolveReadEvidencePath } from "./read-evidence.ts";
-import { buildReadArgs, normalizeReadRequest } from "./read-args.ts";
+import { buildReadArgs, buildSearchArgs, normalizeReadRequest, normalizeSearchRequest } from "./read-args.ts";
 import { readAnchorsResult, type TextResult } from "./result.ts";
-import type { ReadAnchorsParams } from "./schema.ts";
+import type { ReadAnchorsParams, SearchAnchorsParams } from "./schema.ts";
 
 export type HleditReadRunner = (
 	args: string[],
@@ -28,6 +28,23 @@ export async function runReadAnchorsTransaction(
 		const result = readAnchorsResult(await run(buildReadArgs(request), undefined, cwd, signal), request);
 		const queuedResult = { ...result, details: { ...result.details, path: request.path, evidencePath } };
 		evidence.updateFromToolResult(HLEDIT_READ_ANCHORS_TOOL, queuedResult.details, cwd);
+		return queuedResult;
+	});
+}
+
+export async function runSearchAnchorsTransaction(
+	params: SearchAnchorsParams,
+	cwd: string,
+	signal: AbortSignal | undefined,
+	evidence: ReadEvidenceStore,
+	run: HleditReadRunner,
+): Promise<TextResult> {
+	const request = normalizeSearchRequest(params);
+	const evidencePath = await resolveReadEvidencePath(cwd, request.path);
+	return withFileMutationQueue(evidencePath, async () => {
+		const result = readAnchorsResult(await run(buildSearchArgs(request), undefined, cwd, signal), request);
+		const queuedResult = { ...result, details: { ...result.details, path: request.path, evidencePath } };
+		evidence.updateFromToolResult(HLEDIT_SEARCH_ANCHORS_TOOL, queuedResult.details, cwd);
 		return queuedResult;
 	});
 }

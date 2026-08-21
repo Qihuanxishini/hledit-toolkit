@@ -58,7 +58,7 @@ func buildUpdatedAnchorContext(lines []string, firstChanged, lastChanged, linesA
 		limit = 0
 	}
 
-	readLines, truncatedByBytes, _ := collectAnnotatedLines(
+	readLines, truncatedSourceLine, nextOffset := collectAnnotatedLines(
 		lines,
 		offset-1,
 		limit,
@@ -70,7 +70,7 @@ func buildUpdatedAnchorContext(lines []string, firstChanged, lastChanged, linesA
 		Offset:       offset,
 		Limit:        len(readLines),
 		DesiredLimit: desiredLimit,
-		Truncated:    desiredLimit > updatedAnchorMaxLines || truncatedByBytes,
+		Truncated:    desiredLimit > updatedAnchorMaxLines || truncatedSourceLine || nextOffset > 0,
 	}
 }
 

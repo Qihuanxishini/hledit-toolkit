@@ -2,10 +2,10 @@ import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
 import { randomUUID } from "node:crypto";
 import { ANCHOR_HASH_PATTERN, lineFromAnchor } from "./file-changes.ts";
 import { parseAnchorContext, parseBatchUpdatedAnchorContext, type BatchAnchorContext, type ProducedLineRange } from "./post-edit-context.ts";
-import { MAX_READ_LIMIT, suggestedReadWindow, type NormalizedReadRequest } from "./read-args.ts";
+import { MAX_READ_LIMIT, suggestedReadWindow, type NormalizedReadRequest, type NormalizedSearchRequest } from "./read-args.ts";
 import type { FileChangeParams } from "./schema.ts";
 
-export type HleditToolKind = "read_anchors" | "apply_file_changes";
+export type HleditToolKind = "read_anchors" | "search_anchors" | "apply_file_changes";
 export type HleditDisposition = "succeeded" | "rejected" | "unavailable" | "outcome_unknown";
 
 export type HleditReadLine = {
@@ -21,7 +21,7 @@ export type HleditReadMetadata = {
 	requested: {
 		offset: number;
 		limit: number;
-		grep?: string;
+		pattern?: string;
 		context?: number;
 		ignoreCase?: boolean;
 		literal?: boolean;
@@ -37,6 +37,7 @@ export type HleditReadMetadata = {
 	nextOffset?: number;
 	textTruncated: boolean;
 	eof: boolean;
+	totalMatches?: number;
 };
 
 export type FileChangeAnchorField = "anchor" | "start_anchor" | "end_anchor";
@@ -131,6 +132,7 @@ export type HleditDetails = Record<string, unknown> & {
 	updatedAnchors?: BatchAnchorContext;
 	read?: HleditReadMetadata;
 	recoveredRead?: HleditReadMetadata;
+	recoveredReads?: HleditReadMetadata[];
 	recoveryReadError?: { disposition: HleditDisposition; error?: HleditErrorMetadata };
 	error?: HleditErrorMetadata;
 	resolvedAnchors?: Array<{ requested: string; current: string }>;
@@ -149,7 +151,7 @@ export function parseHleditReadMetadata(value: unknown): HleditReadMetadata | un
 	if (!isRecord(value) || typeof value.path !== "string" || !isRecord(value.requested) || !isRecord(value.actual) || !Array.isArray(value.lines)) return undefined;
 	const requested = value.requested;
 	if (!isIntegerAtLeast(requested.offset, 1) || !isIntegerAtLeast(requested.limit, 1)) return undefined;
-	if (requested.grep !== undefined && (typeof requested.grep !== "string" || requested.grep.length === 0)) return undefined;
+	if (requested.pattern !== undefined && (typeof requested.pattern !== "string" || requested.pattern.length === 0)) return undefined;
 	if (requested.context !== undefined && !isIntegerAtLeast(requested.context, 0)) return undefined;
 	if (requested.ignoreCase !== undefined && requested.ignoreCase !== true) return undefined;
 	if (requested.literal !== undefined && requested.literal !== true) return undefined;
@@ -160,15 +162,17 @@ export function parseHleditReadMetadata(value: unknown): HleditReadMetadata | un
 	if (actual.lastLine !== undefined && !isIntegerAtLeast(actual.lastLine, 1)) return undefined;
 	if (typeof value.truncated !== "boolean" || typeof value.textTruncated !== "boolean" || typeof value.eof !== "boolean") return undefined;
 
-	const request: NormalizedReadRequest = {
-		path: value.path,
-		offset: requested.offset,
-		limit: requested.limit,
-		...(requested.grep !== undefined ? { grep: requested.grep } : {}),
-		...(requested.context !== undefined ? { context: requested.context } : {}),
-		...(requested.ignoreCase === true ? { ignoreCase: true } : {}),
-		...(requested.literal === true ? { literal: true } : {}),
-	};
+	const request: NormalizedReadRequest | NormalizedSearchRequest = requested.pattern === undefined
+		? { path: value.path, offset: requested.offset, limit: requested.limit }
+		: {
+			path: value.path,
+			pattern: requested.pattern,
+			offset: requested.offset,
+			limit: requested.limit,
+			...(requested.context !== undefined ? { context: requested.context } : {}),
+			...(requested.ignoreCase === true ? { ignoreCase: true } : {}),
+			...(requested.literal === true ? { literal: true } : {}),
+		};
 	const parsed = parseReadMetadata({
 		ok: true,
 		revision: value.revision,
@@ -176,6 +180,7 @@ export function parseHleditReadMetadata(value: unknown): HleditReadMetadata | un
 		lines: value.lines,
 		truncated: value.truncated,
 		...(value.nextOffset !== undefined ? { nextOffset: value.nextOffset } : {}),
+		...(value.totalMatches !== undefined ? { totalMatches: value.totalMatches } : {}),
 	}, request);
 	if (!parsed) return undefined;
 	if (
@@ -183,7 +188,8 @@ export function parseHleditReadMetadata(value: unknown): HleditReadMetadata | un
 		parsed.actual.lastLine !== actual.lastLine ||
 		parsed.actual.lineCount !== actual.lineCount ||
 		parsed.textTruncated !== value.textTruncated ||
-		parsed.eof !== value.eof
+		parsed.eof !== value.eof ||
+		parsed.totalMatches !== value.totalMatches
 	) return undefined;
 	return parsed;
 }
@@ -193,10 +199,26 @@ export function parseUsableHleditReadMetadata(value: unknown): HleditReadMetadat
 	return read && !read.textTruncated && read.requested.limit <= MAX_READ_LIMIT ? read : undefined;
 }
 
+function isRecoveryRead(value: unknown): value is HleditReadMetadata {
+	if (!isRecord(value)) return false;
+	const read = parseUsableHleditReadMetadata(value);
+	return read !== undefined;
+}
+
+export function parseRecoveredReads(value: unknown): HleditReadMetadata[] {
+	if (!isRecord(value) || value.disposition !== "rejected" || typeof value.path !== "string" || !isRecord(value.error) || value.error.code !== "insufficient_read_proof") return [];
+	const candidates = Array.isArray(value.recoveredReads) ? value.recoveredReads : [value.recoveredRead];
+	const reads: HleditReadMetadata[] = [];
+	for (const candidate of candidates) {
+		if (!isRecoveryRead(candidate)) return [];
+		if (candidate.path !== value.path) return [];
+		reads.push(candidate);
+	}
+	return reads;
+}
+
 export function parseRecoveredRead(value: unknown): HleditReadMetadata | undefined {
-	if (!isRecord(value) || value.disposition !== "rejected" || typeof value.path !== "string" || !isRecord(value.error) || value.error.code !== "insufficient_read_proof") return undefined;
-	const read = parseUsableHleditReadMetadata(value.recoveredRead);
-	return read?.path === value.path ? read : undefined;
+	return parseRecoveredReads(value).at(-1);
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -236,7 +258,10 @@ function parseReadLine(value: unknown, totalLines: number): HleditReadLine | und
 	return { line, anchor, text, textTruncated: textTruncated === true };
 }
 
-function parseReadMetadata(parsed: Record<string, unknown>, request: NormalizedReadRequest): HleditReadMetadata | undefined {
+function parseReadMetadata(
+	parsed: Record<string, unknown>,
+	request: NormalizedReadRequest | NormalizedSearchRequest,
+): HleditReadMetadata | undefined {
 	if (
 		parsed.ok !== true ||
 		!isRawRevision(parsed.revision) ||
@@ -247,18 +272,19 @@ function parseReadMetadata(parsed: Record<string, unknown>, request: NormalizedR
 		return undefined;
 	}
 
+	const searchRequest = "pattern" in request ? request : undefined;
 	const totalLines = parsed.totalLines;
 	const lines: HleditReadLine[] = [];
 	let previousLine: number | undefined;
 	for (const value of parsed.lines) {
 		const line = parseReadLine(value, totalLines);
 		if (!line || line.line < request.offset || (previousLine !== undefined && line.line <= previousLine)) return undefined;
-		if (!request.grep && previousLine !== undefined && line.line !== previousLine + 1) return undefined;
+		if (!searchRequest && previousLine !== undefined && line.line !== previousLine + 1) return undefined;
 		lines.push(line);
 		previousLine = line.line;
 	}
 	if (lines.length > request.limit) return undefined;
-	if (!request.grep && (lines.length === 0 || lines[0]?.line !== request.offset)) return undefined;
+	if (!searchRequest && (lines.length === 0 || lines[0]?.line !== request.offset)) return undefined;
 
 	let nextOffset: number | undefined;
 	if (parsed.nextOffset !== undefined) {
@@ -275,7 +301,8 @@ function parseReadMetadata(parsed: Record<string, unknown>, request: NormalizedR
 	}
 	if (parsed.truncated && nextOffset === undefined && !textTruncated) return undefined;
 	if (!parsed.truncated && nextOffset !== undefined) return undefined;
-	if (!request.grep && !parsed.truncated && lastLine !== totalLines) return undefined;
+	if (!searchRequest && !parsed.truncated && lastLine !== totalLines) return undefined;
+	if (searchRequest && !isIntegerAtLeast(parsed.totalMatches, 0)) return undefined;
 
 	return {
 		path: request.path,
@@ -283,10 +310,10 @@ function parseReadMetadata(parsed: Record<string, unknown>, request: NormalizedR
 		requested: {
 			offset: request.offset,
 			limit: request.limit,
-			...(request.grep ? { grep: request.grep } : {}),
-			...(request.context !== undefined ? { context: request.context } : {}),
-			...(request.ignoreCase ? { ignoreCase: true } : {}),
-			...(request.literal ? { literal: true } : {}),
+			...(searchRequest ? { pattern: searchRequest.pattern } : {}),
+			...(searchRequest?.context !== undefined ? { context: searchRequest.context } : {}),
+			...(searchRequest?.ignoreCase ? { ignoreCase: true } : {}),
+			...(searchRequest?.literal ? { literal: true } : {}),
 		},
 		actual: {
 			...(firstLine !== undefined ? { firstLine } : {}),
@@ -298,7 +325,8 @@ function parseReadMetadata(parsed: Record<string, unknown>, request: NormalizedR
 		truncated: parsed.truncated,
 		...(nextOffset !== undefined ? { nextOffset } : {}),
 		textTruncated,
-		eof: !request.grep && !parsed.truncated && lastLine === totalLines,
+		eof: !searchRequest && !parsed.truncated && lastLine === totalLines,
+		...(searchRequest ? { totalMatches: parsed.totalMatches as number } : {}),
 	};
 }
 
@@ -347,18 +375,18 @@ function parseReadErrorMetadata(parsed: Record<string, unknown>): HleditErrorMet
 function formatReadMetadata(read: HleditReadMetadata, proofId?: string): string {
 	const anchoredLines = read.lines.map((line) => `${line.anchor}:${line.text}`);
 	const { firstLine, lastLine, lineCount, totalLines } = read.actual;
-	const filter = read.requested.grep;
+	const pattern = read.requested.pattern;
 	let notice: string;
 
 	if (read.textTruncated) {
 		notice = `-- Source line text was truncated${lastLine !== undefined ? `; the last returned line is ${lastLine}` : ""} (${totalLines} lines total); rereading line ranges cannot recover the omitted in-line text. Truncated lines cannot establish edit proof; if the edit target includes such a line, rewrite the file with write instead --`;
-	} else if (filter) {
+	} else if (pattern !== undefined) {
 		if (lineCount === 0) {
-			notice = `-- No lines matching ${JSON.stringify(filter)} were found (${totalLines} lines total) --`;
+			notice = `-- No lines matching ${JSON.stringify(pattern)} were found (${totalLines} lines total) --`;
 		} else if (read.nextOffset !== undefined) {
 			notice = `-- Returned ${lineCount} matching lines with context, ending at line ${lastLine} (${totalLines} lines total); continue with offset ${read.nextOffset} --`;
 		} else {
-			notice = `-- Returned all ${lineCount} matching lines with context (${totalLines} lines total) --`;
+			notice = `-- Returned ${lineCount} matching lines with context${read.totalMatches !== undefined ? ` (${read.totalMatches} matches total)` : ""} (${totalLines} lines total) --`;
 		}
 	} else if (read.nextOffset !== undefined) {
 		notice = `-- Showing lines ${firstLine}-${lastLine} of ${totalLines}; continue with offset ${read.nextOffset} --`;
@@ -384,7 +412,7 @@ function invalidReadResponseText(): string {
 	return `Anchor read failed because the bundled hledit returned an incompatible response. Expected structured JSON with ok, totalLines, valid anchor lines, truncation state, and optional nextOffset.\n\n${HLEDIT_INSTALL_HINT}`;
 }
 
-export function readAnchorsResult(run: HleditRun, request: NormalizedReadRequest): TextResult {
+export function readAnchorsResult(run: HleditRun, request: NormalizedReadRequest | NormalizedSearchRequest): TextResult {
 	const text = run.stdout.trimEnd() || run.stderr.trimEnd();
 	if (run.exitCode !== 0) {
 		return {
@@ -421,7 +449,7 @@ export function readAnchorsResult(run: HleditRun, request: NormalizedReadRequest
 			details: { disposition: "unavailable", path: request.path },
 		};
 	}
-	const proofId = read.requested.grep !== undefined && read.lines.length === 0 ? undefined : randomUUID();
+	const proofId = read.requested.pattern !== undefined && read.lines.length === 0 ? undefined : randomUUID();
 	return {
 		content: [{ type: "text", text: formatReadMetadata(read, proofId) }],
 		details: {

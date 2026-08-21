@@ -3,12 +3,14 @@ import test from "node:test";
 import { Compile } from "typebox/compile";
 import { Value } from "typebox/value";
 
-import { HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, HLEDIT_READ_ANCHORS_PARAMS_SCHEMA } from "../src/schema.ts";
+import { HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA } from "../src/schema.ts";
 
-test("read anchors accepts only read arguments", () => {
-  assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts", offset: 3, limit: 20, grep: "needle", context: 2 }), true);
-  assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts", grep: "needle", context: -1 }), false);
-  assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts", changes: [] }), false);
+test("read and search schemas keep their contracts separate", () => {
+	assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts", offset: 3, limit: 20 }), true);
+	assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts", pattern: "needle" }), false);
+	assert.equal(Value.Check(HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts", pattern: "needle", context: 2 }), true);
+	assert.equal(Value.Check(HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts", pattern: "needle", context: -1 }), false);
+	assert.equal(Value.Check(HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts", pattern: "" }), false);
 });
 
 test("schemas compile with the host-aligned TypeBox version", () => {

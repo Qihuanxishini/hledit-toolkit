@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const EXTENSION_ROOT = fileURLToPath(new URL("../", import.meta.url));
 
-export const HLEDIT_INSTALL_HINT = `This extension requires the bundled Windows x64 hledit CLI 3.x with v2 anchors, structured range reads, strict batch wire v3, read proof, batch validation, insert-after support, updated-anchor contexts, edit deltas, and case-insensitive grep.
+export const HLEDIT_INSTALL_HINT = `This extension requires the bundled Windows x64 hledit CLI 3.x with v2 anchors, structured range reads, dedicated regex/literal search, strict batch wire v3, read proof, batch validation, insert-after support, updated-anchor contexts, and edit deltas.
 Resync or reinstall pi-hledit-diff, then confirm that bin/hledit.exe exists.`;
 
 export const HLEDIT_RUN_TIMEOUT_MS = 30_000;
@@ -35,9 +35,10 @@ const REQUIRED_CAPABILITIES = [
 	"batchWireV3",
 	"batchReadProof",
 	"batchEditDeltas",
-	"readIgnoreCase",
-	"readRegex",
-	"readLiteral",
+	"searchIgnoreCase",
+	"searchRegex",
+	"searchLiteral",
+	"search",
 ] as const;
 
 const SUPPORTED_CLI_VERSION_PATTERN = /^3\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;

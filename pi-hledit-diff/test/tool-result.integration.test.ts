@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import piHleditDiffExtension from "../index.ts";
-import { HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_READ_ANCHORS_TOOL } from "../src/active-tools.ts";
+import { HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL } from "../src/active-tools.ts";
 import type { TextResult } from "../src/result.ts";
 
 type ToolResultListener = (event: { toolName: string; details: unknown }, context: { cwd: string }) => unknown;
@@ -47,7 +47,7 @@ function registerExtensionForTest(): {
 test("extension keeps proof misses recoverable and escalates other hledit failures", () => {
 	const { registeredTools, toolResultListener } = registerExtensionForTest();
 
-	assert.deepEqual([...registeredTools.keys()], [HLEDIT_READ_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL]);
+	assert.deepEqual([...registeredTools.keys()], [HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL]);
 	const context = { cwd: process.cwd() };
 	assert.equal(toolResultListener({
 		toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL,
@@ -59,40 +59,52 @@ test("extension keeps proof misses recoverable and escalates other hledit failur
 	assert.equal(toolResultListener({ toolName: "bash", details: { disposition: "rejected" } }, context), undefined);
 });
 
-test("registered tool metadata stays concise without losing English safeguards", () => {
+test("registered tool metadata stays concise and names each flattened guideline", () => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const searchTool = registeredTools.get(HLEDIT_SEARCH_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool?.description && readTool.promptGuidelines);
+	assert.ok(searchTool?.description && searchTool.promptGuidelines);
 	assert.ok(applyTool?.description && applyTool.promptGuidelines);
 
 	assert.equal(readTool.label, "Read for Edit");
-	assert.equal(readTool.promptGuidelines.length, 1);
+	assert.equal(readTool.promptGuidelines.length, 2);
+	assert.equal(searchTool.promptGuidelines.length, 1);
 	assert.equal(applyTool.promptGuidelines.length, 2);
-	for (const tool of [readTool, applyTool]) {
+	for (const [tool, toolName] of [
+		[readTool, HLEDIT_READ_ANCHORS_TOOL],
+		[searchTool, HLEDIT_SEARCH_ANCHORS_TOOL],
+		[applyTool, HLEDIT_APPLY_FILE_CHANGES_TOOL],
+	] as const) {
 		assert.ok(tool.description);
 		assert.ok(tool.promptGuidelines);
 		assert.equal(tool.promptSnippet, undefined);
 		assert.doesNotMatch(tool.description, /[\u4E00-\u9FFF]/u);
 		assert.ok(tool.promptGuidelines.every((guideline) => !/[\u4E00-\u9FFF]/u.test(guideline)));
+		assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(toolName)), `${toolName} guideline must name its tool`);
 	}
 
 	const readGuidelines = readTool.promptGuidelines.join(" ");
+	const searchGuidelines = searchTool.promptGuidelines.join(" ");
 	const applyGuidelines = applyTool.promptGuidelines.join(" ");
-	assert.match(readTool.description, /LN#HASH anchors/);
-	assert.match(readGuidelines, /grep uses modern RE2 regular expressions[\s\S]*literal: true for exact text/);
-	assert.match(readGuidelines, /complete, non-truncated grep result[\s\S]*editable proof/);
-	assert.match(readGuidelines, /ensure current evidence covers every source line[\s\S]*endpoint-only/);
-	assert.match(readGuidelines, /copy only the current LN#HASH token[\s\S]*interior anchors are carried automatically/);
-	assert.match(applyTool.description, /boundary anchors[\s\S]*hidden complete read proof/);
+	assert.match(readTool.description, /contiguous text lines[\s\S]*LN#HASH anchors/);
+	assert.match(readGuidelines, /successful hledit_search_anchors output[\s\S]*verified updated anchors/);
+	assert.match(readGuidelines, /cover every source line[\s\S]*sparse endpoints are not proof/);
+	assert.match(readGuidelines, /Copy only LN#HASH tokens[\s\S]*hidden proof carries interior lines/);
+	assert.match(searchTool.description, /literal text[\s\S]*RE2 matches/);
+	assert.match(searchGuidelines, /not to review broad contiguous ranges[\s\S]*hledit_read_anchors/);
+	assert.match(searchGuidelines, /Zero-match or truncated results do not prove unseen lines/);
+	assert.match(applyTool.description, /boundary anchors[\s\S]*complete read proof/);
+	assert.match(applyGuidelines, /proof_id from the latest successful hledit_read_anchors or hledit_search_anchors result for that path/);
+	assert.match(applyGuidelines, /zero-match search invalidates proof[\s\S]*failed read creates none/);
+	assert.match(applyGuidelines, /raw text without LN#HASH prefixes[\s\S]*\\n separates lines[\s\S]*one blank line/);
 	assert.match(applyGuidelines, /Never overwrite a nonempty readable file with write/);
-	assert.match(applyGuidelines, /\\n separates lines[\s\S]*one blank line/);
-	assert.match(applyGuidelines, /current LN#HASH tokens/);
-	assert.match(applyGuidelines, /proof_id returned by the same hledit_read_anchors result/);
-	assert.match(applyGuidelines, /review targeted recovery results/);
-	assert.match(JSON.stringify(applyTool.parameters), /New text; \\\\n separates lines\./i);
+	const applySchema = JSON.stringify(applyTool.parameters);
+	assert.match(applySchema, /latest successful read\/search result for this path/);
+	assert.match(applySchema, /New text; \\\\n separates lines\./i);
 
-	const protocolCharacters = [readTool, applyTool].reduce(
+	const protocolCharacters = [readTool, searchTool, applyTool].reduce(
 		(total, tool) => total
 			+ JSON.stringify(tool.parameters).length
 			+ (tool.description?.length ?? 0)
@@ -104,10 +116,11 @@ test("registered tool metadata stays concise without losing English safeguards",
 
 
 
-test("read tool returns structured ranges and actionable EOF errors", async (t) => {
+test("read and search tools return structured ranges and actionable EOF errors", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
-	assert.ok(readTool);
+	const searchTool = registeredTools.get(HLEDIT_SEARCH_ANCHORS_TOOL);
+	assert.ok(readTool && searchTool);
 
 	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-read-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
@@ -120,23 +133,23 @@ test("read tool returns structured ranges and actionable EOF errors", async (t) 
 	assert.equal(readResult.details.read?.nextOffset, 3);
 	assert.match(readResult.content[0]?.text ?? "", /Showing lines 2-2 of 3; continue with offset 3/);
 
-	const grepContextResult = await readTool.execute(
-		"read",
-		{ path: "target.txt", grep: "two", context: 1 } as never,
+	const searchResult = await searchTool.execute(
+		"search",
+		{ path: "target.txt", pattern: "two", context: 1 } as never,
 		undefined,
 		undefined,
 		context,
 	);
-	assert.equal(grepContextResult.details.disposition, "succeeded");
-	assert.deepEqual(grepContextResult.details.read?.lines.map((line) => line.text), ["one", "two", "three"]);
+	assert.equal(searchResult.details.disposition, "succeeded");
+	assert.deepEqual(searchResult.details.read?.lines.map((line) => line.text), ["one", "two", "three"]);
 
-	const caseMissResult = await readTool.execute("read", { path: "target.txt", grep: "TWO" } as never, undefined, undefined, context);
+	const caseMissResult = await searchTool.execute("search", { path: "target.txt", pattern: "TWO" } as never, undefined, undefined, context);
 	assert.equal(caseMissResult.details.disposition, "succeeded");
 	assert.equal(caseMissResult.details.read?.actual.lineCount, 0);
 
-	const ignoreCaseResult = await readTool.execute(
-		"read",
-		{ path: "target.txt", grep: "TWO", ignore_case: true } as never,
+	const ignoreCaseResult = await searchTool.execute(
+		"search",
+		{ path: "target.txt", pattern: "TWO", ignore_case: true } as never,
 		undefined,
 		undefined,
 		context,
@@ -151,26 +164,25 @@ test("read tool returns structured ranges and actionable EOF errors", async (t) 
 	assert.equal(rangeError.content[0]?.text.split("\n", 1)[0], "Starting line 4 is outside the file range (3 total lines).");
 });
 
-test("read tool accepts a near-limit grep result at EOF", async (t) => {
+test("search tool accepts a near-limit result at EOF", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
-	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
-	assert.ok(readTool);
+	const searchTool = registeredTools.get(HLEDIT_SEARCH_ANCHORS_TOOL);
+	assert.ok(searchTool);
 
 	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-near-budget-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
 	const line = "x".repeat(49 * 1024);
-	await writeFile(join(directory, "target.txt"), `${line}\n`, "utf8");
+	await writeFile(join(directory, "target.txt"), `${line}\nnot-a-match\n`, "utf8");
 
-	const result = await readTool.execute(
-		"read",
-		{ path: "target.txt", offset: 1, limit: 2000, grep: "x" } as never,
+	const result = await searchTool.execute(
+		"search",
+		{ path: "target.txt", pattern: "x", offset: 1, limit: 2000 } as never,
 		undefined,
 		undefined,
 		{ cwd: directory },
 	);
-
 	assert.equal(result.details.disposition, "succeeded");
-	assert.deepEqual(result.details.read?.actual, { firstLine: 1, lastLine: 1, lineCount: 1, totalLines: 1 });
+	assert.deepEqual(result.details.read?.actual, { firstLine: 1, lastLine: 1, lineCount: 1, totalLines: 2 });
 	assert.equal(result.details.read?.truncated, false);
 	assert.equal(result.details.read?.nextOffset, undefined);
 	assert.equal(result.details.read?.textTruncated, false);
@@ -567,7 +579,7 @@ test("apply without proof_id rejects before trying to recover a missing target",
 	assert.match(result.content[0]?.text ?? "", /missing proof_id/);
 });
 
-test("multi-page proof recovery requests lightweight read continuation before apply", async (t) => {
+test("multi-page proof recovery completes internally before apply is retried", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
@@ -593,16 +605,11 @@ test("multi-page proof recovery requests lightweight read continuation before ap
 	);
 	assert.equal(apply.details.disposition, "rejected");
 	assert.equal(apply.details.error?.code, "insufficient_read_proof");
-	const nextOffset = apply.details.recoveredRead?.nextOffset;
-	assert.ok(typeof nextOffset === "number" && nextOffset > 1 && nextOffset < 3_000);
-	const remainingLimit = 3_000 - nextOffset;
-	assert.ok(
-		(apply.content[0]?.text ?? "").includes(
-			`Call hledit_read_anchors({ path: "target.txt", offset: ${nextOffset}, limit: ${remainingLimit} })`,
-		),
-	);
-	assert.match(apply.content[0]?.text ?? "", /Do not resubmit apply before then/);
-	assert.doesNotMatch(apply.content[0]?.text ?? "", /Review the current source.*resubmit the batch/);
+	assert.ok((apply.details.recoveredReads?.length ?? 0) > 1);
+	assert.equal(apply.details.recoveredRead?.nextOffset, 3_000);
+	assert.match(apply.content[0]?.text ?? "", /read and recorded in \d+ page\(s\)/);
+	assert.match(apply.content[0]?.text ?? "", /Review the current source.*resubmit the batch/);
+	assert.doesNotMatch(apply.content[0]?.text ?? "", /Do not resubmit apply before then/);
 });
 
 test("multi-page proof continuation completes without rereading the payload", async (t) => {
@@ -621,34 +628,13 @@ test("multi-page proof continuation completes without rereading the payload", as
 	const startAnchor = first.details.read?.lines[0]?.anchor;
 	const endAnchor = last.details.read?.lines[0]?.anchor;
 	assert.ok(startAnchor && endAnchor);
-	let params = { path: "target.txt", proof_id: last.details.proofId, changes: [{ operation: "replace_range", start_anchor: startAnchor, end_anchor: endAnchor, lines: "replacement" }] };
+	const params = { path: "target.txt", proof_id: last.details.proofId, changes: [{ operation: "replace_range", start_anchor: startAnchor, end_anchor: endAnchor, lines: "replacement" }] };
 	const initial = await applyTool.execute("apply-1", params as never, undefined, undefined, context);
 	assert.equal(initial.details.disposition, "rejected");
-	const recoveredOffset = initial.details.recoveredRead?.nextOffset;
-	assert.ok(typeof recoveredOffset === "number" && recoveredOffset > 1 && recoveredOffset < 3_000);
-	let continuationOffset: number = recoveredOffset;
-	let page = 0;
-	let proofId = last.details.proofId;
-	while (continuationOffset < 3_000) {
-		const currentOffset: number = continuationOffset;
-		const continuation: TextResult = await readTool.execute(
-			`continuation-${++page}`,
-			{ path: "target.txt", offset: currentOffset, limit: 3_000 - currentOffset } as never,
-			undefined,
-			undefined,
-			context,
-		);
-		assert.equal(continuation.details.disposition, "succeeded");
-		proofId = continuation.details.proofId;
-		const lastReadLine = continuation.details.read?.actual.lastLine;
-		assert.ok(typeof lastReadLine === "number" && lastReadLine >= currentOffset);
-		if (lastReadLine >= 2_999) break;
-		const nextOffset = continuation.details.read?.nextOffset;
-		assert.ok(typeof nextOffset === "number" && nextOffset > currentOffset);
-		continuationOffset = nextOffset;
-	}
-	params.proof_id = proofId;
-	const final = await applyTool.execute("apply-2", params as never, undefined, undefined, context);
+	assert.ok((initial.details.recoveredReads?.length ?? 0) > 1);
+	const proofId = initial.details.proofId;
+	assert.ok(proofId);
+	const final = await applyTool.execute("apply-2", { ...params, proof_id: proofId } as never, undefined, undefined, context);
 	assert.equal(final.details.disposition, "succeeded");
 	assert.equal(await readFile(target, "utf8"), "replacement\n");
 });

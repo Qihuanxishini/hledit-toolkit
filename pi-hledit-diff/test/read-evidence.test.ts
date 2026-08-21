@@ -19,7 +19,7 @@ const REVISION_D = "sha256:ddddddddddddddddddddddddddddddddddddddddddddddddddddd
 const PATH = "/workspace/target.txt";
 
 type ReadMetadataOptions = {
-	grep?: string;
+	pattern?: string;
 	truncated?: boolean;
 	totalLines?: number;
 };
@@ -31,7 +31,7 @@ function readMetadata(
 ): HleditReadMetadata {
 	const firstLine = lines[0]?.line;
 	const lastLine = lines.at(-1)?.line;
-	const grep = options.grep;
+	const pattern = options.pattern;
 	const totalLines = options.totalLines ?? Math.max(lastLine ?? 0, 10);
 	const truncated = options.truncated === true;
 	return {
@@ -40,7 +40,7 @@ function readMetadata(
 		requested: {
 			offset: firstLine ?? 1,
 			limit: Math.max(1, lines.length),
-			...(grep ? { grep } : {}),
+			...(pattern ? { pattern } : {}),
 		},
 		actual: {
 			...(firstLine !== undefined ? { firstLine } : {}),
@@ -57,7 +57,7 @@ function readMetadata(
 		truncated,
 		...(truncated && lastLine !== undefined ? { nextOffset: lastLine + 1 } : {}),
 		textTruncated: lines.some((line) => line.textTruncated === true),
-		eof: grep === undefined && !truncated && lastLine === totalLines,
+		eof: pattern === undefined && !truncated && lastLine === totalLines,
 	};
 }
 
@@ -124,12 +124,12 @@ test("ReadEvidenceStore discards prior windows when revision changes", () => {
 	assert.deepEqual(selection.failure.reportedMissingLines, [1]);
 });
 
-test("grep rows establish partial proof without bridging gaps", () => {
+test("search rows establish partial proof without bridging gaps", () => {
 	const store = new ReadEvidenceStore();
 	store.recordRead(PATH, readMetadata(REVISION_A, [
 		{ line: 2, anchor: "2#AAB" },
 		{ line: 5, anchor: "5#AAE" },
-	], { grep: "line" }));
+	], { pattern: "line" }));
 
 	assertProofSelection(store.selectProof(PATH, [
 		{ operation: "replace_range", start_anchor: "2#AAB", end_anchor: "2#AAB", lines: ["two"] },
@@ -163,25 +163,25 @@ test("proof validation checks every endpoint submitted for the same line", () =>
 	assert.match(selection.failure.message, /submitted anchor for line 2 does not match/);
 });
 
-test("grep context merges with unfiltered proof from the same revision", () => {
+test("search context merges with unfiltered proof from the same revision", () => {
 	const store = new ReadEvidenceStore();
 	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 2, anchor: "2#AAB" }]));
 	store.recordRead(PATH, readMetadata(REVISION_A, [
 		{ line: 3, anchor: "3#AAC" },
 		{ line: 4, anchor: "4#AAD" },
-	], { grep: "line" }));
+	], { pattern: "line" }));
 
 	assertProofSelection(store.selectProof(PATH, replaceRange("2#AAB", "4#AAD")), {
 		proof: { revision: REVISION_A, anchors: ["2#AAB", "3#AAC", "4#AAD"] },
 	});
 });
 
-test("grep pagination records complete rows but excludes text-truncated rows", () => {
+test("search pagination records complete rows but excludes text-truncated rows", () => {
 	const store = new ReadEvidenceStore();
 	store.recordRead(PATH, readMetadata(REVISION_A, [
 		{ line: 4, anchor: "4#AAD" },
 		{ line: 5, anchor: "5#AAE", textTruncated: true },
-	], { grep: "line", truncated: true }));
+	], { pattern: "line", truncated: true }));
 
 	assert.ok("proof" in store.selectProof(PATH, replaceRange("4#AAD", "4#AAD")));
 	const truncatedSelection = store.selectProof(PATH, replaceRange("5#AAE", "5#AAE"));
@@ -191,19 +191,19 @@ test("grep pagination records complete rows but excludes text-truncated rows", (
 	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 6, anchor: "6#AAF" }]));
 	store.recordRead(PATH, readMetadata(REVISION_A, [
 		{ line: 6, anchor: "6#AAF", textTruncated: true },
-	], { grep: "line" }));
+	], { pattern: "line" }));
 	assert.ok("proof" in store.selectProof(PATH, replaceRange("6#AAF", "6#AAF")));
 });
 
-test("empty grep reads invalidate existing proof for that path", () => {
+test("empty search reads invalidate existing proof for that path", () => {
 	const store = new ReadEvidenceStore();
 	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }]));
-	store.recordRead(PATH, readMetadata(REVISION_A, [], { grep: "missing" }));
+	store.recordRead(PATH, readMetadata(REVISION_A, [], { pattern: "missing" }));
 	const sameRevisionSelection = store.selectProof(PATH, replaceRange("1#AAA", "1#AAA"));
 	assert.ok("failure" in sameRevisionSelection);
 	assert.deepEqual(sameRevisionSelection.failure.reportedMissingLines, [1]);
 
-	store.recordRead(PATH, readMetadata(REVISION_B, [], { grep: "missing" }));
+	store.recordRead(PATH, readMetadata(REVISION_B, [], { pattern: "missing" }));
 	const selection = store.selectProof(PATH, replaceRange("1#AAA", "1#AAA"));
 	assert.ok("failure" in selection);
 	assert.deepEqual(selection.failure.reportedMissingLines, [1]);
@@ -261,7 +261,7 @@ test("proof guidance covers every unresolved gap in the affected change", () => 
 		{ line: 1, anchor: "1#AAA" },
 		{ line: 10, anchor: "10#AAB" },
 		{ line: 20, anchor: "20#AAC" },
-	], { grep: "line" }));
+	], { pattern: "line" }));
 
 	const selection = store.selectProof(PATH, replaceRange("1#AAA", "20#AAC"));
 	assert.ok("failure" in selection);
@@ -324,7 +324,7 @@ test("proof failure identifies the affected operation and continuous gap in a di
 		...Array.from({ length: 9 }, (_, index) => ({ line: 138 + index, anchor: `${138 + index}#AAA` })),
 		{ line: 263, anchor: "263#AAA" },
 		...Array.from({ length: 21 }, (_, index) => ({ line: 1044 + index, anchor: `${1044 + index}#AAA` })),
-	], { grep: "line" }));
+	], { pattern: "line" }));
 
 	const selection = store.selectProof(PATH, [
 		{ operation: "insert_after", anchor: "9#AAA", lines: ["inserted"] },
@@ -526,7 +526,7 @@ test("truncated stale context invalidates old evidence without creating new proo
 });
 
 test("branch restoration replays only tool results present on the current branch", () => {
-	const read = readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }], { grep: "one" });
+	const read = readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }], { totalLines: 1 });
 	const readEntry = {
 		type: "message",
 		message: {

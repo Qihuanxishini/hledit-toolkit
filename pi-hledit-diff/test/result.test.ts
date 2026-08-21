@@ -124,16 +124,16 @@ test("readAnchorsResult rejects non-sequential unfiltered output", () => {
     assert.match(result.content[0]?.text ?? "", /incompatible response/);
 });
 
-test("readAnchorsResult formats a complete empty filtered result", () => {
+test("readAnchorsResult formats a complete empty search result", () => {
     const result = readAnchorsResult(
-        { stdout: JSON.stringify({ ok: true, revision: REVISION, totalLines: 5, lines: [], truncated: false }), stderr: "", exitCode: 0 },
-        { path: "src/a.ts", offset: 1, limit: 20, grep: "missing", context: 2 },
+        { stdout: JSON.stringify({ ok: true, revision: REVISION, totalLines: 5, totalMatches: 0, lines: [], truncated: false }), stderr: "", exitCode: 0 },
+        { path: "src/a.ts", offset: 1, limit: 20, pattern: "missing", context: 2 },
     );
 
 	assert.equal(result.content[0]?.text, '-- No lines matching "missing" were found (5 lines total) --');
 	assert.equal(result.details.proofId, undefined);
 	assert.deepEqual(result.details.read?.actual, { lineCount: 0, totalLines: 5 });
-	assert.deepEqual(result.details.read?.requested, { offset: 1, limit: 20, grep: "missing", context: 2 });
+	assert.deepEqual(result.details.read?.requested, { offset: 1, limit: 20, pattern: "missing", context: 2 });
 
 });
 test("applyFileChangesResult summarizes successful file changes", () => {

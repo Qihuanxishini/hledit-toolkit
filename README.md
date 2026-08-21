@@ -6,8 +6,8 @@
 
 | 目录 | 用途 |
 | --- | --- |
-| [`cli/`](./cli/) | Go 编写的 `hledit` CLI：校验 v2 `LN#HASH`（三位 URL-safe Base64）锚点，原子执行单项或批量锚点修改，并返回受限的新锚点窗口。 |
-| [`pi-hledit-diff/`](./pi-hledit-diff/) | Pi 插件：注册严格的 `hledit_read_anchors` 与 `hledit_apply_file_changes` 工具，并提供 evidence 管理和 diff 渲染。 |
+| [`cli/`](./cli/) | Go 编写的 `hledit` CLI：只提供结构化 `read-range`、`search` 与原子 `batch` 协议；使用 v2 `LN#HASH`（三位 URL-safe Base64）锚点和 raw-byte revision。 |
+| [`pi-hledit-diff/`](./pi-hledit-diff/) | Pi 插件：注册严格的 `hledit_read_anchors`、`hledit_search_anchors` 与 `hledit_apply_file_changes` 工具，并提供 evidence 管理和 diff 渲染。 |
 
 插件当前面向 Windows x64，仓库内附带 `pi-hledit-diff/bin/hledit.exe`。
 
@@ -27,9 +27,9 @@
 - batch 成功后直接返回 `updatedAnchors` 与 `editDeltas`，无需再次启动 `read-range`；插件用 `editDeltas` 把未受影响行的读取证据平移到新行号，顺序多次编辑同一文件通常不再需要中间重读。
 - 模型提交编辑前的旧锚点时，插件会对持续存活的平移目标给出 verified rename；若旧 token 被当前行重新占用，或其源行/alias 目标被消费失联，则在显式重读前拒绝立即与延迟复用。
 - JSON 读取返回基于原始字节的 SHA-256 revision；插件在 canonical file queue 内维护有界 evidence，并将完整消费行 proof 注入 anchored batch。公开 change 只需复制首尾或依附行的 `LN#HASH` token。
-- CLI 健康时，两个专用工具替代内置 `edit`；apply 始终独立检查当前 branch 的读取证据，CLI 缺失或不兼容时恢复内置 `edit`。
+- CLI 健康时，三个专用工具替代内置 `edit`；apply 始终独立检查当前 branch 的读取证据，CLI 缺失或不兼容时恢复内置 `edit`。
 - 插件工具参数采用严格 schema 并启用 provider 侧 constrained sampling（`strict: prefer`，不支持的模型自动回落）；`insufficient_read_proof` 作为可恢复补读结果返回，其他失败继续转换为真正的 Pi 工具错误。
-- `read` / `read-range` / `anchors` 支持 `--ignore-case` 子串过滤；插件 `hledit_read_anchors` 暴露 `ignore_case` 参数。
+- CLI 只有 `read-range`（连续物理行）和 `search`（RE2/字面量、上下文、大小写选项）两种 JSON 读取路径；不存在旧 `read`、`anchors`、`--grep`、ANSI/纯文本或单项写命令。
 - replace/delete 范围的前后物理边界上允许位置确定的 insert（内容依附其锚点行）；落入范围内部边界的 insert 仍整批拒绝。
 - 插件内置主题自适应的锚点预览与统一/双栏 diff 渲染；结构化 preview 按 UTF-8 字节限制，截断时显示 CLI 校验的完整增删统计。
 
@@ -63,7 +63,7 @@ npm run check
 
 ```json
 {
-  "version": "3.0.0",
+  "version": "3.2.0",
   "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,
@@ -73,11 +73,14 @@ npm run check
   "batchWireV3": true,
   "batchReadProof": true,
   "batchEditDeltas": true,
-  "readIgnoreCase": true
+  "searchIgnoreCase": true,
+  "searchRegex": true,
+  "searchLiteral": true,
+  "search": true
 }
 ```
 
-读取结果必须携带 `revision`、`totalLines` 和严格截断元数据。连续范围或完整返回的 grep 行都可形成局部写入证据；revision 与已读 anchors 保持在内部，不加入模型工具 schema。batch wire v3 中 `delete` 必须省略 `lines`，旧 `delete.lines:[]` 形状直接拒绝。成功 batch 响应必须携带新 `revision`、合法的 `updatedAnchors` 与非空且与请求一致的 `editDeltas`（插件逐项互核，内部矛盾按结果未知处理）；失败可按需返回 `currentRevision` 和同一快照的 `currentAnchors`。插件要求 CLI 3.x、拒绝已删除的 `contentReplaceOnce` 字段，并且不保留旧 CLI、旧 wire、无 proof batch 写入、内容匹配替换或自动 stale 重试路径。
+读取结果必须携带 `revision`、`totalLines` 和严格截断元数据。连续范围或专用 search 返回的完整匹配行都可形成局部写入证据；revision 与已读 anchors 保持在内部，不加入模型工具 schema。batch wire v3 中 `delete` 必须省略 `lines`，旧 `delete.lines:[]` 形状直接拒绝。成功 batch 响应必须携带新 `revision`、合法的 `updatedAnchors` 与非空且与请求一致的 `editDeltas`（插件逐项互核，内部矛盾按结果未知处理）；失败可按需返回 `currentRevision` 和同一快照的 `currentAnchors`。插件要求 CLI 3.x、拒绝已删除的 `contentReplaceOnce` 字段，并且不保留旧 CLI、旧 wire、无 proof batch 写入、内容匹配替换或自动 stale 重试路径。
 
 ## 开发仓库与运行目录
 

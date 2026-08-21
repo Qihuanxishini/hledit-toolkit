@@ -16,8 +16,8 @@ func loadRequestedBatchPlan(path string) (LoadedTextFile, BatchPlan, bool) {
 		return LoadedTextFile{}, BatchPlan{}, false
 	}
 
-	file, loadErr := loadEditableFile(path)
-	if loadErr != nil {
+	file, ok := loadCommandTextFile(path)
+	if !ok {
 		return LoadedTextFile{}, BatchPlan{}, false
 	}
 	plan, failure := planBatchEdits(request, file.Lines, file.Revision)

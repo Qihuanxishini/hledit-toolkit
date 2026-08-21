@@ -1,7 +1,7 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { ANCHOR_PATTERN } from "./file-changes.ts";
-import { MAX_READ_LIMIT } from "./read-args.ts";
+import { MAX_READ_LIMIT, MAX_SEARCH_LIMIT } from "./read-args.ts";
 
 const STRICT_OBJECT = { additionalProperties: false };
 
@@ -59,11 +59,20 @@ export const HLEDIT_READ_ANCHORS_PARAMS_SCHEMA = Type.Object(
 	{
 		path: PATH_SCHEMA,
 		offset: Type.Optional(Type.Integer({ minimum: 1, description: "First line (1-based)." })),
-		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_READ_LIMIT, description: `Maximum lines (${MAX_READ_LIMIT} max).` })),
-		grep: Type.Optional(Type.String({ description: "RE2 regular expression filter; use literal:true for exact text." })),
-		literal: Type.Optional(Type.Boolean({ description: "Treat grep as an exact literal string instead of a regular expression." })),
-		context: Type.Optional(Type.Integer({ minimum: 0, description: "Lines around each grep match." })),
-		ignore_case: Type.Optional(Type.Boolean({ description: "Case-insensitive grep." })),
+		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_READ_LIMIT, description: `Maximum contiguous lines (${MAX_READ_LIMIT} max).` })),
+	},
+	STRICT_OBJECT,
+);
+
+export const HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA = Type.Object(
+	{
+		path: PATH_SCHEMA,
+		pattern: Type.String({ minLength: 1, description: "RE2 regular expression; use literal:true for exact text." }),
+		offset: Type.Optional(Type.Integer({ minimum: 1, description: "First source line to search (1-based)." })),
+		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_SEARCH_LIMIT, description: `Maximum matching/context lines (${MAX_SEARCH_LIMIT} max).` })),
+		literal: Type.Optional(Type.Boolean({ description: "Treat pattern as exact text instead of a regular expression." })),
+		context: Type.Optional(Type.Integer({ minimum: 0, description: "Lines around each match." })),
+		ignore_case: Type.Optional(Type.Boolean({ description: "Case-insensitive pattern matching." })),
 	},
 	STRICT_OBJECT,
 );
@@ -71,7 +80,7 @@ export const HLEDIT_READ_ANCHORS_PARAMS_SCHEMA = Type.Object(
 export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 	{
 		path: PATH_SCHEMA,
-		proof_id: Type.String({ minLength: 1, description: "Proof id returned by the latest read for edit on this path." }),
+		proof_id: Type.String({ minLength: 1, description: "Proof id from the latest successful read/search result for this path." }),
 		changes: Type.Array(
 			Type.Union([REPLACE_RANGE_CHANGE_SCHEMA, DELETE_RANGE_CHANGE_SCHEMA, INSERT_BEFORE_CHANGE_SCHEMA, INSERT_AFTER_CHANGE_SCHEMA]),
 			{
@@ -85,6 +94,7 @@ export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 );
 
 export type ReadAnchorsParams = Static<typeof HLEDIT_READ_ANCHORS_PARAMS_SCHEMA>;
+export type SearchAnchorsParams = Static<typeof HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA>;
 export type FileChangeInput = Static<typeof HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA>;
 export type CanonicalFileChange =
 	| { operation: "replace_range"; start_anchor: string; end_anchor: string; lines: string[] }

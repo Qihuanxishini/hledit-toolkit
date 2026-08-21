@@ -3,22 +3,37 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 )
 
-const version = "3.1.0"
+const version = "3.2.0"
 
-// splitArgs separates a command's args into flags and positionals so that
-// flags may appear before OR after the positional file argument (e.g.
-// "read-range main.go --offset 4" and "read-range --offset 4 main.go" both
-// work). Go's flag package stops at the first non-flag arg, so we reorder.
-// A bare "-" is treated as a positional (stdin content-source).
+// splitArgs lets the small command parsers accept flags before or after
+// positional arguments. A standard -- separator protects flag-like paths and
+// search patterns; everything after it is positional.
 func splitArgs(args []string) (positionals []string, flags []string) {
-	// Flags that take a value ("-x v" form) in our subcommands.
-	valueFlags := map[string]bool{"-offset": true, "--offset": true, "-limit": true, "--limit": true, "-grep": true, "--grep": true, "-context": true, "--context": true}
-	boolFlags := map[string]bool{"--before": true, "--after": true, "--json": true, "-json": true, "--pretty": true, "-pretty": true, "--check": true, "-check": true, "--ignore-case": true, "-ignore-case": true, "--literal": true, "-literal": true}
+	valueFlags := map[string]bool{
+		"-offset": true, "--offset": true,
+		"-limit": true, "--limit": true,
+		"-context": true, "--context": true,
+	}
+	boolFlags := map[string]bool{
+		"--check": true, "-check": true,
+		"--ignore-case": true, "-ignore-case": true,
+		"--literal": true, "-literal": true,
+	}
+	positionalOnly := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if positionalOnly {
+			positionals = append(positionals, a)
+			continue
+		}
+		if a == "--" {
+			positionalOnly = true
+			continue
+		}
 		if a == "-" {
 			positionals = append(positionals, a)
 			continue
@@ -35,13 +50,15 @@ func splitArgs(args []string) (positionals []string, flags []string) {
 			flags = append(flags, a)
 			continue
 		}
-		if len(a) > 0 && a[0] == '-' {
-			positionals = append(positionals, a)
-			continue
-		}
 		positionals = append(positionals, a)
 	}
 	return positionals, flags
+}
+
+func newFlagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	return fs
 }
 
 const usage = `hledit — hash-anchored line editor for AI coding agents
@@ -49,20 +66,17 @@ const usage = `hledit — hash-anchored line editor for AI coding agents
 Usage:
   hledit --version
   hledit capabilities
-  hledit read <file> [--grep <pattern>] [--literal] [--context N] [--ignore-case] [--json] [--pretty]
-  hledit read-range <file> [--offset N] [--limit M] [--grep <pattern>] [--literal] [--context N] [--ignore-case] [--json] [--pretty]
-  hledit anchors <file> [--offset N] [--limit M] [--grep <pattern>] [--literal] [--context N] [--ignore-case] [--json] [--pretty]
-  hledit replace <file> <anchor> <content-source>
-  hledit replace-range <file> <anchor> <end-anchor> <content-source>
-  hledit insert [--before|--after] <file> <anchor> <content-source>
+  hledit read-range <file> [--offset N] [--limit M]
+  hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N] [--ignore-case]
   hledit batch [--check] <file>
 
 Arguments:
-  <anchor>          LN#HHH from a prior read, e.g. 5#aB3
-  <content-source>  - for stdin, or a file path
-  --grep            RE2 regular expression filter (empty means no filter)
-  --literal         treat --grep as an exact literal string instead of RE2
-  --ignore-case     match the --grep pattern case-insensitively
+  <pattern>         RE2 regular expression used by search; --literal switches to exact text
+  --offset          1-indexed physical line cursor (default: read 1, search 1)
+  --limit           maximum lines returned (default: read 160, search 100)
+  --literal         treat the search pattern as an exact literal substring
+  --context         include N surrounding lines for each search match
+  --ignore-case     match the search pattern case-insensitively
 
 Batch input (JSON on stdin):
   {"edits": [
@@ -73,23 +87,15 @@ Batch input (JSON on stdin):
   ]}
 
 Examples:
-  hledit read main.go
   hledit read-range main.go --offset 40 --limit 20
-  printf '  return nil\n' | hledit replace main.go 12#aB3 -
-  hledit replace-range main.go 12#aB3 18#xY7 /tmp/new-block.txt
-  cat header.txt | hledit insert --before main.go 1#Qw_ -
-  printf '// done\n' | hledit insert --after main.go 99#nK2 -
+  hledit search main.go "Register[A-Za-z0-9_]+" --context 2
   echo '{"edits":[{"op":"replace","pos":"12#aB3","lines":["fixed"]}]}' | hledit batch main.go
   echo '{"edits":[{"op":"replace","pos":"12#aB3","lines":["fixed"]}]}' | hledit batch --check main.go
 
 Notes:
-  - replace/replace-range with empty content deletes the target line/range.
-  - batch applies multiple edits atomically: all anchors validated first,
-    then the non-overlapping edits rebuild the file once before a single atomic write.
-  - batch insert supports "after": true; omit it or set false to insert before the anchor.
-  - batch --check validates all anchors and ops without writing; result includes checked:true.
-  - All write verbs validate anchors before writing. If any anchor is stale,
-    nothing is written and stdout contains JSON {"ok":false,"error":"stale",...}.
+  - read-range and search always emit structured JSON for the Pi extension.
+  - A source line that cannot fit a complete JSON page is marked textTruncated and cannot establish proof.
+  - batch validates all anchors before applying non-overlapping edits atomically.
   - Logical errors exit 0 and are reported as JSON on stdout; CLI misuse exits 2.
 `
 
@@ -102,8 +108,6 @@ func run(argv []string) int {
 		fmt.Print(usage)
 		return 0
 	}
-
-	// Handle --version globally
 	if argv[0] == "--version" || argv[0] == "-v" {
 		fmt.Printf("hledit %s\n", version)
 		return 0
@@ -111,92 +115,37 @@ func run(argv []string) int {
 
 	verb := argv[0]
 	args := argv[1:]
-
 	switch verb {
-	case "read":
-		positionals, flagArgs := splitArgs(args)
-		fs := flag.NewFlagSet("read", flag.ExitOnError)
-		grep := fs.String("grep", "", "filter lines by RE2 regular expression")
-		literal := fs.Bool("literal", false, "treat --grep as a literal string")
-		contextN := fs.Int("context", 0, "include N surrounding lines for each grep match")
-		ignoreCase := fs.Bool("ignore-case", false, "match the grep pattern case-insensitively")
-		pretty := fs.Bool("pretty", false, "emit ANSI-styled text for human reading")
-		jsonOut := fs.Bool("json", false, "emit structured JSON instead of annotated text")
-		fs.Parse(flagArgs)
-		if len(positionals) != 1 {
-			fmt.Fprint(os.Stderr, usage)
-			return 2
-		}
-		return mustRun(cmdReadPrettyWithMode(positionals[0], *grep, *literal, *contextN, *ignoreCase, *jsonOut, *pretty))
-
 	case "read-range":
 		positionals, flagArgs := splitArgs(args)
-		fs := flag.NewFlagSet("read-range", flag.ExitOnError)
+		fs := newFlagSet("read-range")
 		offset := fs.Int("offset", 1, "1-indexed starting line")
-		limit := fs.Int("limit", 2000, "max lines to return")
-		grep := fs.String("grep", "", "filter lines by RE2 regular expression")
-		literal := fs.Bool("literal", false, "treat --grep as a literal string")
-		contextN := fs.Int("context", 0, "include N surrounding lines for each grep match")
-		ignoreCase := fs.Bool("ignore-case", false, "match the grep pattern case-insensitively")
-		pretty := fs.Bool("pretty", false, "emit ANSI-styled text for human reading")
-		jsonOut := fs.Bool("json", false, "emit structured JSON instead of annotated text")
-		fs.Parse(flagArgs)
-		if len(positionals) != 1 {
+		limit := fs.Int("limit", 160, "max lines to return")
+		if err := fs.Parse(flagArgs); err != nil || len(positionals) != 1 {
 			fmt.Fprint(os.Stderr, usage)
 			return 2
 		}
-		return mustRun(cmdReadRangePrettyWithMode(positionals[0], *offset, *limit, *grep, *literal, *contextN, *ignoreCase, *jsonOut, *pretty))
+		return mustRun(cmdReadRange(positionals[0], *offset, *limit))
 
-	case "anchors":
+	case "search":
 		positionals, flagArgs := splitArgs(args)
-		fs := flag.NewFlagSet("anchors", flag.ExitOnError)
+		fs := newFlagSet("search")
 		offset := fs.Int("offset", 1, "1-indexed starting line")
-		limit := fs.Int("limit", 2000, "max lines to return")
-		grep := fs.String("grep", "", "filter lines by RE2 regular expression")
-		literal := fs.Bool("literal", false, "treat --grep as a literal string")
-		contextN := fs.Int("context", 0, "include N surrounding lines for each grep match")
-		ignoreCase := fs.Bool("ignore-case", false, "match the grep pattern case-insensitively")
-		pretty := fs.Bool("pretty", false, "emit ANSI-styled text for human reading")
-		jsonOut := fs.Bool("json", false, "emit structured JSON instead of annotated text")
-		fs.Parse(flagArgs)
-		if len(positionals) != 1 {
+		limit := fs.Int("limit", 100, "max matching/context lines to return")
+		literal := fs.Bool("literal", false, "treat the pattern as an exact literal string")
+		contextN := fs.Int("context", 0, "include N surrounding lines for each match")
+		ignoreCase := fs.Bool("ignore-case", false, "match the pattern case-insensitively")
+		if err := fs.Parse(flagArgs); err != nil || len(positionals) != 2 {
 			fmt.Fprint(os.Stderr, usage)
 			return 2
 		}
-		return mustRun(cmdAnchorsPrettyWithMode(positionals[0], *offset, *limit, *grep, *literal, *contextN, *ignoreCase, *jsonOut, *pretty))
-
-	case "replace":
-		if len(args) != 3 {
-			fmt.Fprint(os.Stderr, usage)
-			return 2
-		}
-		return mustRun(cmdReplace(args[0], args[1], args[2]))
-
-	case "replace-range":
-		if len(args) != 4 {
-			fmt.Fprint(os.Stderr, usage)
-			return 2
-		}
-		return mustRun(cmdReplaceRange(args[0], args[1], args[2], args[3]))
-
-	case "insert":
-		positionals, flagArgs := splitArgs(args)
-		fs := flag.NewFlagSet("insert", flag.ExitOnError)
-		before := fs.Bool("before", false, "insert before the anchor (default)")
-		after := fs.Bool("after", false, "insert after the anchor")
-		fs.Parse(flagArgs)
-		if len(positionals) != 3 || (*before && *after) {
-			fmt.Fprint(os.Stderr, usage)
-			return 2
-		}
-		return mustRun(cmdInsert(positionals[0], positionals[1], positionals[2], *after))
+		return mustRun(cmdSearch(positionals[0], positionals[1], *offset, *limit, *literal, *contextN, *ignoreCase))
 
 	case "batch":
 		positionals, flagArgs := splitArgs(args)
-		fs := flag.NewFlagSet("batch", flag.ExitOnError)
+		fs := newFlagSet("batch")
 		check := fs.Bool("check", false, "validate only, do not write")
-		fs.Parse(flagArgs)
-		if len(positionals) != 1 {
+		if err := fs.Parse(flagArgs); err != nil || len(positionals) != 1 {
 			fmt.Fprint(os.Stderr, usage)
 			return 2
 		}
@@ -222,9 +171,10 @@ func run(argv []string) int {
 			BatchWireV3:         true,
 			BatchReadProof:      true,
 			BatchEditDeltas:     true,
-			ReadIgnoreCase:      true,
-			ReadRegex:           true,
-			ReadLiteral:         true,
+			SearchIgnoreCase:    true,
+			SearchRegex:         true,
+			SearchLiteral:       true,
+			Search:              true,
 		}))
 
 	case "-h", "--help", "help":
@@ -237,9 +187,8 @@ func run(argv []string) int {
 	}
 }
 
-// mustRun handles the return value of a cmd* function. Per SPEC §9, cmd*
-// functions return nil for all logical errors (they emit JSON themselves);
-// a non-nil return indicates an unrecoverable infrastructure failure → exit 1.
+// mustRun maps infrastructure failures to exit 1. Logical command errors emit
+// their JSON response and return nil, so they intentionally keep exit 0.
 func mustRun(err error) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

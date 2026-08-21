@@ -74,6 +74,21 @@ func TestReadRangeAndSearchErrorsStayStructured(t *testing.T) {
 		t.Fatalf("missing read error = %#v", missingError)
 	}
 
+	directory := filepath.Join(dir, "nested")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	directoryOutput := commandTestCaptureStdout(t, func() {
+		if err := cmdSearch(directory, "target", 1, 100, false, 0, false); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var directoryError CommandError
+	commandTestDecode(t, directoryOutput, &directoryError)
+	if directoryError.OK || directoryError.Error != "directory" || !strings.Contains(directoryError.Message, "regular text file") {
+		t.Fatalf("directory search error = %#v", directoryError)
+	}
+
 	binary := filepath.Join(dir, "binary.dat")
 	if err := os.WriteFile(binary, []byte("prefix\x00suffix"), 0o644); err != nil {
 		t.Fatal(err)

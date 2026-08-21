@@ -95,6 +95,24 @@ test("readAnchorsResult localizes invalid UTF-8 errors", () => {
 	});
 });
 
+test("readAnchorsResult explains that directory paths are not searchable files", () => {
+	const result = readAnchorsResult(
+		{ stdout: '{"ok":false,"error":"directory","message":"path is a directory; provide a regular text file"}', stderr: "", exitCode: 0 },
+		{ path: "src", offset: 1, limit: 20, pattern: "target", context: 2 },
+	);
+
+	assert.equal(
+		result.content[0]?.text,
+		"The provided path is a directory, but hledit reads one concrete text file at a time.\nSuggestion: Provide a concrete text file path. For a directory-wide search, locate candidate files first and search them individually.\nError code: directory",
+	);
+	assert.deepEqual(result.details.error, {
+		code: "directory",
+		message: "The provided path is a directory, but hledit reads one concrete text file at a time.",
+		rawMessage: "path is a directory; provide a regular text file",
+		hint: "Provide a concrete text file path. For a directory-wide search, locate candidate files first and search them individually.",
+	});
+});
+
 test("readAnchorsResult distinguishes source-line truncation from pagination", () => {
     const result = readAnchorsResult(
         {
@@ -520,6 +538,22 @@ test("model body snapshot: output overflow keeps the outcome-unknown recovery bo
 		"Diagnostic: hledit output exceeded 1048576 bytes, so the process was terminated.",
 	);
 	assert.equal(result.details.disposition, "outcome_unknown");
+});
+
+test("applyFileChangesResult explains that directory paths are not editable files", () => {
+	const rawMessage = "path is a directory; provide a regular text file";
+	const result = applyFileChangesResult({
+		stdout: JSON.stringify({ ok: false, error: "directory", message: rawMessage }),
+		stderr: "",
+		exitCode: 0,
+	});
+
+	assert.equal(result.content[0]?.text, "The provided path is a directory, but hledit edits one concrete text file at a time.\nNo content was written.");
+	assert.deepEqual(result.details.error, {
+		code: "directory",
+		message: "The provided path is a directory, but hledit edits one concrete text file at a time.",
+		rawMessage,
+	});
 });
 
 test("applyFileChangesResult surfaces the hardlink rejection reason", () => {

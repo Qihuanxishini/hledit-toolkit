@@ -19,7 +19,7 @@ hledit batch [--check] <file>
 
 `read-range`, `search`, and `batch` always write one structured JSON response to stdout. They have no text, ANSI, or compatibility output mode.
 
-- Logical command outcomes, including `stale`, `invalid`, `binary`, `encoding`, `range`, and I/O errors, exit `0` and return `{ "ok": false, ... }` on stdout.
+- Logical command outcomes, including `stale`, `invalid`, `binary`, `encoding`, `directory`, `range`, and I/O errors, exit `0` and return `{ "ok": false, ... }` on stdout. A `directory` error means the supplied path is a directory; read and search verbs require one concrete text file.
 - Invalid command-line shape exits `2` with usage on stderr.
 - Failures that prevent emitting a normal response exit `1`.
 
@@ -105,7 +105,7 @@ hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N
 
 `totalMatches` counts matching lines before context expansion. Zero matches return success with `totalMatches:0`, an empty `lines` array, `truncated:false`, and no `nextOffset`. Empty or invalid patterns return `error:"pattern"`. Broad whole-file expressions such as `.*`, `.+`, and their anchored or dot-all variants return `error:"broad_pattern"`; callers must use `read-range` for contiguous source.
 
-Both read verbs reject binary files and invalid UTF-8 with structured `binary` or `encoding` errors. They cap the serialized JSON page at 50 KiB.
+Both read verbs reject directories, binary files, and invalid UTF-8 with structured `directory`, `binary`, or `encoding` errors. They cap the serialized JSON page at 50 KiB.
 
 ## 4. Batch edit protocol
 

@@ -344,6 +344,9 @@ function localizeReadErrorMessage(
 	if (code === "encoding") {
 		return "The target is not valid UTF-8 text; reading was rejected to protect the original bytes.";
 	}
+	if (code === "directory") {
+		return "The provided path is a directory, but hledit reads one concrete text file at a time.";
+	}
 	if (code === "io") {
 		return "The file could not be read. Check its path, permissions, and whether it still exists.";
 	}
@@ -361,6 +364,9 @@ function parseReadErrorMetadata(parsed: Record<string, unknown>): HleditErrorMet
 		hint = totalLines === 0
 			? "The file is empty, so no anchors exist. To add content to an empty file, use write."
 			: `Set offset to an integer from 1 through ${totalLines}.`;
+	}
+	if (parsed.error === "directory") {
+		hint = "Provide a concrete text file path. For a directory-wide search, locate candidate files first and search them individually.";
 	}
 	return {
 		code: parsed.error,
@@ -685,6 +691,9 @@ function parseApplyErrorMetadata(result: Record<string, unknown>, context: Apply
 			break;
 		case "encoding":
 			message = "The target is not valid UTF-8 text; the edit was rejected to protect the original bytes.";
+			break;
+		case "directory":
+			message = "The provided path is a directory, but hledit edits one concrete text file at a time.";
 			break;
 		case "io":
 			message = localizeIOApplyMessage(result.message);

@@ -29,7 +29,12 @@ func loadCommandTextFile(path string) (LoadedTextFile, bool) {
 	case errors.Is(err, errInvalidUTF8):
 		_ = emitError("encoding", "file is not valid UTF-8")
 	default:
-		_ = emitError("io", err.Error())
+		// [喵喵喵]: os.ReadFile 对目录返回的平台错误并不一致；仅在失败路径补 stat，避免正常读取多一次系统调用。
+		if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+			_ = emitError("directory", "path is a directory; provide a regular text file")
+		} else {
+			_ = emitError("io", err.Error())
+		}
 	}
 	return LoadedTextFile{}, false
 }

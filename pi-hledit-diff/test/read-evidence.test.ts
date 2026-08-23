@@ -569,6 +569,23 @@ test("branch restoration replays only tool results present on the current branch
 	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: "1#AAA", lines: ["next"] }]));
 });
 
+test("terminal recovery branches replay the pages they already read", () => {
+	// 补读的每条终止分支都会把已完成的页记进实时 evidence；重放侧漏掉任何一个 code，
+	// 切 branch / reload 之后的状态就会和实时状态分歧。
+	for (const code of ["source_line_truncated", "proof_recovery_read_failed", "proof_recovery_budget_exceeded"]) {
+		const store = new ReadEvidenceStore();
+		store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("rejected", {
+			path: "target.txt",
+			error: { code, message: code },
+			recoveredReads: [readMetadata(REVISION_A, [{ line: 2, anchor: "2#BBB" }], { truncated: true })],
+		}), "/workspace");
+
+		assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: "2#BBB", lines: ["next"] }]), {
+			proof: { revision: REVISION_A, anchors: ["2#BBB"] },
+		});
+	}
+});
+
 test("branch restoration replays targeted proof recovered by a rejected apply", () => {
 	const recoveredRead = readMetadata(REVISION_A, [{ line: 2, anchor: "2#BBB" }], { truncated: true });
 	const store = new ReadEvidenceStore();
@@ -1164,4 +1181,48 @@ test("session record overflow evicts whole files deterministically in tool-resul
 		},
 	} as never);
 	assertEvictionState(replayed);
+});
+
+test("session byte overflow evicts whole files deterministically in tool-result order", () => {
+	// 每个文件约 3.9 MiB（低于单文件上限），5 个文件越过 16 MiB session 上限，
+	// 恰好淘汰最旧的一个。字节侧与条数侧共用同一份增量占用核算。
+	const bulkText = "界".repeat(1_300_000);
+	const store = new ReadEvidenceStore();
+	const paths = Array.from({ length: 5 }, (_, index) => `/workspace/bulk-${index}.txt`);
+	for (const path of paths) {
+		store.recordRead(path, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA", text: bulkText }]));
+	}
+
+	const insertAt = (path: string) => store.selectProof(path, [{ operation: "insert_after", anchor: "1#AAA", lines: ["x"] }]);
+	assert.ok("failure" in insertAt(paths[0]!));
+	for (const path of paths.slice(1)) assert.ok("proof" in insertAt(path));
+});
+
+test("branch restoration starts session usage accounting from zero", () => {
+	// restoreFromBranch 丢弃全部旧 evidence；若累计占用没有跟着归零，上一条 branch 的
+	// 字节会永久计入总量，重放出来的证据会被容量判定立刻淘汰。
+	const bulkText = "界".repeat(1_300_000);
+	const store = new ReadEvidenceStore();
+	// 4 个文件约 14.9 MiB：低于 session 上限，实时阶段不触发淘汰。
+	for (let index = 0; index < 4; index++) {
+		store.recordRead(`/workspace/stale-${index}.txt`, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA", text: bulkText }], { totalLines: 1 }));
+	}
+
+	const restoredPath = "/workspace/restored.txt";
+	const restoredRead = readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA", text: bulkText }], { totalLines: 1 });
+	store.restoreFromBranch({
+		cwd: "/workspace",
+		sessionManager: {
+			getBranch: () => [{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolName: HLEDIT_READ_ANCHORS_TOOL,
+					details: { disposition: "succeeded", evidencePath: restoredPath, read: restoredRead },
+				},
+			}],
+		},
+	} as never);
+
+	assert.ok("proof" in store.selectProof(restoredPath, [{ operation: "insert_after", anchor: "1#AAA", lines: ["x"] }]));
 });

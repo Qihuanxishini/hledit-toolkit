@@ -29,6 +29,7 @@
 - JSON 读取返回基于原始字节的 SHA-256 revision；插件在 canonical file queue 内维护有界 evidence，并将完整消费行 proof 注入 anchored batch。公开 change 只需复制首尾或依附行的 `LN#HASH` token。
 - CLI 健康时，三个专用工具替代内置 `edit`；apply 始终独立检查当前 branch 的读取证据，CLI 缺失或不兼容时恢复内置 `edit`。
 - 插件工具参数采用严格 schema 并启用 provider 侧 constrained sampling（`strict: prefer`，不支持的模型自动回落）；`insufficient_read_proof` 作为可恢复补读结果返回，其他失败继续转换为真正的 Pi 工具错误。
+- proof 缺口的定向补读有硬预算（1,200 行 / 4 页 / 96 KiB）：它把读到的每一行回灌进模型上下文，跨度超限时不启动任何子进程，直接返回 `proof_recovery_budget_exceeded` 与显式分块读取指令。
 - CLI 只有 `read-range`（连续物理行）和 `search`（RE2/字面量、上下文、大小写选项）两种 JSON 读取路径；不存在旧 `read`、`anchors`、`--grep`、ANSI/纯文本或单项写命令。
 - replace/delete 范围的前后物理边界上允许位置确定的 insert（内容依附其锚点行）；落入范围内部边界的 insert 仍整批拒绝。
 - 插件内置主题自适应的锚点预览与统一/双栏 diff 渲染；结构化 preview 按 UTF-8 字节限制，截断时显示 CLI 校验的完整增删统计。

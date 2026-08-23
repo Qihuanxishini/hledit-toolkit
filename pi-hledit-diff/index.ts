@@ -14,7 +14,7 @@ import {
 	preferBuiltInEditFallback,
 	preferAnchoredEditingTools,
 } from "./src/active-tools.ts";
-import { HLEDIT_INSTALL_HINT, parseHleditCapabilities, resolveHleditBin, runHledit } from "./src/cli.ts";
+import { HLEDIT_INSTALL_HINT, parseHleditCapabilities, resolveHleditBin, runHledit, type HleditRun } from "./src/cli.ts";
 import {
 	buildAnchoredChangePreview,
 	emptyChangePreview,
@@ -32,21 +32,20 @@ import {
 import { formatBatchUpdatedAnchorContext, type BatchAnchorContext } from "./src/post-edit-context.ts";
 import { decodeFileChangeInput, prepareReadAnchorsArguments, prepareSearchAnchorsArguments } from "./src/prepare-arguments.ts";
 import {
-	formatReadProofDiagnosis,
 	formatReadProofFailure,
 	ReadEvidenceStore,
 	resolveReadEvidencePath,
-	type ReadProofFailure,
 } from "./src/read-evidence.ts";
-import { buildReadArgs, MAX_READ_LIMIT, normalizeReadRequest, normalizeToolPath, suggestedReadWindow } from "./src/read-args.ts";
+import { recoverMissingReadProof } from "./src/read-recovery.ts";
+import { normalizeToolPath } from "./src/read-args.ts";
 import { runReadAnchorsTransaction, runSearchAnchorsTransaction } from "./src/read-transaction.ts";
 import {
 	applyFileChangesResult,
+	attachEvidencePath,
 	fileChangeCheckFailure,
 	producedLineRangesFromEditDeltas,
 	shouldMarkHleditResultAsError,
 	parseEditDeltas,
-	readAnchorsResult,
 	parseRunObject,
 	rejectedToolResult,
 	type TextResult,
@@ -82,20 +81,13 @@ function appendResultText(result: TextResult, text: string | undefined): TextRes
 	return [{ type: "text", text }, ...result.content];
 }
 
-function attachEvidencePath(result: TextResult, normalizedPath: string, evidencePath: string): TextResult {
-	return {
-		...result,
-		details: { ...result.details, path: normalizedPath, evidencePath },
-	};
-}
-
 // 成功响应已由 result.ts 验证；这里统一追加局部锚点上下文与提交绑定的 change preview。
 // 不再前后读取完整文件：preview 只由已验证输入构成，外部并发修改不可能混入
 //（详见 change-preview.ts 与 D4）。preview 构建失败只降级为 previewError，
 // 不得改变已确认成功的 disposition。
 function finalizeSuccessfulEditResult(
 	result: TextResult,
-	run: ReturnType<typeof runHledit> extends Promise<infer Value> ? Value : never,
+	run: HleditRun,
 	normalizedPath: string,
 	evidencePath: string,
 	changePreview: VerifiedChangePreview | undefined,
@@ -139,96 +131,6 @@ function tryBuildChangePreview(result: TextResult, build: () => VerifiedChangePr
 	}
 }
 
-async function recoverMissingReadProof(
-	failure: ReadProofFailure,
-	normalizedPath: string,
-	evidencePath: string,
-	ctx: ExtensionContext,
-	signal: AbortSignal | undefined,
-	evidence: ReadEvidenceStore,
-): Promise<TextResult | undefined> {
-	const range = failure.suggestedReadRange;
-	if (!range) return undefined;
-
-	const base = formatReadProofDiagnosis(failure);
-	const failureContext = {
-		...(failure.renamedAnchors ? { renamedAnchors: failure.renamedAnchors } : {}),
-		...(failure.proofGap
-			? { changeNumber: failure.proofGap.changeNumber, operation: failure.proofGap.operation }
-			: {}),
-	};
-	const firstWindow = suggestedReadWindow(range.start, range.end);
-	let request = normalizeReadRequest({ path: normalizedPath, offset: firstWindow.offset, limit: firstWindow.limit });
-	const recoveredReads: NonNullable<TextResult["details"]["read"]>[] = [];
-	const renderedPages: string[] = [];
-	let proofId: string | undefined;
-
-	for (;;) {
-		const readResult = readAnchorsResult(await runHledit(buildReadArgs(request), undefined, ctx.cwd, signal), request);
-		const queuedReadResult = attachEvidencePath(readResult, normalizedPath, evidencePath);
-		if (queuedReadResult.details.disposition !== "succeeded" || !queuedReadResult.details.read) {
-			const message = "The targeted recovery read failed before edit proof could be established.";
-			const rejected = rejectedToolResult([
-				base,
-				`${message} Resolve the read error below before resubmitting.`,
-				queuedReadResult.content[0]?.text ?? "",
-			].filter(Boolean).join("\n"), {
-				code: "proof_recovery_read_failed",
-				message,
-				...failureContext,
-			});
-			return attachEvidencePath({
-				...rejected,
-				details: { ...rejected.details, recoveryReadError: queuedReadResult.details },
-			}, normalizedPath, evidencePath);
-		}
-
-		const recoveredRead = queuedReadResult.details.read;
-		proofId = queuedReadResult.details.proofId;
-		recoveredReads.push(recoveredRead);
-		renderedPages.push(queuedReadResult.content[0]?.text ?? "");
-		evidence.recordRead(evidencePath, recoveredRead, proofId);
-		if (recoveredRead.textTruncated) {
-			const message = "The target includes source-line text that was truncated and cannot establish edit proof.";
-			return attachEvidencePath(rejectedToolResult([
-				base,
-				`${message} Do not resubmit this hledit_apply_file_changes call. Use write only if an intentional complete-file rewrite is safe.`,
-				...renderedPages,
-			].filter(Boolean).join("\n"), {
-				code: "source_line_truncated",
-				message,
-				...failureContext,
-			}), normalizedPath, evidencePath);
-		}
-
-		const nextOffset = recoveredRead.nextOffset;
-		if (nextOffset === undefined || nextOffset > range.end) break;
-		request = normalizeReadRequest({
-			path: normalizedPath,
-			offset: nextOffset,
-			limit: Math.min(MAX_READ_LIMIT, range.end - nextOffset + 1),
-		});
-	}
-
-	const rejected = rejectedToolResult([
-		base,
-		`The targeted missing range was read and recorded in ${recoveredReads.length} page(s). Review the current source, ${failure.renamedAnchors?.length ? "apply every listed anchor rename, " : ""}replace any mismatched endpoint anchors with the returned current anchors, then resubmit the batch once.`,
-		...renderedPages,
-	].filter(Boolean).join("\n"), {
-		code: failure.code,
-		message: failure.message,
-		...failureContext,
-	});
-	return attachEvidencePath({
-		...rejected,
-		details: {
-			...rejected.details,
-			...(proofId ? { proofId } : {}),
-			recoveredReads,
-			recoveredRead: recoveredReads.at(-1),
-		},
-	}, normalizedPath, evidencePath);
-}
 async function runFileChangesWithDiff(
 	params: FileChangeParams,
 	ctx: ExtensionContext,
@@ -271,14 +173,15 @@ async function runFileChangesWithDiff(
 		const proofSelection = evidence.selectProof(evidencePath, normalizedParams.changes, normalizedParams.proof_id);
 		if ("failure" in proofSelection) {
 			if (proofSelection.failure.code !== "invalid_proof_id") {
-				const recovered = await recoverMissingReadProof(
-					proofSelection.failure,
-					normalizedPath,
+				const recovered = await recoverMissingReadProof({
+					failure: proofSelection.failure,
+					path: normalizedPath,
 					evidencePath,
-					ctx,
+					cwd: ctx.cwd,
 					signal,
 					evidence,
-				);
+					run: runHledit,
+				});
 				if (recovered) return recovered;
 			}
 			return attachEvidencePath(
@@ -529,9 +432,9 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			if (capabilities) {
 				ctx.ui.notify(`hledit 已就绪：${bin}（版本 ${capabilities.version}；支持结构化范围读取、读取证明和提交前 revision 复检）`, "info");
 			} else if (run.exitCode === 0) {
-				ctx.ui.notify(`Incompatible hledit version: ${bin} does not declare the required structured read and atomic batch capabilities.\n\n${HLEDIT_INSTALL_HINT}`, "error");
+				ctx.ui.notify(`hledit 版本不兼容：${bin} 未声明所需的结构化读取与原子 batch 能力。\n\n${HLEDIT_INSTALL_HINT}`, "error");
 			} else {
-				ctx.ui.notify(`Could not start hledit: ${bin}\n\n${HLEDIT_INSTALL_HINT}`, "error");
+				ctx.ui.notify(`无法启动 hledit：${bin}\n\n${HLEDIT_INSTALL_HINT}`, "error");
 			}
 		},
 	});

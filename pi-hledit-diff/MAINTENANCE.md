@@ -141,7 +141,9 @@ pi-hledit-diff/
 - 单次 batch 限 1–200 个 changes，replacement 总量限 1 MiB UTF-8，输出总量限 20,000 行；
 - batch stdin request 总大小限 8 MiB；`lines` 与 `proof.anchors` 的每个元素必须是 JSON 字符串，`null` 等类型会被拒绝；
 - 公开 schema 要求 `proof_id`，但不暴露 raw revision 或 CLI `proof`；插件仅接受当前 canonical path 上最近有效 read generation 的 id，再从 branch evidence 注入每个消费行或 insert 依附行的完整 hidden proof；
-- proof id 无效或跨路径使用时不启动 CLI；proof 行覆盖不完整时，apply 在同一 canonical file queue 内自动分页执行定向只读，直到完整覆盖目标缺口或遇到终止性错误。成功恢复通过 `recoveredReads`、兼容字段 `recoveredRead` 与新的 `proof_id` 返回当前证据，调用方审阅后显式重提 batch。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；插件不自动重放修改；
+- proof id 无效或跨路径使用时不启动 CLI；proof 行覆盖不完整时，apply 在同一 canonical file queue 内自动分页执行定向只读，直到完整覆盖目标缺口或触及恢复预算。成功恢复通过 `recoveredReads`、兼容字段 `recoveredRead` 与新的 `proof_id` 返回当前证据，调用方审阅后显式重提 batch。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；插件不自动重放修改；
+- 定向补读有硬预算（`src/read-recovery.ts`）：缺口跨度 1,200 行、4 页、96 KiB 正文。补读会把读到的每一行原样回灌进模型上下文，所以跨度超限时一个子进程都不启动，直接返回 `proof_recovery_budget_exceeded` 与显式分块读取指令；页数或字节超限时保留已读页（仍是有效 proof）并返回同一 code。三个上限决定单次工具结果最多占多少上下文窗口，不是性能调优值；
+- 补读页面不再逐页输出 `proof_id`。多页恢复只有一个权威 proof id，逐页重复会让调用方抄到已作废的那个；正文在页面之前单独给出 `Use proof_id: <id>`，`details.proofId` 与之一致；
 - 仅对命中 `single_line_range_expansion` 启发式的请求先执行一次 `batch --check`，用于确认当前 revision、hidden proof、全部锚点与操作冲突后再返回字段级指导；普通 apply 直接执行非 check `batch`，CLI 在同一路径完整验证并于原子替换前复检 raw-byte revision。
 
 内部请求：
@@ -165,7 +167,7 @@ Evidence 以 resolved canonical path 为 key，每个文件状态包含当前 `p
 - 任一结构化拒绝携带不同合法 `currentRevision` 时淘汰旧 state；同 revision 的确认零写入拒绝保留。`source_changed_before_commit` 与 `outcome_unknown` 总是失效；
 - 只有完整未截断 `currentAnchors` 可建立新 revision evidence；
 - read 与 apply 都持有 `withFileMutationQueue(canonical path)` 覆盖 CLI、校验和 evidence 更新。同文件串行、不同文件可并行；
-- branch/session 恢复只重放当前 branch 的结构化 tool-result details，包括经过完整 shape、path、proof usability 验证的被拒绝 apply 顶层 `recoveredRead`，不解析聊天正文。
+- branch/session 恢复只重放当前 branch 的结构化 tool-result details，包括经过完整 shape、path、proof usability 验证的被拒绝 apply `recoveredReads`（兼容单页 `recoveredRead`），不解析聊天正文。可携带补读结果的拒绝码由 `result.ts` 的 `READ_PROOF_RECOVERY_CODES` 单点定义；恢复新增终止分支时必须同时登记，否则实时 evidence 与重放结果分歧。截断行既不进实时 evidence 也不进 `recoveredReads`，两侧保持逐行一致。
 
 容量限制：
 
@@ -215,7 +217,8 @@ CLI 写入逐行保留未修改 terminator、非空结果的 BOM 和 trailing-ne
 ```
 
 - `findChangeShapeIssue` 在 `selectProof` 之前拦截仅凭请求即可判定的自相矛盾：区间锚点倒置（`reversed_anchor_range`）、`lines` 行首粘贴了本次提交过的锚点 token（`anchor_token_in_lines`）。这类问题重读文件无法修复，必须让模型改参数，因此不得落到 `insufficient_read_proof` 的补读指令上；正文明确声明重读无效并给出交换/删前缀的具体动作。检测即拒绝，不自动修正——与 `prepareArguments` 只服务 read 的约定一致；
-- 插件侧 `insufficient_read_proof` 是可恢复补读结果，不设置 Pi `isError`；其他非成功结果均升级为工具错误；
+- 插件侧 `insufficient_read_proof` 是可恢复补读结果，不设置 Pi `isError`；其他非成功结果均升级为工具错误，包括三条恢复终止分支 `source_line_truncated`、`proof_recovery_read_failed` 与 `proof_recovery_budget_exceeded`——它们原样重发必然复现，必须由调用方改动作；
+- 读取错误码全集为 `range` / `binary` / `encoding` / `directory` / `io` / `pattern` / `broad_pattern`，每个码都必须有本地化 message，落到兜底分支等于只把错误码丢给模型；message 本身说不清下一步动作时再补 hint（`range` / `directory` / `pattern` / `broad_pattern`）。`pattern` 转发 CLI 的 RE2 编译原文（出错位置本身就是要改的东西）并点名 RE2 不支持 lookahead/lookbehind/backreference；`broad_pattern` 指向 `hledit_read_anchors`；
 - stale remap 和同 snapshot anchors 只用于显式确认，不自动修正或重试；正文只保留一份确认/重读要求；
 - `source_changed_before_commit` 是确认零写入；CLI 从未启动使用 `unavailable`；
 - 已启动进程的取消、超时、输出超限、stdin 错误、非零退出或响应不完整按 `outcome_unknown`，先重读，禁止原样重试。
@@ -247,6 +250,7 @@ CLI 写入逐行保留未修改 terminator、非空结果的 BOM 和 trailing-ne
 | `index.ts` | 三工具注册、apply queue 主流程、错误升级与 active-tool 生命周期。 |
 | `src/schema.ts` | 三工具的严格 schema 与参数类型。 |
 | `src/read-transaction.ts` | read/search CLI、结果校验和 evidence 更新的 canonical queue 事务。 |
+| `src/read-recovery.ts` | proof 缺口的定向分页补读、恢复预算与三条终止分支。 |
 | `src/read-evidence.ts` | revision proof、rename/ambiguity、容量、重映射、失效与 branch replay。 |
 | `src/file-changes.ts` | 四种公开 change → CLI batch，以及单行范围护栏。 |
 | `src/cli.ts` | CLI 3.x capability 门禁、bounded output 和 exit-confirmed 进程终止。 |
@@ -254,6 +258,7 @@ CLI 写入逐行保留未修改 terminator、非空结果的 BOM 和 trailing-ne
 | `src/change-preview.ts` | 提交绑定 preview、UTF-8 cap、结构重验和 diff 文本桥。 |
 | `src/post-edit-context.ts` | `updatedAnchors` 验证与模型正文格式化。 |
 | `src/render.ts` / `src/diff-renderer.ts` | 结构化锚点与自适应 diff TUI。 |
+| `src/syntax-highlight.ts` | 两套 TUI 共用的语言解析与按行高亮缓存。 |
 | `src/compaction-files.ts` | 三工具结构化结果的 compaction fileOps。 |
 
 ## 验证与 binary 更新
@@ -306,4 +311,5 @@ CLI 缺失/2.x/legacy residue fallback、`source_changed_before_commit`、`outco
 3. 不把完整 diff 发送给 LLM。
 4. 不绕过 canonical `withFileMutationQueue()`、read proof 或 CLI 原子 batch。
 5. 不自动 stale 重试，不让旧 token ambiguity 静默消失。
-6. 修改协议后同步更新 CLI、插件、tracked binary、端到端测试和当前文档。
+6. 不解除定向补读的预算上限，也不自动重放补读后的修改：预算是单次工具结果对上下文窗口的唯一约束，那一趟往返是"模型必须看过被消费的行"的执行点。
+7. 修改协议后同步更新 CLI、插件、tracked binary、端到端测试和当前文档。

@@ -3,7 +3,7 @@ import {
 	HLEDIT_READ_ANCHORS_TOOL,
 	HLEDIT_SEARCH_ANCHORS_TOOL,
 } from "./active-tools.ts";
-import { parseRecoveredRead } from "./result.ts";
+import { parseRecoveredReads } from "./result.ts";
 
 // 与宿主 compaction FileOperations 的结构子集对齐（written 由内置 write 工具独占）。
 type AnchoredCompactionFileOps = {
@@ -18,7 +18,7 @@ type AnchoredCompactionFileOps = {
 // - 读取成功 → read；
 // - apply 成功且内容变更 → edited；
 // - 成功 no-op（contentChanged === false，字节未变）→ read；
-// - apply 拒绝但携带 recoveredRead → read；
+// - apply 拒绝但携带已验证的 recoveredReads → read；
 // - outcome_unknown → edited（保守：可能已写入，压缩后必须按已修改重读）；
 // - 其余 rejected/unavailable 零写入 → 不记录。
 export function recordAnchoredFileOperations(messages: unknown[], fileOps: AnchoredCompactionFileOps): void {
@@ -37,8 +37,7 @@ export function recordAnchoredFileOperations(messages: unknown[], fileOps: Ancho
 			continue;
 		}
 		if (candidate.toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) continue;
-		const recoveredRead = parseRecoveredRead(record);
-		if (recoveredRead) fileOps.read.add(path);
+		if (parseRecoveredReads(record).length > 0) fileOps.read.add(path);
 		if (disposition === "succeeded") {
 			if (contentChanged === false) fileOps.read.add(path);
 			else fileOps.edited.add(path);

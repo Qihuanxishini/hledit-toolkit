@@ -191,6 +191,45 @@ test("search tool accepts a near-limit result at EOF", async (t) => {
 	assert.equal(result.details.read?.textTruncated, false);
 });
 
+test("search tool explains RE2 rejections instead of echoing a bare error code", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const searchTool = registeredTools.get(HLEDIT_SEARCH_ANCHORS_TOOL);
+	assert.ok(searchTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-search-pattern-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	await writeFile(join(directory, "target.txt"), "alpha\nbravo\n", "utf8");
+
+	// RE2 没有 lookahead，这是模型最高频的正则错误；正文必须给出可操作的替代路径。
+	const invalid = await searchTool.execute(
+		"search",
+		{ path: "target.txt", pattern: "alpha(?=x)" } as never,
+		undefined,
+		undefined,
+		{ cwd: directory },
+	);
+	assert.equal(invalid.details.disposition, "rejected");
+	assert.equal(invalid.details.error?.code, "pattern");
+	assert.match(invalid.details.error?.message ?? "", /not a valid RE2 regular expression/);
+	assert.match(invalid.details.error?.hint ?? "", /lookahead, lookbehind, or backreferences/);
+	assert.match(invalid.details.error?.hint ?? "", /literal:true/);
+	const invalidText = invalid.content[0]?.text ?? "";
+	assert.match(invalidText, /Suggestion: /);
+	assert.doesNotMatch(invalidText, /^hledit rejected this read \(error code: pattern\)\.$/m);
+
+	const broad = await searchTool.execute(
+		"search",
+		{ path: "target.txt", pattern: ".*" } as never,
+		undefined,
+		undefined,
+		{ cwd: directory },
+	);
+	assert.equal(broad.details.disposition, "rejected");
+	assert.equal(broad.details.error?.code, "broad_pattern");
+	assert.match(broad.details.error?.message ?? "", /unconstrained wildcard/);
+	assert.match(broad.details.error?.hint ?? "", /hledit_read_anchors/);
+});
+
 test("apply tool returns inline updated anchors from bundled batch", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
@@ -591,7 +630,49 @@ test("multi-page proof recovery completes internally before apply is retried", a
 	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-proof-pages-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
 	const target = join(directory, "target.txt");
-	await writeFile(target, `${Array.from({ length: 3_000 }, (_, index) => `line-${index + 1}`).join("\n")}\n`, "utf8");
+	// 1,100 行落在补读跨度预算内，但 CLI 每页 50 KiB 的截断仍会把它拆成多页。
+	await writeFile(target, `${Array.from({ length: 1_100 }, (_, index) => `line-${index + 1}`).join("\n")}\n`, "utf8");
+	const context = { cwd: directory };
+	const first = await readTool.execute("first", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
+	const last = await readTool.execute("last", { path: "target.txt", offset: 1_100, limit: 1 } as never, undefined, undefined, context);
+	const startAnchor = first.details.read?.lines[0]?.anchor;
+	const endAnchor = last.details.read?.lines[0]?.anchor;
+	assert.ok(startAnchor && endAnchor);
+
+	const apply = await applyTool.execute(
+		"apply",
+		{ path: "target.txt", proof_id: last.details.proofId, changes: [{ operation: "replace_range", start_anchor: startAnchor, end_anchor: endAnchor, lines: "replacement" }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(apply.details.disposition, "rejected");
+	assert.equal(apply.details.error?.code, "insufficient_read_proof");
+	assert.ok((apply.details.recoveredReads?.length ?? 0) > 1);
+	assert.equal(apply.details.recoveredRead?.nextOffset, 1_100);
+	const recoveryText = apply.content[0]?.text ?? "";
+	assert.match(recoveryText, /read and recorded in \d+ page\(s\)/);
+	assert.match(recoveryText, /Review the current source.*resubmit the batch/);
+	assert.doesNotMatch(recoveryText, /Do not resubmit apply before then/);
+	// 多页补读只有一个权威 proof id；逐页重复输出会让调用方抄到已经作废的那个。
+	const proofIdLines = recoveryText.split("\n").filter((line) => line.startsWith("proof_id:"));
+	assert.equal(proofIdLines.length, 0);
+	assert.ok(apply.details.proofId);
+	assert.equal(recoveryText.match(/Use proof_id: \S+/g)?.length, 1);
+	assert.ok(recoveryText.includes(`Use proof_id: ${apply.details.proofId}`));
+});
+
+test("an oversized proof gap is refused without reading anything back", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-proof-oversized-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	const original = `${Array.from({ length: 3_000 }, (_, index) => `line-${index + 1}`).join("\n")}\n`;
+	await writeFile(target, original, "utf8");
 	const context = { cwd: directory };
 	const first = await readTool.execute("first", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
 	const last = await readTool.execute("last", { path: "target.txt", offset: 3_000, limit: 1 } as never, undefined, undefined, context);
@@ -607,12 +688,82 @@ test("multi-page proof recovery completes internally before apply is retried", a
 		context,
 	);
 	assert.equal(apply.details.disposition, "rejected");
-	assert.equal(apply.details.error?.code, "insufficient_read_proof");
-	assert.ok((apply.details.recoveredReads?.length ?? 0) > 1);
-	assert.equal(apply.details.recoveredRead?.nextOffset, 3_000);
-	assert.match(apply.content[0]?.text ?? "", /read and recorded in \d+ page\(s\)/);
-	assert.match(apply.content[0]?.text ?? "", /Review the current source.*resubmit the batch/);
-	assert.doesNotMatch(apply.content[0]?.text ?? "", /Do not resubmit apply before then/);
+	assert.equal(apply.details.error?.code, "proof_recovery_budget_exceeded");
+	assert.equal(apply.details.recoveredReads, undefined);
+	assert.equal(apply.details.recoveredRead, undefined);
+	const text = apply.content[0]?.text ?? "";
+	assert.match(text, /spans 2998 lines, above the 1200-line automatic recovery budget/);
+	assert.match(text, /No recovery read was started/);
+	assert.match(text, /Call hledit_read_anchors\(\{ path: "target\.txt", offset: \d+, limit: \d+ \}\)/);
+	// 关键：拒绝的正文里不得夹带任何源码行，否则预算就白设了。
+	assert.doesNotMatch(text, /^\d+#[A-Za-z0-9_-]{3}:/m);
+	assert.equal(await readFile(target, "utf8"), original);
+});
+
+test("proof recovery stops at its byte budget and keeps the pages it already read", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(applyTool && readTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-proof-budget-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	// 行数在跨度预算内，但每行 200 字节让 CLI 每页只能装下约 190 行，正文字节先触顶。
+	const original = `${Array.from({ length: 1_200 }, (_, index) => `${index + 1}-${"x".repeat(200)}`).join("\n")}\n`;
+	await writeFile(target, original, "utf8");
+	const context = { cwd: directory };
+	const first = await readTool.execute("first", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
+	const last = await readTool.execute("last", { path: "target.txt", offset: 1_200, limit: 1 } as never, undefined, undefined, context);
+	const startAnchor = first.details.read?.lines[0]?.anchor;
+	const endAnchor = last.details.read?.lines[0]?.anchor;
+	assert.ok(startAnchor && endAnchor);
+
+	const apply = await applyTool.execute(
+		"apply",
+		{ path: "target.txt", proof_id: last.details.proofId, changes: [{ operation: "replace_range", start_anchor: startAnchor, end_anchor: endAnchor, lines: "replacement" }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(apply.details.disposition, "rejected");
+	assert.equal(apply.details.error?.code, "proof_recovery_budget_exceeded");
+	const pageCount = apply.details.recoveredReads?.length ?? 0;
+	assert.ok(pageCount > 0 && pageCount <= 4);
+	assert.match(apply.content[0]?.text ?? "", /Automatic recovery stopped at its budget/);
+	assert.match(apply.content[0]?.text ?? "", /page\(s\) already read are recorded below/);
+	assert.equal(await readFile(target, "utf8"), original);
+});
+
+test("a failed recovery read surfaces the read error instead of a proof gap", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-recovery-read-failed-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "one\ntwo\nthree\nfour\nfive\n", "utf8");
+	const context = { cwd: directory };
+	const read = await readTool.execute("read", { path: "target.txt", offset: 1, limit: 2 } as never, undefined, undefined, context);
+	const startAnchor = read.details.read?.lines[0]?.anchor;
+	assert.ok(startAnchor);
+
+	// 证据只覆盖 1-2 行；补读 3-5 行时目标已经不在了。
+	await rm(target);
+	const apply = await applyTool.execute(
+		"apply",
+		{ path: "target.txt", proof_id: read.details.proofId, changes: [{ operation: "replace_range", start_anchor: startAnchor, end_anchor: "5#AAA", lines: "replacement" }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(apply.details.disposition, "rejected");
+	assert.equal(apply.details.error?.code, "proof_recovery_read_failed");
+	assert.equal(apply.details.recoveryReadError?.disposition, "rejected");
+	assert.equal(apply.details.recoveryReadError?.error?.code, "io");
+	assert.match(apply.content[0]?.text ?? "", /Resolve the read error below before resubmitting/);
 });
 
 test("multi-page proof continuation completes without rereading the payload", async (t) => {
@@ -624,10 +775,10 @@ test("multi-page proof continuation completes without rereading the payload", as
 	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-proof-pages-complete-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
 	const target = join(directory, "target.txt");
-	await writeFile(target, `${Array.from({ length: 3_000 }, (_, index) => `line-${index + 1}`).join("\n")}\n`, "utf8");
+	await writeFile(target, `${Array.from({ length: 1_100 }, (_, index) => `line-${index + 1}`).join("\n")}\n`, "utf8");
 	const context = { cwd: directory };
 	const first = await readTool.execute("first", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
-	const last = await readTool.execute("last", { path: "target.txt", offset: 3_000, limit: 1 } as never, undefined, undefined, context);
+	const last = await readTool.execute("last", { path: "target.txt", offset: 1_100, limit: 1 } as never, undefined, undefined, context);
 	const startAnchor = first.details.read?.lines[0]?.anchor;
 	const endAnchor = last.details.read?.lines[0]?.anchor;
 	assert.ok(startAnchor && endAnchor);

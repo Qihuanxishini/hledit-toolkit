@@ -17,7 +17,9 @@
 - 公开修改协议只有 `replace_range`、`delete_range`、`insert_before` 和 `insert_after`。范围操作同时提供 `start_anchor` 与 `end_anchor`；单行范围使用同一锚点。旧 operation 与内容匹配替换不迁移。
 - `replace_range`、`insert_before` 和 `insert_after` 的 `lines` 只接受换行分隔字符串；一个末尾换行仅终止末行，空字符串表示一行空文本。`delete_range` 不接受 `lines`。
 - 单次 batch 限 1–200 个 changes、1 MiB replacement UTF-8 bytes 和 20,000 个输出行。batch 是原子的：任一 change 非法、冲突、proof 不完整或 stale 时均不写入。
-- `insufficient_read_proof` 会在同一 canonical file queue 内自动分页执行定向只读，直到目标缺口完整覆盖或遇到终止性错误。结果返回全部 `recoveredReads` 和最新 evidence，但不会自动重放修改；审阅当前源码与端点锚点后再显式重提 apply。source-line truncation 返回终止性指导，读取失败通过 `recoveryReadError` 暴露。
+- `insufficient_read_proof` 会在同一 canonical file queue 内自动分页执行定向只读，直到目标缺口完整覆盖或触及恢复预算。结果返回全部 `recoveredReads`、最新 evidence 和一个权威 `proof_id`，但不会自动重放修改；审阅当前源码与端点锚点后再显式重提 apply。
+- 定向补读有硬预算：缺口跨度 1,200 行、4 页、96 KiB 正文。补读会把读到的每一行回灌进上下文，因此跨度超限时一个子进程都不启动，直接返回 `proof_recovery_budget_exceeded` 与显式分块读取指令；页数或字节超限时保留已读页并返回同一 code。source-line truncation 返回终止性指导，读取失败通过 `recoveryReadError` 暴露。
+- 读取错误一律给出可操作正文：`pattern` 转发 RE2 编译原文并说明 RE2 不支持 lookahead/lookbehind/backreference（可改用 `literal:true`），`broad_pattern` 指向 `hledit_read_anchors`。
 - 单行 `replace_range` 输出多行且首行重复原行时，插件先用 `batch --check` 验证整个请求，再返回字段级范围修复指引，不自动扩大或执行范围。
 - CLI 在临时文件同步后、原子替换前复检原始字节 revision。`source_changed_before_commit` 是确认零写入；已启动进程的取消、超时、输出超限或异常响应属于 `outcome_unknown`，必须重新读取。
 - 成功 apply 使用 `editDeltas` 重映射未消费 evidence，再合并新 revision 的 `updatedAnchors`。唯一、非歧义、同 revision 且替换后完整 proof 仍成立的 verified rename 会被内部规范化并报告在 `details.resolvedAnchors`；旧 token 被当前行重新占用，或其源行/alias 最终目标被消费失联时，身份会保持 ambiguous 直到覆盖当前行的显式读取。

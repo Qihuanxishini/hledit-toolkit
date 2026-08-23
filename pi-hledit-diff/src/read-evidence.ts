@@ -11,6 +11,7 @@ import { computeAnchorTag } from "./anchor-hash.ts";
 import { lineFromAnchor, type HleditBatchReadProof } from "./file-changes.ts";
 import { parseAnchorContext, type BatchAnchorContext } from "./post-edit-context.ts";
 import {
+	isRawRevision,
 	parseEditDeltas,
 	parseHleditReadMetadata,
 	parseRecoveredReads,
@@ -20,8 +21,6 @@ import {
 } from "./result.ts";
 import { suggestedReadWindow } from "./read-args.ts";
 import type { FileChangeParams } from "./schema.ts";
-
-const RAW_REVISION_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 export const MAX_EVIDENCE_RECORDS_PER_FILE = 10_000;
 export const MAX_EVIDENCE_BYTES_PER_FILE = 4 * 1024 * 1024;
@@ -33,7 +32,7 @@ type EvidenceLine = {
 	text: string;
 };
 
-type FileReadEvidence = {
+type EvidenceState = {
 	revision: string;
 	proofId: string;
 	lines: Map<number, EvidenceLine>;
@@ -47,6 +46,25 @@ type EvidenceUsage = {
 	records: number;
 	bytes: number;
 };
+
+// 存入 store 的 state 连同它的容量占用。每条写入路径都整体重建 state（三个容器都是新
+// 建的），因此 usage 只在入库时算一次即可，不存在"改了内容忘了同步 usage"的窗口。
+type FileReadEvidence = EvidenceState & { usage: EvidenceUsage };
+
+function evidenceUsage(path: string, state: EvidenceState): EvidenceUsage {
+	let bytes = Buffer.byteLength(path, "utf8");
+	for (const line of state.lines.values()) {
+		bytes += Buffer.byteLength(line.anchor, "utf8") + Buffer.byteLength(line.text, "utf8");
+	}
+	for (const [older, current] of state.renames) {
+		bytes += Buffer.byteLength(older, "utf8") + Buffer.byteLength(current, "utf8");
+	}
+	for (const token of state.ambiguousTokens) bytes += Buffer.byteLength(token, "utf8");
+	return {
+		records: state.lines.size + state.renames.size + state.ambiguousTokens.size,
+		bytes,
+	};
+}
 
 type ReadProofLineRange = { start: number; end: number };
 type FileChangeOperation = FileChangeParams["changes"][number]["operation"];
@@ -107,10 +125,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function validRevision(value: unknown): value is string {
-	return typeof value === "string" && RAW_REVISION_PATTERN.test(value);
-}
-
 function evidencePathFromDetails(details: Record<string, unknown>, cwd: string): string | undefined {
 	if (typeof details.evidencePath === "string" && details.evidencePath.length > 0) {
 		return details.evidencePath;
@@ -167,7 +181,7 @@ function requestedChangeEvidence(changes: FileChangeParams["changes"]): Requeste
 	return { ranges: mergedRanges, sourceRanges, endpointAnchors };
 }
 
-function lineRangeDescription(range: ReadProofLineRange): string {
+export function lineRangeDescription(range: ReadProofLineRange): string {
 	return range.start === range.end ? `line ${range.start}` : `lines ${range.start}-${range.end}`;
 }
 
@@ -396,69 +410,61 @@ export function formatReadProofFailure(path: string, failure: ReadProofFailure):
 export class ReadEvidenceStore {
 	// Map 顺序即 session entry 可重放的 file-level LRU；每次 read/apply result 都 touch。
 	private readonly files = new Map<string, FileReadEvidence>();
+	// 与 files 同步维护的总占用。每次工具调用都要判定 session 容量，重扫全部证据是
+	// O(session 证据量) 的纯浪费：满载时那是十万级 Buffer.byteLength 的重复计算。
+	private sessionUsage: EvidenceUsage = { records: 0, bytes: 0 };
 
 	clear(): void {
 		this.files.clear();
+		this.sessionUsage = { records: 0, bytes: 0 };
 	}
 
 	invalidate(path: string): void {
+		this.deleteFile(path);
+	}
+
+	private deleteFile(path: string): void {
+		const existing = this.files.get(path);
+		if (!existing) return;
 		this.files.delete(path);
+		this.sessionUsage.records -= existing.usage.records;
+		this.sessionUsage.bytes -= existing.usage.bytes;
 	}
 
-	private evidenceUsage(path: string, evidence: FileReadEvidence): EvidenceUsage {
-		let bytes = Buffer.byteLength(path, "utf8");
-		for (const line of evidence.lines.values()) {
-			bytes += Buffer.byteLength(line.anchor, "utf8") + Buffer.byteLength(line.text, "utf8");
-		}
-		for (const [older, current] of evidence.renames) {
-			bytes += Buffer.byteLength(older, "utf8") + Buffer.byteLength(current, "utf8");
-		}
-		for (const token of evidence.ambiguousTokens) bytes += Buffer.byteLength(token, "utf8");
-		return {
-			records: evidence.lines.size + evidence.renames.size + evidence.ambiguousTokens.size,
-			bytes,
-		};
-	}
-
-	private fitsFileLimit(path: string, evidence: FileReadEvidence): boolean {
-		const usage = this.evidenceUsage(path, evidence);
-		return usage.records <= MAX_EVIDENCE_RECORDS_PER_FILE && usage.bytes <= MAX_EVIDENCE_BYTES_PER_FILE;
+	private setFile(path: string, evidence: FileReadEvidence): void {
+		this.deleteFile(path);
+		this.files.set(path, evidence);
+		this.sessionUsage.records += evidence.usage.records;
+		this.sessionUsage.bytes += evidence.usage.bytes;
 	}
 
 	private enforceSessionLimit(): void {
-		let records = 0;
-		let bytes = 0;
-		for (const [path, evidence] of this.files) {
-			const usage = this.evidenceUsage(path, evidence);
-			records += usage.records;
-			bytes += usage.bytes;
-		}
-		while (records > MAX_EVIDENCE_RECORDS_PER_SESSION || bytes > MAX_EVIDENCE_BYTES_PER_SESSION) {
-			const oldest = this.files.entries().next().value as [string, FileReadEvidence] | undefined;
-			if (!oldest) return;
-			const [path, evidence] = oldest;
-			const usage = this.evidenceUsage(path, evidence);
-			this.files.delete(path);
-			records -= usage.records;
-			bytes -= usage.bytes;
+		while (
+			this.sessionUsage.records > MAX_EVIDENCE_RECORDS_PER_SESSION ||
+			this.sessionUsage.bytes > MAX_EVIDENCE_BYTES_PER_SESSION
+		) {
+			const oldest = this.files.keys().next().value;
+			if (oldest === undefined) return;
+			this.deleteFile(oldest);
 		}
 	}
 
-	private storeEvidence(path: string, evidence: FileReadEvidence, allowEmpty = false): boolean {
-		if (evidence.lines.size === 0 && !allowEmpty) {
-			this.files.delete(path);
+	private storeEvidence(path: string, state: EvidenceState, allowEmpty = false): boolean {
+		if (state.lines.size === 0 && !allowEmpty) {
+			this.deleteFile(path);
 			return true;
 		}
-		if (!this.fitsFileLimit(path, evidence)) {
-			this.files.delete(path);
+		const usage = evidenceUsage(path, state);
+		if (usage.records > MAX_EVIDENCE_RECORDS_PER_FILE || usage.bytes > MAX_EVIDENCE_BYTES_PER_FILE) {
+			this.deleteFile(path);
 			return false;
 		}
-		this.files.delete(path);
-		this.files.set(path, evidence);
+		this.setFile(path, { ...state, usage });
 		this.enforceSessionLimit();
 		return this.files.has(path);
 	}
 
+	// 只重排 LRU 顺序，成员与占用都不变，因此不经过 setFile/deleteFile。
 	private touch(path: string): void {
 		const evidence = this.files.get(path);
 		if (!evidence) return;
@@ -483,7 +489,7 @@ export class ReadEvidenceStore {
 		if (read.requested.pattern !== undefined && read.lines.length === 0) {
 			// [喵喵喵]: 0 命中不是一次成功的编辑证明；必须清除该文件的旧 proof，
 			// 防止模型在查询失败后误用历史锚点。(2026-08-01)
-			this.files.delete(path);
+			this.deleteFile(path);
 			return;
 		}
 		const activeProofId = proofId ?? randomUUID();
@@ -503,7 +509,7 @@ export class ReadEvidenceStore {
 			renames.delete(line.anchor);
 			ambiguousTokens.delete(line.anchor);
 		}
-		const next: FileReadEvidence = {
+		const next: EvidenceState = {
 			revision: read.revision,
 			proofId: activeProofId,
 			lines,
@@ -530,8 +536,8 @@ export class ReadEvidenceStore {
 		context: BatchAnchorContext,
 		tokensNeedingDisambiguation?: ReadonlySet<string>,
 	): void {
-		if (!validRevision(revision) || context.lines.length === 0) {
-			this.files.delete(path);
+		if (!isRawRevision(revision) || context.lines.length === 0) {
+			this.deleteFile(path);
 			return;
 		}
 		const existing = this.files.get(path);
@@ -549,7 +555,7 @@ export class ReadEvidenceStore {
 			// 目标行可能在更晚的编辑中才重新产生旧 token；不能只检查本次 anchor window。
 			for (const token of tokensNeedingDisambiguation) nextAmbiguousTokens.add(token);
 		}
-		const next: FileReadEvidence = {
+		const next: EvidenceState = {
 			revision,
 			// [喵喵喵]: 受控 apply 产生的新 revision 延续同一 proof generation；
 			// 只有显式 read 才轮换 proofId，避免 updatedAnchors 无法继续用于后续编辑。
@@ -581,7 +587,7 @@ export class ReadEvidenceStore {
 		if (!deltas) {
 			for (const line of evidence.lines.values()) tokensNeedingDisambiguation.add(line.anchor);
 			for (const older of evidence.renames.keys()) tokensNeedingDisambiguation.add(older);
-			this.files.delete(path);
+			this.deleteFile(path);
 			return { tokensNeedingDisambiguation, capacityExceeded: false };
 		}
 		const lines = new Map<number, EvidenceLine>();
@@ -622,7 +628,7 @@ export class ReadEvidenceStore {
 	}
 
 	private recordApplyResult(path: string, details: HleditDetails): void {
-		if (details.disposition === "succeeded" && validRevision(details.revision)) {
+		if (details.disposition === "succeeded" && isRawRevision(details.revision)) {
 			const updatedAnchors = parseAnchorContext(details.updatedAnchors);
 			if (!updatedAnchors) {
 				this.invalidate(path);
@@ -641,7 +647,7 @@ export class ReadEvidenceStore {
 			return;
 		}
 
-		const currentRevision = validRevision(details.error?.currentRevision)
+		const currentRevision = isRawRevision(details.error?.currentRevision)
 			? details.error.currentRevision
 			: undefined;
 		const existing = this.files.get(path);
@@ -783,7 +789,9 @@ export class ReadEvidenceStore {
 	}
 
 	restoreFromBranch(ctx: ExtensionContext): void {
-		this.files.clear();
+		// 必须走 clear()：sessionUsage 与 files 同步维护，只清 Map 会把上一条 branch 的
+		// 占用永久计入总量，重放后的容量判定随即过度淘汰甚至清空整个 store。
+		this.clear();
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
 			const details = isRecord(entry.message.details) ? entry.message.details : undefined;

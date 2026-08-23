@@ -1,5 +1,6 @@
-import { getLanguageFromPath, highlightCode, keyHint } from "@earendil-works/pi-coding-agent";
+import { keyHint } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { createHighlightedTextCache, type HighlightedText } from "./syntax-highlight.ts";
 
 export type HleditRenderComponent = {
 	render(width: number): string[];
@@ -40,11 +41,6 @@ export type StructuredDiffLine = {
 	newLine?: number;
 	text: string;
 	changeIndex?: number;
-};
-
-type HighlightedDiffLine = {
-	text: string;
-	width: number;
 };
 
 type DiffMetaLine = {
@@ -415,44 +411,7 @@ function lineNumberWidth(entries: DiffEntry[]): number {
 	return width;
 }
 
-function resolveLanguage(path: string | undefined): string | undefined {
-	if (!path) return undefined;
-	try {
-		return getLanguageFromPath(path.replace(/^@/, ""));
-	} catch {
-		return undefined;
-	}
-}
-
-function createLineHighlighter(language: string | undefined): {
-	highlight(line: DiffLine): HighlightedDiffLine;
-	clear(): void;
-} {
-	let highlightedLines = new WeakMap<DiffLine, HighlightedDiffLine>();
-	return {
-		highlight(line: DiffLine): HighlightedDiffLine {
-			const cached = highlightedLines.get(line);
-			if (cached !== undefined) return cached;
-			const normalized = line.content.replace(/\t/g, "    ");
-			let text = normalized;
-			if (language && normalized) {
-				try {
-					text = highlightCode(normalized, language)[0] ?? normalized;
-				} catch {
-					text = normalized;
-				}
-			}
-			const highlighted = { text, width: visibleWidth(normalized) };
-			highlightedLines.set(line, highlighted);
-			return highlighted;
-		},
-		clear(): void {
-			highlightedLines = new WeakMap<DiffLine, HighlightedDiffLine>();
-		},
-	};
-}
-
-function wrapHighlightedLine(line: HighlightedDiffLine, width: number): HighlightedDiffLine[] {
+function wrapHighlightedLine(line: HighlightedText, width: number): HighlightedText[] {
 	if (line.width <= width) return [line];
 	return wrapTextWithAnsi(line.text, width).map((text) => ({ text, width: visibleWidth(text) }));
 }
@@ -470,11 +429,13 @@ function markerFor(kind: DiffLineKind): string {
 	return " ";
 }
 
-function renderUnifiedLine(
+// 统一栏与双栏共用同一个单元格布局：`± 行号 │ 内容`，超宽换行后续行只留缩进。
+// 两种布局的差别只在于外层怎么摆放这些单元格，不在于单元格本身。
+function renderDiffLineRows(
 	line: DiffLine,
 	width: number,
 	numberWidth: number,
-	highlightLine: (line: DiffLine) => HighlightedDiffLine,
+	highlightLine: (line: DiffLine) => HighlightedText,
 	theme: HleditRenderTheme,
 	palette: DiffBackgroundPalette | undefined,
 ): string[] {
@@ -498,7 +459,7 @@ function renderUnified(
 	entries: DiffEntry[],
 	width: number,
 	numberWidth: number,
-	highlightLine: (line: DiffLine) => HighlightedDiffLine,
+	highlightLine: (line: DiffLine) => HighlightedText,
 	theme: HleditRenderTheme,
 	palette: DiffBackgroundPalette | undefined,
 ): string[] {
@@ -508,41 +469,16 @@ function renderUnified(
 			rows.push(theme.fg("dim", truncateToWidth(`  ${entry.content}`, width, "")));
 			continue;
 		}
-		rows.push(...renderUnifiedLine(entry, width, numberWidth, highlightLine, theme, palette));
+		rows.push(...renderDiffLineRows(entry, width, numberWidth, highlightLine, theme, palette));
 	}
 	return rows;
-}
-
-function renderSplitCell(
-	line: DiffLine | undefined,
-	width: number,
-	numberWidth: number,
-	highlightLine: (line: DiffLine) => HighlightedDiffLine,
-	theme: HleditRenderTheme,
-	palette: DiffBackgroundPalette | undefined,
-): string[] {
-	if (!line) return [" ".repeat(width)];
-	const plainNumber = String(line.lineNumber).padStart(numberWidth, " ");
-	const prefixWidth = 2 + numberWidth + 3;
-	const contentWidth = Math.max(1, width - prefixWidth);
-	const wrapped = wrapHighlightedLine(highlightLine(line), contentWidth);
-	const rows = wrapped.length > 0 ? wrapped : [{ text: "", width: 0 }];
-	const color = lineColor(line.kind);
-
-	return rows.map((content, index) => {
-		const marker = index === 0 ? markerFor(line.kind) : " ";
-		const number = index === 0 ? plainNumber : " ".repeat(numberWidth);
-		const prefix = `${theme.fg(color, marker)} ${theme.fg(color, number)}${theme.fg("dim", " │ ")}`;
-		const paddedContent = `${content.text}${" ".repeat(Math.max(0, contentWidth - content.width))}`;
-		return applyChangeBackground(`${prefix}${paddedContent}`, line.kind, palette);
-	});
 }
 
 function renderSplit(
 	rowsToRender: SplitDiffRow[],
 	width: number,
 	numberWidth: number,
-	highlightLine: (line: DiffLine) => HighlightedDiffLine,
+	highlightLine: (line: DiffLine) => HighlightedText,
 	theme: HleditRenderTheme,
 	palette: DiffBackgroundPalette | undefined,
 ): string[] {
@@ -551,6 +487,9 @@ function renderSplit(
 	const rightWidth = width - separatorWidth - leftWidth;
 	const separator = theme.fg("dim", SPLIT_SEPARATOR);
 	const rows: string[] = [];
+	// 双栏特有：某一侧没有对应行时留空白单元格。
+	const cell = (line: DiffLine | undefined, cellWidth: number): string[] =>
+		line ? renderDiffLineRows(line, cellWidth, numberWidth, highlightLine, theme, palette) : [" ".repeat(cellWidth)];
 
 	const oldLabel = fitToWidth(theme.fg("muted", theme.bold("修改前")), leftWidth);
 	const newLabel = fitToWidth(theme.fg("muted", theme.bold("修改后")), rightWidth);
@@ -562,8 +501,8 @@ function renderSplit(
 			rows.push(theme.fg("dim", truncateToWidth(`  ${row.meta}`, width, "")));
 			continue;
 		}
-		const left = renderSplitCell(row.left, leftWidth, numberWidth, highlightLine, theme, palette);
-		const right = renderSplitCell(row.right, rightWidth, numberWidth, highlightLine, theme, palette);
+		const left = cell(row.left, leftWidth);
+		const right = cell(row.right, rightWidth);
 		const rowCount = Math.max(left.length, right.length);
 		for (let index = 0; index < rowCount; index++) {
 			rows.push(`${left[index] ?? " ".repeat(leftWidth)}${separator}${right[index] ?? " ".repeat(rightWidth)}`);
@@ -612,7 +551,8 @@ export function renderStandaloneDiff(
 	if (!diff.trim()) return undefined;
 	const parsed = parseGeneratedDiff(diff);
 	if (parsed.entries.length === 0) return undefined;
-	const lineHighlighter = createLineHighlighter(resolveLanguage(path));
+	const highlighter = createHighlightedTextCache(path);
+	const highlightLine = (line: DiffLine): HighlightedText => highlighter.highlight(line);
 	const structuredRows = structuredLines ? buildStructuredSplitRows(parsed.entries, structuredLines) : undefined;
 	const splitRows = structuredRows ?? buildSplitRows(parsed.entries);
 	const hasStructuredGroups = structuredRows !== undefined;
@@ -646,8 +586,8 @@ export function renderStandaloneDiff(
 
 			const mode = safeWidth >= SPLIT_MIN_WIDTH ? "split" : "unified";
 			const body = mode === "split"
-				? renderSplit(splitRows, safeWidth, numberWidth, lineHighlighter.highlight, theme, currentPalette())
-				: renderUnified(unifiedEntries, safeWidth, numberWidth, lineHighlighter.highlight, theme, currentPalette());
+				? renderSplit(splitRows, safeWidth, numberWidth, highlightLine, theme, currentPalette())
+				: renderUnified(unifiedEntries, safeWidth, numberWidth, highlightLine, theme, currentPalette());
 			const frame = theme.fg("dim", "─".repeat(safeWidth));
 			return storeRenderedLines(safeWidth, [
 				truncateToWidth(diffSummary(parsed, theme, mode, summaryStats), safeWidth, ""),
@@ -661,7 +601,7 @@ export function renderStandaloneDiff(
 			cachedLines = undefined;
 			paletteLoaded = false;
 			palette = undefined;
-			lineHighlighter.clear();
+			highlighter.clear();
 		},
 	};
 }

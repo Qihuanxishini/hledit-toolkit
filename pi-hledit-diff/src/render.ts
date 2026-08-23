@@ -1,5 +1,5 @@
-import { getLanguageFromPath, highlightCode, keyHint, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { getCapabilities, hyperlink, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { keyHint, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import { getCapabilities, hyperlink, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { changePreviewDiffText, parseChangePreview } from "./change-preview.ts";
@@ -12,6 +12,7 @@ import {
 import { fileChangeLineRanges } from "./file-changes.ts";
 import { DEFAULT_READ_LIMIT, normalizeToolPath } from "./read-args.ts";
 import { parseAnchorContext } from "./post-edit-context.ts";
+import { createHighlightedTextCache } from "./syntax-highlight.ts";
 import type { HleditReadMetadata, HleditToolKind, TextResult } from "./result.ts";
 
 export type RenderComponent = HleditRenderComponent;
@@ -159,25 +160,6 @@ function readRenderState(result: TextResult): ReadRenderState {
     };
 }
 
-function resolveLanguage(path: string | undefined): string | undefined {
-    if (!path) return undefined;
-    try {
-        return getLanguageFromPath(path.replace(/^@/, ""));
-    } catch {
-        return undefined;
-    }
-}
-
-function highlightedSourceLine(content: string, language: string | undefined): string {
-    const normalized = content.replace(/\t/g, "    ");
-    if (!language || !normalized) return normalized;
-    try {
-        return highlightCode(normalized, language)[0] ?? normalized;
-    } catch {
-        return normalized;
-    }
-}
-
 function createAnchoredSourceRowsComponent(
     lines: AnchoredSourceLine[],
     path: string | undefined,
@@ -185,8 +167,7 @@ function createAnchoredSourceRowsComponent(
 ): RenderComponent {
     const anchorWidth = lines.reduce((width, line) => Math.max(width, line.anchor.length), 0);
     const prefixWidth = anchorWidth + 4;
-    const language = resolveLanguage(path);
-    let highlightedLines = new WeakMap<AnchoredSourceLine, { text: string; width: number }>();
+    const highlighter = createHighlightedTextCache(path);
 
     return component((width) => {
         if (lines.length === 0 || width === 0) return [];
@@ -194,12 +175,7 @@ function createAnchoredSourceRowsComponent(
         const rendered: string[] = [];
 
         for (const line of lines) {
-            let highlighted = highlightedLines.get(line);
-            if (!highlighted) {
-                const text = highlightedSourceLine(line.content, language);
-                highlighted = { text, width: visibleWidth(text) };
-                highlightedLines.set(line, highlighted);
-            }
+            const highlighted = highlighter.highlight(line);
             const sourceRows = highlighted.width <= contentWidth
                 ? [highlighted.text]
                 : wrapTextWithAnsi(highlighted.text, contentWidth);
@@ -213,7 +189,7 @@ function createAnchoredSourceRowsComponent(
         }
         return rendered;
     }, () => {
-        highlightedLines = new WeakMap();
+        highlighter.clear();
     });
 }
 

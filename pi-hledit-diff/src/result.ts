@@ -205,8 +205,24 @@ function isRecoveryRead(value: unknown): value is HleditReadMetadata {
 	return read !== undefined;
 }
 
+// 携带 recoveredReads 的 apply 拒绝码。恢复的每条终止分支都必须列在这里：实时执行会把
+// 已完成的补读页记进 evidence，若对应的 code 不在集合内，branch replay 就会静默丢掉这些页，
+// 实时状态与重放状态从此分歧（见 read-recovery.ts 的三条返回路径）。
+export const READ_PROOF_RECOVERY_CODES = [
+	"insufficient_read_proof",
+	"source_line_truncated",
+	"proof_recovery_read_failed",
+	"proof_recovery_budget_exceeded",
+] as const;
+
+const READ_PROOF_RECOVERY_CODE_SET: ReadonlySet<string> = new Set<string>(READ_PROOF_RECOVERY_CODES);
+
 export function parseRecoveredReads(value: unknown): HleditReadMetadata[] {
-	if (!isRecord(value) || value.disposition !== "rejected" || typeof value.path !== "string" || !isRecord(value.error) || value.error.code !== "insufficient_read_proof") return [];
+	if (
+		!isRecord(value) || value.disposition !== "rejected" || typeof value.path !== "string" ||
+		!isRecord(value.error) || typeof value.error.code !== "string" ||
+		!READ_PROOF_RECOVERY_CODE_SET.has(value.error.code)
+	) return [];
 	const candidates = Array.isArray(value.recoveredReads) ? value.recoveredReads : [value.recoveredRead];
 	const reads: HleditReadMetadata[] = [];
 	for (const candidate of candidates) {
@@ -217,9 +233,14 @@ export function parseRecoveredReads(value: unknown): HleditReadMetadata[] {
 	return reads;
 }
 
-export function parseRecoveredRead(value: unknown): HleditReadMetadata | undefined {
-	return parseRecoveredReads(value).at(-1);
+// 结果的 canonical 归属：path 用于展示与 compaction，evidencePath 是 evidence/queue 的键。
+export function attachEvidencePath(result: TextResult, normalizedPath: string, evidencePath: string): TextResult {
+	return {
+		...result,
+		details: { ...result.details, path: normalizedPath, evidencePath },
+	};
 }
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -228,7 +249,7 @@ function isIntegerAtLeast(value: unknown, minimum: number): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value >= minimum;
 }
 
-function isRawRevision(value: unknown): value is string {
+export function isRawRevision(value: unknown): value is string {
 	return typeof value === "string" && RAW_REVISION_PATTERN.test(value);
 }
 
@@ -330,13 +351,26 @@ function parseReadMetadata(
 	};
 }
 
-function localizeReadErrorMessage(
-	code: string,
-	requestedOffset: number | undefined,
-	totalLines: number | undefined,
-): string {
-	if (code === "range" && requestedOffset !== undefined && totalLines !== undefined) {
-		return `Starting line ${requestedOffset} is outside the file range (${totalLines} total lines).`;
+// CLI 读取侧错误码全集：range / binary / encoding / directory / io / pattern / broad_pattern。
+// 每个码必须同时给出 message 与 hint：兜底分支只会把错误码原样丢给模型，等于让它盲试。
+type ReadErrorFacts = {
+	code: string;
+	rawMessage: string;
+	requestedOffset?: number;
+	totalLines?: number;
+};
+
+// RE2 编译错误的可操作内容就是出错位置本身，没有稳定可本地化的形状，直接转发 CLI 原文；
+// 其余错误码只用结构化字段重述，不暴露 raw message。
+function searchPatternCompileDetail(rawMessage: string): string | undefined {
+	const compileFailure = /^invalid search pattern:\s*(.+)$/s.exec(rawMessage);
+	return compileFailure?.[1];
+}
+
+function localizeReadErrorMessage(facts: ReadErrorFacts): string {
+	const { code } = facts;
+	if (code === "range" && facts.requestedOffset !== undefined && facts.totalLines !== undefined) {
+		return `Starting line ${facts.requestedOffset} is outside the file range (${facts.totalLines} total lines).`;
 	}
 	if (code === "binary") {
 		return "The target appears to be binary and cannot be read as text.";
@@ -350,7 +384,34 @@ function localizeReadErrorMessage(
 	if (code === "io") {
 		return "The file could not be read. Check its path, permissions, and whether it still exists.";
 	}
+	if (code === "pattern") {
+		const detail = searchPatternCompileDetail(facts.rawMessage);
+		return detail
+			? `The search pattern is not a valid RE2 regular expression: ${detail}`
+			: "The search pattern is empty or is not a valid RE2 regular expression.";
+	}
+	if (code === "broad_pattern") {
+		return "The search pattern is an unconstrained wildcard (an unbounded \".\" repetition) that matches essentially every line, so it was rejected instead of returning whole-file output.";
+	}
 	return `hledit rejected this read (error code: ${code}).`;
+}
+
+function readErrorHint(facts: ReadErrorFacts): string | undefined {
+	if (facts.code === "range" && facts.totalLines !== undefined) {
+		return facts.totalLines === 0
+			? "The file is empty, so no anchors exist. To add content to an empty file, use write."
+			: `Set offset to an integer from 1 through ${facts.totalLines}.`;
+	}
+	if (facts.code === "directory") {
+		return "Provide a concrete text file path. For a directory-wide search, locate candidate files first and search them individually.";
+	}
+	if (facts.code === "pattern") {
+		return "hledit matches with Go RE2, which has no lookahead, lookbehind, or backreferences. Rewrite the pattern in RE2 syntax, or pass literal:true to match the text exactly.";
+	}
+	if (facts.code === "broad_pattern") {
+		return "Search for concrete text, or add a subpattern that constrains the match. To inspect a contiguous region, call hledit_read_anchors instead.";
+	}
+	return undefined;
 }
 
 function parseReadErrorMetadata(parsed: Record<string, unknown>): HleditErrorMetadata | undefined {
@@ -359,26 +420,26 @@ function parseReadErrorMetadata(parsed: Record<string, unknown>): HleditErrorMet
 	const totalLines = isIntegerAtLeast(parsed.totalLines, 0) ? parsed.totalLines : undefined;
 	if (parsed.error === "range" && (requestedOffset === undefined || totalLines === undefined)) return undefined;
 
-	let hint: string | undefined;
-	if (parsed.error === "range" && totalLines !== undefined) {
-		hint = totalLines === 0
-			? "The file is empty, so no anchors exist. To add content to an empty file, use write."
-			: `Set offset to an integer from 1 through ${totalLines}.`;
-	}
-	if (parsed.error === "directory") {
-		hint = "Provide a concrete text file path. For a directory-wide search, locate candidate files first and search them individually.";
-	}
-	return {
+	const facts: ReadErrorFacts = {
 		code: parsed.error,
-		message: localizeReadErrorMessage(parsed.error, requestedOffset, totalLines),
 		rawMessage: parsed.message,
+		...(requestedOffset !== undefined ? { requestedOffset } : {}),
+		...(totalLines !== undefined ? { totalLines } : {}),
+	};
+	const hint = readErrorHint(facts);
+	return {
+		code: facts.code,
+		message: localizeReadErrorMessage(facts),
+		rawMessage: facts.rawMessage,
 		...(hint ? { hint } : {}),
 		...(requestedOffset !== undefined ? { requestedOffset } : {}),
 		...(totalLines !== undefined ? { totalLines } : {}),
 	};
 }
 
-function formatReadMetadata(read: HleditReadMetadata, proofId?: string): string {
+// 补读路径复用同一份渲染，但省略 proof_id：多页恢复只有一个权威 proof id，
+// 逐页重复输出会让调用方抄到已经作废的那个（见 read-recovery.ts）。
+export function formatReadMetadata(read: HleditReadMetadata, proofId?: string): string {
 	const anchoredLines = read.lines.map((line) => `${line.anchor}:${line.text}`);
 	const { firstLine, lastLine, lineCount, totalLines } = read.actual;
 	const pattern = read.requested.pattern;

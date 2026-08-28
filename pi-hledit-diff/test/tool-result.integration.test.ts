@@ -6,7 +6,8 @@ import test from "node:test";
 
 import piHleditDiffExtension from "../index.ts";
 import { HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL } from "../src/active-tools.ts";
-import type { TextResult } from "../src/result.ts";
+import { formatReadMetadata, type TextResult } from "../src/result.ts";
+import { MAX_RECOVERY_TEXT_BYTES } from "../src/read-recovery.ts";
 
 type ToolResultListener = (event: { toolName: string; details: unknown }, context: { cwd: string }) => unknown;
 type ExtensionEventListener = (event: never, context: never) => unknown;
@@ -730,6 +731,13 @@ test("proof recovery stops at its byte budget and keeps the pages it already rea
 	assert.equal(apply.details.error?.code, "proof_recovery_budget_exceeded");
 	const pageCount = apply.details.recoveredReads?.length ?? 0;
 	assert.ok(pageCount > 0 && pageCount <= 4);
+	const renderedRecoveryBytes = (apply.details.recoveredReads ?? [])
+		.map((read) => formatReadMetadata(read))
+		.join("\n");
+	assert.ok(
+		Buffer.byteLength(renderedRecoveryBytes, "utf8") <= MAX_RECOVERY_TEXT_BYTES,
+		`recovered source must stay within ${MAX_RECOVERY_TEXT_BYTES}-byte budget`,
+	);
 	assert.match(apply.content[0]?.text ?? "", /Automatic recovery stopped at its budget/);
 	assert.match(apply.content[0]?.text ?? "", /page\(s\) already read are recorded below/);
 	assert.equal(await readFile(target, "utf8"), original);

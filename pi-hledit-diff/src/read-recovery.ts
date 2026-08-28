@@ -128,9 +128,22 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 		}
 
 		const renderedPage = formatReadMetadata(recoveredRead);
+		const renderedPageBytes = Buffer.byteLength(renderedPage, "utf8")
+			+ (renderedPages.length > 0 ? Buffer.byteLength("\n", "utf8") : 0);
+		if (renderedBytes + renderedPageBytes > MAX_RECOVERY_TEXT_BYTES) {
+			// [喵喵喵]: 先判断候选页再写入 evidence，避免正文预算超限而模型仍拿到
+			// 不完整的补读上下文；被丢弃的页面必须由模型显式重读。
+			const recoveryStart = Math.max(range.start, readRequest.offset);
+			const message = `Automatic recovery stopped at its budget (${MAX_RECOVERY_PAGES} pages / ${Math.floor(MAX_RECOVERY_TEXT_BYTES / 1024)} KiB) before covering ${lineRangeDescription({ start: recoveryStart, end: range.end })}.`;
+			return recoveryResult("proof_recovery_budget_exceeded", message, [
+				`${message} ${reads.length > 0 ? `The ${reads.length} page(s) already read are recorded below and remain valid proof.` : "No recovery page was retained, so no source is included below."}`,
+				explicitReadInstruction(recoveryStart),
+				narrowRangeInstruction,
+			]);
+		}
 		reads.push(recoveredRead);
 		renderedPages.push(renderedPage);
-		renderedBytes += Buffer.byteLength(renderedPage, "utf8");
+		renderedBytes += renderedPageBytes;
 		proofId = readResult.details.proofId;
 		evidence.recordRead(evidencePath, recoveredRead, proofId);
 

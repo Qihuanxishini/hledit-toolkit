@@ -171,6 +171,13 @@ func TestSearchRegexLiteralCaseContextAndPagination(t *testing.T) {
 	if textTruncated || len(page) != 2 || page[0].Line != 1 || page[1].Line != 4 || nextOffset != 5 {
 		t.Fatalf("search page = %#v, textTruncated=%v, nextOffset=%d", page, textTruncated, nextOffset)
 	}
+	// [喵喵喵]: 预算恰好被最后一个匹配行用完时不得返回超出文件末尾的 nextOffset。(2026-08-28)
+	exactBudget := jsonReadLineSize(ReadLine{Line: 1, Anchor: formatTag(1, lines[0]), Text: lines[0]}) +
+		1 + jsonReadLineSize(ReadLine{Line: 6, Anchor: formatTag(6, lines[5]), Text: lines[5]})
+	page, textTruncated, nextOffset = collectMatchLines(lines, []int{1, 6}, 1, 100, exactBudget)
+	if textTruncated || len(page) != 2 || nextOffset != 0 {
+		t.Fatalf("exhausted-budget page = %#v, textTruncated=%v, nextOffset=%d", page, textTruncated, nextOffset)
+	}
 }
 
 func intsToStrings(values []int) []string {

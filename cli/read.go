@@ -352,10 +352,12 @@ func collectMatchLines(lines []string, matchIdxs []int, offset, maxLines, maxByt
 			return result, true, 0
 		}
 		if byteCount >= maxBytes {
-			if len(result) > 0 {
-				return result, false, result[len(result)-1].Line + 1
+			// [喵喵喵]: 预算刚好被最后一个匹配行用满时已无下一页，nextOffset 必须是 0；
+			// 否则会返回超出文件末尾的 offset，调用方按协议判定响应不合法。(2026-08-28)
+			if i+1 >= len(matchIdxs) {
+				return result, false, 0
 			}
-			return result, false, matchIdxs[i+1]
+			return result, false, result[len(result)-1].Line + 1
 		}
 	}
 	remaining := len(matchIdxs) - startIdx - len(result)

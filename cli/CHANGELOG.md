@@ -11,6 +11,7 @@
 ### Fixed
 
 - Keep JSON read/search proof lines complete across the 50 KiB page boundary: a line that does not fit the remaining page now moves to `nextOffset`, while only a source line that cannot fit an otherwise empty page is marked `textTruncated`.
+- Return `nextOffset: 0` when a `search` page ends because the last matching line exactly exhausts the JSON byte budget. The previous code read one past the final match and emitted an offset beyond the last line, which strict clients reject as an incompatible response.
 
 ## [3.0.0] — 2026-07-30
 

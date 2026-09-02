@@ -115,7 +115,7 @@ pi-hledit-diff/
 - 固定调用 `search`。结果额外包含 `totalMatches`，`nextOffset` 仍是物理行游标；零命中不生成 proof 并清除该 canonical path 的旧 proof generation。
 - 搜索返回的完整匹配/上下文行可以贡献局部 proof；搜索结果不保证连续覆盖，范围编辑缺口由 apply 内部自动分页补读。
 
-读取结果的 proof 规则：插件对非零命中或普通范围 read 生成 `proof_id`，同时写入模型正文与 `details.proofId`；分页或后续显式 read/search 会轮换 proof id，同时在同 revision 下合并已验证行。`textTruncated` 行不建立 proof。
+读取结果的 proof 规则：插件对非零命中或普通范围 read 生成 `proof_id`，同时写入模型正文与 `details.proofId`；分页或后续显式 read/search 会轮换 proof id，同时在同 revision 下合并已验证行。`textTruncated` 行不建立 proof。proof id 形态是 `<进程随机三字母前缀><单调计数>`（如 `kqz7`），由 `src/proof-id.ts` 单点发号；它只参与相等比较，不是安全边界。前缀不可去掉：`restoreFromBranch` 会把转录里的历史 proof id 重新载回 store，纯计数器在进程重启后会与旧 id 相撞。
 
 ### `hledit_apply_file_changes`
 
@@ -249,6 +249,7 @@ CLI 写入逐行保留未修改 terminator、非空结果的 BOM 和 trailing-ne
 | --- | --- |
 | `index.ts` | 三工具注册、apply queue 主流程、错误升级与 active-tool 生命周期。 |
 | `src/schema.ts` | 三工具的严格 schema 与参数类型。 |
+| `src/proof-id.ts` | 单调短 proof id 生成器。 |
 | `src/read-transaction.ts` | read/search CLI、结果校验和 evidence 更新的 canonical queue 事务。 |
 | `src/read-recovery.ts` | proof 缺口的定向分页补读、恢复预算与三条终止分支。 |
 | `src/read-evidence.ts` | revision proof、rename/ambiguity、容量、重映射、失效与 branch replay。 |

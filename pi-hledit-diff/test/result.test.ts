@@ -31,9 +31,9 @@ test("readAnchorsResult exposes actual range, total lines, and continuation", ()
         { path: "src/a.ts", offset: 2, limit: 2 },
     );
 
-	assert.match(result.content[0]?.text ?? "", /^proof_id: [0-9a-f-]+\n2#BHJ:two\n3#BJL:three\n-- Showing lines 2-3 of 5; continue with offset 4 --$/);
+	assert.match(result.content[0]?.text ?? "", /^proof_id: [a-z]+\d+\n2#BHJ:two\n3#BJL:three\n-- Showing lines 2-3 of 5; continue with offset 4 --$/);
 	assert.equal(result.details.disposition, "succeeded");
-	assert.match(result.details.proofId ?? "", /^[0-9a-f-]{36}$/);
+	assert.match(result.details.proofId ?? "", /^[a-z]{3}\d+$/);
 	assert.deepEqual(result.details.read?.requested, { offset: 2, limit: 2 });
 	assert.deepEqual(result.details.read?.actual, { firstLine: 2, lastLine: 3, lineCount: 2, totalLines: 5 });
 	assert.equal(result.details.read?.nextOffset, 4);

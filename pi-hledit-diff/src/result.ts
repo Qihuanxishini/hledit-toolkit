@@ -1,5 +1,5 @@
 import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
-import { randomUUID } from "node:crypto";
+import { nextProofId } from "./proof-id.ts";
 import { ANCHOR_HASH_PATTERN, lineFromAnchor } from "./file-changes.ts";
 import { parseAnchorContext, parseBatchUpdatedAnchorContext, type BatchAnchorContext, type ProducedLineRange } from "./post-edit-context.ts";
 import { MAX_READ_LIMIT, suggestedReadWindow, type NormalizedReadRequest, type NormalizedSearchRequest } from "./read-args.ts";
@@ -516,7 +516,7 @@ export function readAnchorsResult(run: HleditRun, request: NormalizedReadRequest
 			details: { disposition: "unavailable", path: request.path },
 		};
 	}
-	const proofId = read.requested.pattern !== undefined && read.lines.length === 0 ? undefined : randomUUID();
+	const proofId = read.requested.pattern !== undefined && read.lines.length === 0 ? undefined : nextProofId();
 	return {
 		content: [{ type: "text", text: formatReadMetadata(read, proofId) }],
 		details: {

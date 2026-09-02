@@ -36,18 +36,11 @@ const DELETE_RANGE_CHANGE_SCHEMA = Type.Object(
 	STRICT_OBJECT,
 );
 
-const INSERT_BEFORE_CHANGE_SCHEMA = Type.Object(
+// [喵喵喵]: 两个 insert 变体除 operation 取值外字段完全相同，合并为一个 variant——
+// required 集合与 additionalProperties 约束不变，模型看到的 schema 不再重复同一份定义。
+const INSERT_CHANGE_SCHEMA = Type.Object(
 	{
-		operation: StringEnum(["insert_before"] as const),
-		anchor: ANCHOR_SCHEMA,
-		lines: REPLACEMENT_TEXT_SCHEMA,
-	},
-	STRICT_OBJECT,
-);
-
-const INSERT_AFTER_CHANGE_SCHEMA = Type.Object(
-	{
-		operation: StringEnum(["insert_after"] as const),
+		operation: StringEnum(["insert_before", "insert_after"] as const),
 		anchor: ANCHOR_SCHEMA,
 		lines: REPLACEMENT_TEXT_SCHEMA,
 	},
@@ -81,7 +74,7 @@ export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 		path: PATH_SCHEMA,
 		proof_id: Type.String({ minLength: 1, description: "Proof id from the latest successful read/search result for this path." }),
 		changes: Type.Array(
-			Type.Union([REPLACE_RANGE_CHANGE_SCHEMA, DELETE_RANGE_CHANGE_SCHEMA, INSERT_BEFORE_CHANGE_SCHEMA, INSERT_AFTER_CHANGE_SCHEMA]),
+			Type.Union([REPLACE_RANGE_CHANGE_SCHEMA, DELETE_RANGE_CHANGE_SCHEMA, INSERT_CHANGE_SCHEMA]),
 			{
 				minItems: 1,
 				maxItems: MAX_FILE_CHANGE_COUNT,

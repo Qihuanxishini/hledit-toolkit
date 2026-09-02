@@ -1,5 +1,4 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
@@ -10,6 +9,7 @@ import {
 import { computeAnchorTag } from "./anchor-hash.ts";
 import { lineFromAnchor, type HleditBatchReadProof } from "./file-changes.ts";
 import { parseAnchorContext, type BatchAnchorContext } from "./post-edit-context.ts";
+import { nextProofId } from "./proof-id.ts";
 import {
 	isRawRevision,
 	parseEditDeltas,
@@ -492,7 +492,7 @@ export class ReadEvidenceStore {
 			this.deleteFile(path);
 			return;
 		}
-		const activeProofId = proofId ?? randomUUID();
+		const activeProofId = proofId ?? nextProofId();
 		const existing = this.files.get(path);
 		const sameRevision = existing?.revision === read.revision;
 		const lines = sameRevision ? new Map(existing.lines) : new Map<number, EvidenceLine>();
@@ -559,7 +559,7 @@ export class ReadEvidenceStore {
 			revision,
 			// [喵喵喵]: 受控 apply 产生的新 revision 延续同一 proof generation；
 			// 只有显式 read 才轮换 proofId，避免 updatedAnchors 无法继续用于后续编辑。
-			proofId: existing?.proofId ?? randomUUID(),
+			proofId: existing?.proofId ?? nextProofId(),
 			lines,
 			renames,
 			// updatedAnchors 不能消歧；模型仍可能持有编辑前或已消费行的同 token。

@@ -356,7 +356,7 @@ test("applyFileChangesResult localizes proof and pre-commit revision rejections"
 	assert.equal(insufficient.details.disposition, "rejected");
 	assert.equal(insufficient.details.error?.code, "insufficient_read_proof");
 	assert.match(insufficient.content[0]?.text ?? "", /Read proof does not cover/);
-	assert.match(insufficient.content[0]?.text ?? "", /Call hledit_read_anchors[\s\S]*resubmit the original hledit_apply_file_changes call/);
+	assert.match(insufficient.content[0]?.text ?? "", /Call hledit_read_anchors[\s\S]*use proof_id from the latest successful read page and current anchors[\s\S]*resubmit the hledit_apply_file_changes batch/);
 
 	const changed = applyFileChangesResult({
 		stdout: JSON.stringify({ ok: false, error: "source_changed_before_commit", message: "source changed before commit", currentRevision: REVISION }),
@@ -464,7 +464,7 @@ test("model body snapshot: CLI insufficient_read_proof rejection", () => {
 		"Reason: Read proof does not cover every original source line required by this change.\n" +
 		"Error code: insufficient_read_proof\n" +
 		"Failed change: 1\n" +
-		'Call hledit_read_anchors({ path: "src/a.ts", offset: 1, limit: 12 }) to reread every source line required by change 1, then resubmit the original hledit_apply_file_changes call.',
+		'Call hledit_read_anchors({ path: "src/a.ts", offset: 1, limit: 12 }) to reread every source line required by change 1, then use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.',
 	);
 	assert.equal(result.details.disposition, "rejected");
 });

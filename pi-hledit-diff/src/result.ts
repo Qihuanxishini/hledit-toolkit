@@ -792,10 +792,10 @@ function appendInsufficientReadProofRecovery(
 	if (error.code !== "insufficient_read_proof") return;
 	const failedIndex = isIntegerAtLeast(result.failed, 0) ? result.failed : undefined;
 	const change = failedIndex === undefined ? undefined : context.changes?.[failedIndex];
-	const resubmitTool = "hledit_apply_file_changes";
+	const resubmitInstruction = "use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.";
 	const genericInstruction = context.path
-		? `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)} }) to reread every source line required by the failed change, then resubmit the original ${resubmitTool} call.`
-		: `Call hledit_read_anchors to reread every source line required by the failed change, then resubmit the original ${resubmitTool} call.`;
+		? `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)} }) to reread every source line required by the failed change, then ${resubmitInstruction}`
+		: `Call hledit_read_anchors to reread every source line required by the failed change, then ${resubmitInstruction}`;
 	if (failedIndex === undefined || !context.path || !change) {
 		lines.push(genericInstruction);
 		return;
@@ -818,8 +818,8 @@ function appendInsufficientReadProofRecovery(
 	const changeNumber = failedIndex + 1;
 	const { offset, limit, lastLine: lastSuggestedLine } = suggestedReadWindow(start, end);
 	lines.push(lastSuggestedLine < end
-		? `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, offset: ${offset}, limit: ${limit} }) first, continue with nextOffset until line ${end} is covered, then resubmit the original ${resubmitTool} call.`
-		: `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, offset: ${offset}, limit: ${limit} }) to reread every source line required by change ${changeNumber}, then resubmit the original ${resubmitTool} call.`);
+		? `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, offset: ${offset}, limit: ${limit} }) first, continue with nextOffset until line ${end} is covered, then ${resubmitInstruction}`
+		: `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, offset: ${offset}, limit: ${limit} }) to reread every source line required by change ${changeNumber}, then ${resubmitInstruction}`);
 }
 function formatApplyFailureResult(
 	result: Record<string, unknown>,

@@ -49,6 +49,56 @@ test("anchored preview keeps the minimal diff inside a replacement block", () =>
 	]);
 });
 
+test("large replacements avoid serializing an unbounded diff and retain bounded head/tail evidence", () => {
+	const size = 10_000;
+	const replacements = Array.from({ length: size }, (_, index) => `new-${index}`);
+	replacements.join = () => { throw new Error("oversized replacement reached diff serialization"); };
+	const preview = buildAnchoredChangePreview(
+		[{ operation: "replace_range", start_anchor: "1#AAA", end_anchor: `${size}#AAA`, lines: replacements }],
+		consumedLines(Array.from({ length: size }, (_, index) => [index + 1, `old-${index}`])),
+	);
+	assert.ok(preview?.truncated);
+	assert.ok(preview.lines.length <= MAX_PREVIEW_LINES);
+	assert.deepEqual(preview.lines[0], { kind: "remove", oldLine: 1, text: "old-0", changeIndex: 0 });
+	assert.deepEqual(preview.lines.at(-1), { kind: "add", newLine: size, text: `new-${size - 1}`, changeIndex: 0 });
+	assert.deepEqual(parseChangePreview(JSON.parse(JSON.stringify(preview))), preview);
+});
+
+test("replacement diff work is budgeted across the complete batch", () => {
+	const size = 256;
+	const consumed = consumedLines(Array.from({ length: size * 5 }, (_, index) => [index + 1, `old-${index}`]));
+	const changes = Array.from({ length: 5 }, (_, changeIndex) => ({
+		operation: "replace_range" as const,
+		start_anchor: `${changeIndex * size + 1}#AAA`,
+		end_anchor: `${(changeIndex + 1) * size}#AAA`,
+		lines: Array.from({ length: size }, (_, index) => index === 0 ? "changed" : `old-${changeIndex * size + index}`),
+	}));
+	const preview = buildAnchoredChangePreview(changes, consumed);
+	assert.ok(preview?.truncated);
+	assert.equal(preview.lines.filter((line) => line.changeIndex === 0).length, 2);
+	assert.ok(preview.lines.some((line) => line.changeIndex === 4 && line.text === "old-1025"));
+});
+
+test("replacement diff checks UTF-8 bytes before joining its input", () => {
+	const replacements = ["中".repeat(MAX_PREVIEW_BYTES)];
+	replacements.join = () => { throw new Error("oversized UTF-8 text reached diff serialization"); };
+	const preview = buildAnchoredChangePreview(
+		[{ operation: "replace_range", start_anchor: "1#AAA", end_anchor: "1#AAA", lines: replacements }],
+		consumedLines([[1, "before"]]),
+	);
+	assert.ok(preview?.truncated);
+	assert.ok(preview.lines.reduce((bytes, line) => bytes + Buffer.byteLength(line.text, "utf8") + 1, 0) <= MAX_PREVIEW_BYTES);
+});
+
+test("replacement preview preserves carriage returns and Unicode line separators", () => {
+	const old = "before\rtext\u2028tail";
+	const next = "after\rtext\u2029tail";
+	const preview = buildAnchoredChangePreview(
+		[{ operation: "replace_range", start_anchor: "1#AAA", end_anchor: "1#AAA", lines: [next] }],
+		consumedLines([[1, old]]),
+	);
+	assert.deepEqual(preview?.lines.map((line) => line.text), [old, next]);
+});
 test("anchored preview refuses to guess when a consumed line is missing from evidence", () => {
 	const preview = buildAnchoredChangePreview(
 		[{ operation: "replace_range", start_anchor: "2#AAA", end_anchor: "3#BBB", lines: ["next"] }],

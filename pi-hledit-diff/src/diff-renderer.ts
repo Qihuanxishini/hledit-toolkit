@@ -1,6 +1,6 @@
 import { keyHint } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { createHighlightedTextCache, type HighlightedText } from "./syntax-highlight.ts";
+import { sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { createHighlightedTextCache, escapeTerminalControls, type HighlightedText } from "./syntax-highlight.ts";
 
 export type HleditRenderComponent = {
 	render(width: number): string[];
@@ -69,7 +69,7 @@ type SplitDiffRow = {
 	meta?: string;
 };
 
-const GENERATED_DIFF_LINE = /^([ +\-])(\s*\d+)\s(.*)$/;
+const GENERATED_DIFF_LINE = /^([ +\-])(\s*\d+)\s(.*)$/s;
 const COLLAPSED_DIFF_LINES = 24;
 const MAX_EXPANDED_DIFF_LINES = 2000;
 const SPLIT_MIN_WIDTH = 120;
@@ -193,7 +193,7 @@ function parseGeneratedDiff(diff: string): ParsedDiff {
 	let hunks = 0;
 	let insideChangeGroup = false;
 
-	for (const rawLine of diff.replace(/\r/g, "").split("\n")) {
+	for (const rawLine of diff.split("\n")) {
 		if (!rawLine && entries.length === 0) continue;
 		const match = GENERATED_DIFF_LINE.exec(rawLine);
 		if (!match) {
@@ -411,9 +411,19 @@ function lineNumberWidth(entries: DiffEntry[]): number {
 	return width;
 }
 
-function wrapHighlightedLine(line: HighlightedText, width: number): HighlightedText[] {
+function wrapHighlightedLine(line: HighlightedText, width: number, maxRows: number): HighlightedText[] {
 	if (line.width <= width) return [line];
-	return wrapTextWithAnsi(line.text, width).map((text) => ({ text, width: visibleWidth(text) }));
+	if (maxRows <= 0) return [];
+	const visibleBudget = width * maxRows;
+	if (line.width <= visibleBudget) {
+		return wrapTextWithAnsi(line.text, width).map((text) => ({ text, width: visibleWidth(text) }));
+	}
+
+	// [喵喵喵]: 只取当前可见行预算内的高亮文本，避免为被裁掉的尾部生成完整 wrapped 数组。
+	const boundedText = `${sliceByColumn(line.text, 0, visibleBudget, true)}\x1b[0m`;
+	return wrapTextWithAnsi(boundedText, width)
+		.slice(0, maxRows)
+		.map((text) => ({ text, width: visibleWidth(text) }));
 }
 
 function lineColor(kind: DiffLineKind): "toolDiffAdded" | "toolDiffRemoved" | "dim" {
@@ -438,11 +448,12 @@ function renderDiffLineRows(
 	highlightLine: (line: DiffLine) => HighlightedText,
 	theme: HleditRenderTheme,
 	palette: DiffBackgroundPalette | undefined,
+	maxRows: number,
 ): string[] {
 	const plainNumber = String(line.lineNumber).padStart(numberWidth, " ");
 	const prefixWidth = 2 + numberWidth + 3;
 	const contentWidth = Math.max(1, width - prefixWidth);
-	const wrapped = wrapHighlightedLine(highlightLine(line), contentWidth);
+	const wrapped = wrapHighlightedLine(highlightLine(line), contentWidth, maxRows);
 	const rows = wrapped.length > 0 ? wrapped : [{ text: "", width: 0 }];
 	const color = lineColor(line.kind);
 
@@ -462,14 +473,16 @@ function renderUnified(
 	highlightLine: (line: DiffLine) => HighlightedText,
 	theme: HleditRenderTheme,
 	palette: DiffBackgroundPalette | undefined,
+	maxRows: number,
 ): string[] {
 	const rows: string[] = [];
 	for (const entry of entries) {
+		if (rows.length >= maxRows) break;
 		if (entry.kind === "meta") {
-			rows.push(theme.fg("dim", truncateToWidth(`  ${entry.content}`, width, "")));
+			rows.push(theme.fg("dim", truncateToWidth(`  ${escapeTerminalControls(entry.content)}`, width, "")));
 			continue;
 		}
-		rows.push(...renderDiffLineRows(entry, width, numberWidth, highlightLine, theme, palette));
+		rows.push(...renderDiffLineRows(entry, width, numberWidth, highlightLine, theme, palette, maxRows - rows.length));
 	}
 	return rows;
 }
@@ -481,6 +494,7 @@ function renderSplit(
 	highlightLine: (line: DiffLine) => HighlightedText,
 	theme: HleditRenderTheme,
 	palette: DiffBackgroundPalette | undefined,
+	maxRows: number,
 ): string[] {
 	const separatorWidth = visibleWidth(SPLIT_SEPARATOR);
 	const leftWidth = Math.floor((width - separatorWidth) / 2);
@@ -489,7 +503,7 @@ function renderSplit(
 	const rows: string[] = [];
 	// 双栏特有：某一侧没有对应行时留空白单元格。
 	const cell = (line: DiffLine | undefined, cellWidth: number): string[] =>
-		line ? renderDiffLineRows(line, cellWidth, numberWidth, highlightLine, theme, palette) : [" ".repeat(cellWidth)];
+		line ? renderDiffLineRows(line, cellWidth, numberWidth, highlightLine, theme, palette, maxRows - rows.length) : [" ".repeat(cellWidth)];
 
 	const oldLabel = fitToWidth(theme.fg("muted", theme.bold("修改前")), leftWidth);
 	const newLabel = fitToWidth(theme.fg("muted", theme.bold("修改后")), rightWidth);
@@ -497,8 +511,9 @@ function renderSplit(
 	rows.push(theme.fg("dim", "─".repeat(width)));
 
 	for (const row of rowsToRender) {
+		if (rows.length >= maxRows) break;
 		if (row.meta !== undefined) {
-			rows.push(theme.fg("dim", truncateToWidth(`  ${row.meta}`, width, "")));
+			rows.push(theme.fg("dim", truncateToWidth(`  ${escapeTerminalControls(row.meta)}`, width, "")));
 			continue;
 		}
 		const left = cell(row.left, leftWidth);
@@ -533,10 +548,7 @@ function diffSummary(
 function applyLineLimit(lines: string[], expanded: boolean, width: number, theme: HleditRenderTheme): string[] {
 	const limit = expanded ? MAX_EXPANDED_DIFF_LINES : COLLAPSED_DIFF_LINES;
 	if (lines.length <= limit) return lines;
-	const remaining = lines.length - limit;
-	const hint = expanded
-		? `… 还有 ${remaining} 行差异`
-		: `… 还有 ${remaining} 行差异 • ${expandHint()}`;
+	const hint = expanded ? "… 更多差异" : `… 更多差异 • ${expandHint()}`;
 	return [...lines.slice(0, limit), "", truncateToWidth(theme.fg(expanded ? "warning" : "muted", hint), width, "")];
 }
 
@@ -585,9 +597,12 @@ export function renderStandaloneDiff(
 			if (safeWidth < 24) return storeRenderedLines(safeWidth, [truncateToWidth(diffSummary(parsed, theme, undefined, summaryStats), safeWidth, "")]);
 
 			const mode = safeWidth >= SPLIT_MIN_WIDTH ? "split" : "unified";
+			// [喵喵喵]: 只布局显示上限加一行哨兵；摘要保留全量统计，
+			// 不为隐藏行的精确换行数触发高亮和着色。(2026-09-05)
+			const maxRows = (expanded ? MAX_EXPANDED_DIFF_LINES : COLLAPSED_DIFF_LINES) + 1;
 			const body = mode === "split"
-				? renderSplit(splitRows, safeWidth, numberWidth, highlightLine, theme, currentPalette())
-				: renderUnified(unifiedEntries, safeWidth, numberWidth, highlightLine, theme, currentPalette());
+				? renderSplit(splitRows, safeWidth, numberWidth, highlightLine, theme, currentPalette(), maxRows)
+				: renderUnified(unifiedEntries, safeWidth, numberWidth, highlightLine, theme, currentPalette(), maxRows);
 			const frame = theme.fg("dim", "─".repeat(safeWidth));
 			return storeRenderedLines(safeWidth, [
 				truncateToWidth(diffSummary(parsed, theme, mode, summaryStats), safeWidth, ""),

@@ -61,8 +61,11 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 		instructions: string[],
 		extraDetails: Record<string, unknown> = {},
 	): TextResult => {
+		const proofIdInstruction = proofId && !instructions.some((instruction) => instruction.includes(`proof_id: ${proofId}`))
+			? [`proof_id: ${proofId}`]
+			: [];
 		const rejected = rejectedToolResult(
-			[diagnosis, ...instructions, ...renderedPages].filter(Boolean).join("\n"),
+			[diagnosis, ...proofIdInstruction, ...instructions, ...renderedPages].filter(Boolean).join("\n"),
 			{ code, message, ...failureContext },
 		);
 		return attachEvidencePath({
@@ -80,9 +83,10 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 	const explicitReadInstruction = (start: number): string => {
 		const window = suggestedReadWindow(start, range.end);
 		const call = `hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${window.offset}, limit: ${window.limit} })`;
-		return window.lastLine < range.end
-			? `Call ${call}, continue with nextOffset until line ${range.end} is covered, then resubmit the batch.`
-			: `Call ${call} to cover ${lineRangeDescription({ start, end: range.end })}, then resubmit the batch.`;
+		const readInstruction = window.lastLine < range.end
+			? `Call ${call}, continue with nextOffset until line ${range.end} is covered.`
+			: `Call ${call} to cover ${lineRangeDescription({ start, end: range.end })}.`;
+		return `${readInstruction} Use proof_id from the latest successful read page and current anchors, then resubmit the batch.`;
 	};
 	const narrowRangeInstruction =
 		"If the change does not need to consume that many source lines, narrow start_anchor/end_anchor instead; a range operation must cover exactly the block it replaces or deletes.";
@@ -116,21 +120,24 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 		}
 
 		const recoveredRead = readResult.details.read;
-		if (recoveredRead.textTruncated) {
-			// 截断行建立不了 proof，也不能进 evidence：parseUsableHleditReadMetadata 在重放侧
-			// 拒绝截断读取，记录它就会让实时状态与 branch replay 分歧。页面仍然展示，
-			// 让调用方看到是哪一行被截断。
-			renderedPages.push(formatReadMetadata(recoveredRead));
-			const message = "The target includes source-line text that was truncated and cannot establish edit proof.";
-			return recoveryResult("source_line_truncated", message, [
-				`${message} Do not resubmit this hledit_apply_file_changes call. Use write only if an intentional complete-file rewrite is safe.`,
-			]);
-		}
-
 		const renderedPage = formatReadMetadata(recoveredRead);
 		const renderedPageBytes = Buffer.byteLength(renderedPage, "utf8")
 			+ (renderedPages.length > 0 ? Buffer.byteLength("\n", "utf8") : 0);
-		if (renderedBytes + renderedPageBytes > MAX_RECOVERY_TEXT_BYTES) {
+		const fitsBudget = renderedBytes + renderedPageBytes <= MAX_RECOVERY_TEXT_BYTES;
+		if (recoveredRead.textTruncated) {
+			// 截断行不能进入 evidence/recoveredReads，实时状态与 branch replay 必须一致。
+			// [喵喵喵]: 截断页也受正文预算约束；整页容纳不下时仅报告行号，
+			// 仍保留终止性诊断，避免调用方反复补读同一超长行。(2026-09-05)
+			if (fitsBudget) renderedPages.push(renderedPage);
+			const truncatedLine = recoveredRead.lines.find((line) => line.textTruncated)!.line;
+			const message = `Source-line text at line ${truncatedLine} was truncated and cannot establish edit proof.`;
+			return recoveryResult("source_line_truncated", message, [
+				`${message} Do not resubmit this hledit_apply_file_changes call. Use write only if an intentional complete-file rewrite is safe.`,
+				...(!fitsBudget ? ["The truncated source page was omitted to stay within the recovery text budget."] : []),
+			]);
+		}
+
+		if (!fitsBudget) {
 			// [喵喵喵]: 先判断候选页再写入 evidence，避免正文预算超限而模型仍拿到
 			// 不完整的补读上下文；被丢弃的页面必须由模型显式重读。
 			const recoveryStart = Math.max(range.start, readRequest.offset);
@@ -168,9 +175,6 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 
 	const renameInstruction = failure.renamedAnchors?.length ? "apply every listed anchor rename, " : "";
 	return recoveryResult(failure.code, failure.message, [
-		`The targeted missing range was read and recorded in ${reads.length} page(s). Review the current source, ${renameInstruction}replace any mismatched endpoint anchors with the returned current anchors, then resubmit the batch once.`,
-		...(proofId
-			? [`Use proof_id: ${proofId} in the resubmitted hledit_apply_file_changes call; the source lines below carry no proof id of their own.`]
-			: []),
+		`The targeted missing range was read and recorded in ${reads.length} page(s). Review the current source, ${renameInstruction}replace any mismatched endpoint anchors with the returned current anchors, then resubmit the batch once using the proof_id above.`,
 	]);
 }

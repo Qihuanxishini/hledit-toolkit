@@ -40,6 +40,26 @@ test("decodeFileChangeInput converts newline-delimited text once at the execute 
   });
 });
 
+test("decodeFileChangeInput preserves lone carriage returns as source text", () => {
+  for (const [text, lines] of [
+    ["first\rsecond", ["first\rsecond"]],
+    ["first\r", ["first\r"]],
+    ["first\r\r\nsecond\n", ["first\r", "second"]],
+  ] as const) {
+    const decoded = decodeFileChangeInput({
+      path: "src/a.ts",
+      changes: [{ operation: "insert_after", anchor: "1#BHJ", lines: text }],
+    });
+    assert.deepEqual(decoded, {
+      params: { path: "src/a.ts", changes: [{ operation: "insert_after", anchor: "1#BHJ", lines }] },
+    });
+  }
+  const oversized = decodeFileChangeInput({
+    path: "src/a.ts",
+    changes: [{ operation: "insert_after", anchor: "1#BHJ", lines: "a".repeat(MAX_REPLACEMENT_TEXT_BYTES) + "\r" }],
+  });
+  assert.ok("error" in oversized);
+});
 test("decodeFileChangeInput enforces aggregate UTF-8 and produced-line limits", () => {
   const oversizedBytes = decodeFileChangeInput({
     path: "src/a.ts",

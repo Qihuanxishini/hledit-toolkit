@@ -346,7 +346,7 @@ test("proof failure identifies the affected operation and continuous gap in a di
 	);
 	const guidance = formatReadProofFailure("target.txt", selection.failure);
 	assert.match(guidance, /offset: 145, limit: 120/);
-	assert.match(guidance, /resubmit the original hledit_apply_file_changes call/);
+	assert.match(guidance, /proof_id from the latest successful read page and current anchors/);
 	assert.doesNotMatch(guidance, /147, 148, 149/);
 });
 
@@ -363,7 +363,7 @@ test("model body snapshot: plugin-side proof failure with targeted reread", () =
 		"Valid read proof does not cover every source line required by this change. Batch was not started and no content was written.\n" +
 		"Reason: Change 1 (replace_range 3-5) requires complete read proof for every source line in the inclusive range; missing lines 4-5. Endpoint anchors alone are insufficient.\n" +
 		'Call hledit_read_anchors({ path: "target.txt", offset: 2, limit: 12 }) first and confirm all required source lines for change 1 through line 5.\n' +
-		"After the read succeeds, resubmit the original hledit_apply_file_changes call.",
+		"After the read succeeds, use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.",
 	);
 });
 
@@ -763,7 +763,7 @@ test("a rename hint does not hide an unrelated proof gap in the same batch", () 
 	assert.match(formatted, /required but not sufficient/);
 	assert.match(formatted, /offset: 6, limit: 12/);
 	assert.doesNotMatch(formatted, /Resubmit after replacing every renamed anchor with its current form, or reread the range/);
-	assert.match(formatted, /resubmit the original hledit_apply_file_changes call with every listed anchor rename applied/);
+	assert.match(formatted, /proof_id from the latest successful read page and current anchors, apply every listed anchor rename/);
 });
 
 test("verified rename chains normalize to the latest anchor", () => {
@@ -814,6 +814,49 @@ test("verified rename chains normalize to the latest anchor", () => {
 	assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: latestAnchor, lines: ["x"] }]), {
 		proof: { revision: REVISION_C, anchors: [latestAnchor] },
 	});
+});
+
+test("consuming all observed lines preserves the proof generation in live and replayed state", () => {
+	const proofId = "read-generation";
+	const oldAnchor = computeAnchorTag(2, "before");
+	const newAnchor = computeAnchorTag(2, "after");
+	const events = [
+		{
+			toolName: HLEDIT_READ_ANCHORS_TOOL,
+			details: { disposition: "succeeded", evidencePath: PATH, proofId, read: readMetadata(REVISION_A, [{ line: 2, anchor: oldAnchor, text: "before" }], { totalLines: 2 }) },
+		},
+		{
+			toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL,
+			details: applyDetails("succeeded", {
+				revision: REVISION_B,
+				editDeltas: [{ oldStart: 2, oldEnd: 2, delta: 0 }],
+				updatedAnchors: {
+					lines: [{ line: 2, anchor: newAnchor, text: "after", textTruncated: false }],
+					offset: 2, limit: 1, desiredLimit: 1, truncated: false,
+				},
+			}),
+		},
+	];
+	const live = new ReadEvidenceStore();
+	for (const event of events) live.updateFromToolResult(event.toolName, event.details, "/workspace");
+	const replay = new ReadEvidenceStore();
+	replay.restoreFromBranch({
+		cwd: "/workspace",
+		sessionManager: { getBranch: () => events.map((event) => ({ type: "message", message: { role: "toolResult", ...event } })) },
+	} as never);
+
+	for (const store of [live, replay]) {
+		assertProofSelection(store.selectProof(PATH, replaceRange(newAnchor, newAnchor), proofId), {
+			proof: { revision: REVISION_B, anchors: [newAnchor] },
+		});
+		const consumed = store.selectProof(PATH, replaceRange(oldAnchor, oldAnchor), proofId);
+		assert.ok("failure" in consumed);
+		assert.match(consumed.failure.message, /lost its unique identity/);
+		store.recordRead(PATH, readMetadata(REVISION_B, [{ line: 2, anchor: newAnchor, text: "after" }]), "next-read");
+		const expired = store.selectProof(PATH, replaceRange(newAnchor, newAnchor), proofId);
+		assert.ok("failure" in expired);
+		assert.equal(expired.failure.code, "invalid_proof_id");
+	}
 });
 
 test("evidence consumed by the edit is dropped and never remapped", () => {

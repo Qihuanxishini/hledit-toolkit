@@ -9,12 +9,11 @@ export const MAX_FILE_CHANGE_COUNT = 200;
 export const MAX_REPLACEMENT_TEXT_BYTES = 1024 * 1024;
 export const MAX_REPLACEMENT_LINE_COUNT = 20_000;
 
-const PATH_SCHEMA = Type.String({ minLength: 1, description: "Text file path." });
-const SEARCH_PATH_SCHEMA = Type.String({ minLength: 1, description: "One text file path; not a directory." });
-const ANCHOR_SCHEMA = Type.String({ pattern: ANCHOR_PATTERN });
+const PATH_SCHEMA = Type.String({ minLength: 1, description: "One text file path; not a directory." });
+const ANCHOR_SCHEMA = Type.String({ pattern: ANCHOR_PATTERN, description: "Current LN#HASH token." });
 const REPLACEMENT_TEXT_SCHEMA = Type.String({
 	// [喵喵喵]: 单项不设字符上限；UTF-8 字节数与 batch 聚合限制由 execute 边界精确校验。
-	description: "New text; \\n separates lines.",
+	description: "Raw text; \\n separates lines; no LN#HASH prefixes.",
 });
 
 const REPLACE_RANGE_CHANGE_SCHEMA = Type.Object(
@@ -58,7 +57,7 @@ export const HLEDIT_READ_ANCHORS_PARAMS_SCHEMA = Type.Object(
 
 export const HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA = Type.Object(
 	{
-		path: SEARCH_PATH_SCHEMA,
+		path: PATH_SCHEMA,
 		pattern: Type.String({ minLength: 1, description: "RE2 regular expression; use literal:true for exact text." }),
 		offset: Type.Optional(Type.Integer({ minimum: 1, description: "First source line to search (1-based)." })),
 		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_SEARCH_LIMIT, description: `Maximum matching/context lines (${MAX_SEARCH_LIMIT} max).` })),
@@ -72,13 +71,13 @@ export const HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA = Type.Object(
 export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 	{
 		path: PATH_SCHEMA,
-		proof_id: Type.String({ minLength: 1, description: "Proof id from the latest successful read/search result for this path." }),
+		proof_id: Type.String({ minLength: 1, description: "Current proof_id returned for this path; use the latest read/search after rereading." }),
 		changes: Type.Array(
 			Type.Union([REPLACE_RANGE_CHANGE_SCHEMA, DELETE_RANGE_CHANGE_SCHEMA, INSERT_CHANGE_SCHEMA]),
 			{
 				minItems: 1,
 				maxItems: MAX_FILE_CHANGE_COUNT,
-				description: "Complete non-overlapping atomic batch.",
+				description: "Complete non-overlapping atomic batch for one file.",
 			},
 		),
 	},

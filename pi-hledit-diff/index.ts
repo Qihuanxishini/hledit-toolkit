@@ -1,9 +1,7 @@
 import type {
-	AgentToolUpdateCallback,
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
-	ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import {
@@ -55,16 +53,11 @@ import {
 	HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 	HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA,
 	type FileChangeParams,
-	type FileChangeInput,
-	type ReadAnchorsParams,
-	type SearchAnchorsParams,
 } from "./src/schema.ts";
 import {
 	renderFileChangesResult,
 	renderHleditCall,
 	renderReadAnchorsResult,
-	type RenderTheme,
-	type ToolRenderContextLike,
 } from "./src/render.ts";
 
 export { buildReadArgs, normalizeToolPath } from "./src/read-args.ts";
@@ -79,6 +72,15 @@ function appendResultText(result: TextResult, text: string | undefined): TextRes
 		return [{ ...first, text: `${first.text}\n\n${text}` }, ...rest];
 	}
 	return [{ type: "text", text }, ...result.content];
+}
+
+function appendCurrentProofId(result: TextResult, proofId: string | undefined): TextResult {
+	if (result.details.disposition !== "succeeded" || !proofId) return result;
+	return {
+		...result,
+		content: appendResultText(result, `proof_id: ${proofId}`),
+		details: { ...result.details, proofId },
+	};
 }
 
 // 成功响应已由 result.ts 验证；这里统一追加局部锚点上下文与提交绑定的 change preview。
@@ -267,7 +269,7 @@ async function runFileChangesWithDiff(
 	return withFileMutationQueue(evidencePath, async () => {
 		const result = await applyWithinQueue();
 		evidence.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, result.details, ctx.cwd);
-		return result;
+		return appendCurrentProofId(result, evidence.getProofId(evidencePath));
 	});
 }
 
@@ -283,7 +285,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		if (preferredTools.join("\0") !== activeTools.join("\0")) pi.setActiveTools(preferredTools);
 	};
 
-	pi.registerTool(({
+	pi.registerTool<typeof HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, TextResult["details"]>({
 		name: HLEDIT_READ_ANCHORS_TOOL,
 		label: "Read for Edit",
 		description: "Read contiguous text lines with LN#HASH anchors for stale-safe edits.",
@@ -295,78 +297,60 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		// provider 侧按 schema 约束采样，从源头消除畸形参数；不支持的模型自动回落普通调用。
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		prepareArguments: prepareReadAnchorsArguments,
-		renderCall(args: unknown, theme: RenderTheme, context: ToolRenderContextLike) {
+		renderCall(args, theme, context) {
 			return renderHleditCall("read_anchors", args, theme, context);
 		},
-		renderResult(result: TextResult, options: ToolRenderResultOptions, theme: RenderTheme, context: ToolRenderContextLike) {
+		renderResult(result, options, theme, context) {
 			return renderReadAnchorsResult(result, options, theme, context);
 		},
-		async execute(
-			_toolCallId: string,
-			params: ReadAnchorsParams,
-			signal: AbortSignal | undefined,
-			_onUpdate: AgentToolUpdateCallback<unknown> | undefined,
-			ctx: ExtensionContext,
-		): Promise<TextResult> {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx): Promise<TextResult> {
 
 			const result = await runReadAnchorsTransaction(params, ctx.cwd, signal, readEvidence, runHledit);
 			synchronizeAnchoredTools();
 			return result;
 		},
-	}) as never);
+	});
 
-	pi.registerTool(({
+	pi.registerTool<typeof HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, TextResult["details"]>({
 		name: HLEDIT_SEARCH_ANCHORS_TOOL,
 		label: "Search Anchors",
 		description: "Search one text file (not a directory) for literal text or RE2 matches.",
 		promptGuidelines: [
-			"Use hledit_search_anchors on one file, never a directory; enumerate files first for project-wide search. Use it to locate matching lines, not to inspect broad contiguous text; use hledit_read_anchors for that. Zero-match or truncated results do not prove unseen lines.",
+			"Use hledit_search_anchors on one file, never a directory; enumerate files first for project-wide search. Use it to locate matching lines, not to inspect broad contiguous text; use hledit_read_anchors for that. Only returned complete, non-truncated lines provide proof; read any range gaps. A zero-match search clears prior proof for that path.",
 		],
 		parameters: HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
 		prepareArguments: prepareSearchAnchorsArguments,
-		renderCall(args: unknown, theme: RenderTheme, context: ToolRenderContextLike) {
+		renderCall(args, theme, context) {
 			return renderHleditCall("search_anchors", args, theme, context);
 		},
-		renderResult(result: TextResult, options: ToolRenderResultOptions, theme: RenderTheme, context: ToolRenderContextLike) {
+		renderResult(result, options, theme, context) {
 			return renderReadAnchorsResult(result, options, theme, context);
 		},
-		async execute(
-			_toolCallId: string,
-			params: SearchAnchorsParams,
-			signal: AbortSignal | undefined,
-			_onUpdate: AgentToolUpdateCallback<unknown> | undefined,
-			ctx: ExtensionContext,
-		): Promise<TextResult> {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx): Promise<TextResult> {
 			const result = await runSearchAnchorsTransaction(params, ctx.cwd, signal, readEvidence, runHledit);
 			synchronizeAnchoredTools();
 			return result;
 		},
-	}) as never);
+	});
 
-	pi.registerTool(({
+	pi.registerTool<typeof HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, TextResult["details"]>({
 		name: HLEDIT_APPLY_FILE_CHANGES_TOOL,
 		label: "Apply File Changes",
-		description: "Atomically apply one non-overlapping edit batch using boundary anchors and complete read proof.",
+		description: "Atomically edit one text file with non-overlapping inclusive ranges or before/after anchor inserts; requires complete read proof.",
 		promptGuidelines: [
-			"Use hledit_apply_file_changes with proof_id from the latest successful hledit_read_anchors or hledit_search_anchors result for that path and only current LN#HASH tokens from that proof. A zero-match search invalidates proof; a failed read creates none.",
-			"In hledit_apply_file_changes.lines, use raw text without LN#HASH prefixes: \\n separates lines; one trailing \\n terminates the last line, and an empty string writes one blank line. Never overwrite a nonempty readable file with write.",
+			"Use hledit_apply_file_changes with the latest proof_id returned for that path and current LN#HASH tokens. After rereading, use the latest successful hledit_read_anchors or hledit_search_anchors result (last page); a failed read creates no proof. A successful apply may return proof_id for further edits with verified updated anchors.",
+			"In hledit_apply_file_changes.lines, use raw text without LN#HASH prefixes: \\n separates lines; one trailing \\n terminates the last line, and an empty string writes one blank line. For targeted edits, do not use write to bypass read proof; use write only for a new/empty file or an intentional complete-file rewrite when the recovery guidance allows it.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
-		renderCall(args: unknown, theme: RenderTheme, context: ToolRenderContextLike) {
+		renderCall(args, theme, context) {
 			return renderHleditCall("apply_file_changes", args, theme, context);
 		},
-		renderResult(result: TextResult, options: ToolRenderResultOptions, theme: RenderTheme, context: ToolRenderContextLike) {
+		renderResult(result, options, theme, context) {
 			return renderFileChangesResult(result, options, theme, context);
 		},
-		async execute(
-			_toolCallId: string,
-			params: FileChangeInput,
-			signal: AbortSignal | undefined,
-			_onUpdate: AgentToolUpdateCallback<unknown> | undefined,
-			ctx: ExtensionContext,
-		): Promise<TextResult> {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx): Promise<TextResult> {
 			const decoded = decodeFileChangeInput(params);
 			if ("error" in decoded) {
 				return rejectedToolResult(decoded.error, { code: "invalid", message: decoded.error });
@@ -375,7 +359,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			synchronizeAnchoredTools();
 			return result;
 		},
-	}) as never);
+	});
 
 	pi.on("tool_result", (event) => {
 		// D6/2.2：实时结果的 evidence 只由 execute 路径在 mutation queue 内应用一次；

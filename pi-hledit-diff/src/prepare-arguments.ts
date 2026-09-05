@@ -82,7 +82,8 @@ export function decodeFileChangeInput(input: FileChangeDecodeInput): FileChangeI
 			changes.push(change);
 			continue;
 		}
-		const lines = change.lines.split(/\r\n|\r|\n/);
+		// [喵喵喵]: 与 CLI 文件解析一致：孤立 CR 是正文，只有 LF/CRLF 分隔行。(2026-09-05)
+		const lines = change.lines.split(/\r?\n/);
 		// 一个尾换行只终止末行；空字符串仍代表一行空文本。
 		if (lines.length > 1 && lines.at(-1) === "") lines.pop();
 		for (const [index, line] of lines.entries()) {

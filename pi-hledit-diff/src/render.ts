@@ -1,4 +1,4 @@
-import { keyHint, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import { keyHint, type AgentToolResult, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, hyperlink, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,17 +12,17 @@ import {
 import { fileChangeLineRanges } from "./file-changes.ts";
 import { DEFAULT_READ_LIMIT, normalizeToolPath } from "./read-args.ts";
 import { parseAnchorContext } from "./post-edit-context.ts";
-import { createHighlightedTextCache } from "./syntax-highlight.ts";
+import { createHighlightedTextCache, escapeTerminalControls } from "./syntax-highlight.ts";
 import type { HleditReadMetadata, HleditToolKind, TextResult } from "./result.ts";
 
 export type RenderComponent = HleditRenderComponent;
 export type RenderTheme = HleditRenderTheme;
+type RenderResult = AgentToolResult<TextResult["details"]>;
 
 export type ToolRenderContextLike = {
     args?: unknown;
     isError?: boolean;
     cwd?: string;
-    [key: string]: unknown;
 };
 
 type AnchoredSourceLine = {
@@ -37,7 +37,7 @@ type ParsedAnchoredOutput = {
 };
 
 // hash 字符集必须与 CLI anchorHashAlphabet 一致（URL-safe Base64，含 - 和 _）。
-const ANCHORED_SOURCE_LINE = /^(\d+#[A-Za-z0-9_-]+):(.*)$/;
+const ANCHORED_SOURCE_LINE = /^(\d+#[A-Za-z0-9_-]+):(.*)$/s;
 const COLLAPSED_ANCHOR_LINES = 12;
 
 function expandHint(): string {
@@ -81,9 +81,9 @@ function component(renderLines: (width: number) => string[], onInvalidate?: () =
     };
 }
 
-function getText(result: TextResult): string {
+function getText(result: RenderResult): string {
     const first = result.content[0];
-    return typeof first?.text === "string" ? first.text : "";
+    return first?.type === "text" ? first.text : "";
 }
 
 function pathFromContext(context: ToolRenderContextLike): string | undefined {
@@ -104,7 +104,7 @@ function linkedToolPath(styledPath: string, path: string, context: ToolRenderCon
 function parseAnchoredOutput(text: string): ParsedAnchoredOutput {
     const lines: AnchoredSourceLine[] = [];
     const notices: string[] = [];
-    for (const rawLine of text.replace(/\r/g, "").split("\n")) {
+    for (const rawLine of text.split("\n")) {
         const match = ANCHORED_SOURCE_LINE.exec(rawLine);
         if (match) {
             const anchor = match[1] ?? "";
@@ -137,7 +137,7 @@ type ReadRenderState = {
     legacyNotices: string[];
 };
 
-function readRenderState(result: TextResult): ReadRenderState {
+function readRenderState(result: RenderResult): ReadRenderState {
     const read = result.details.read as HleditReadMetadata | undefined;
     if (read) {
         return {
@@ -193,16 +193,16 @@ function createAnchoredSourceRowsComponent(
     });
 }
 
-function renderFailure(result: TextResult, expanded: boolean, theme: RenderTheme): RenderComponent {
+function renderFailure(result: RenderResult, expanded: boolean, theme: RenderTheme): RenderComponent {
     const rawLines = getText(result).split(/\r?\n/).filter(Boolean);
     const first = rawLines[0] ?? "Tool execution failed.";
     const structuredMessage = result.details.error?.message;
     const reasonLine = rawLines.find((line) => line.startsWith("Reason:") || line.startsWith("Message:"));
     const fallbackReason = reasonLine?.replace(/^(?:Reason:|Message:\s*)/, "") ?? rawLines[1];
-    const summary = structuredMessage ?? (fallbackReason ? `${first} ${fallbackReason}` : first);
+    const summary = escapeTerminalControls(structuredMessage ?? (fallbackReason ? `${first} ${fallbackReason}` : first));
     return component((width) => {
         if (!expanded) return [truncateToWidth(theme.fg("error", `× ${summary}`), width, "")];
-        return rawLines.map((line, index) => truncateToWidth(theme.fg(index === 0 ? "error" : "muted", index === 0 ? `× ${line}` : `  ${line}`), width, ""));
+        return rawLines.map((line, index) => truncateToWidth(theme.fg(index === 0 ? "error" : "muted", `${index === 0 ? "×" : " "} ${escapeTerminalControls(line)}`), width, ""));
     });
 }
 
@@ -227,7 +227,7 @@ export function renderHleditCall(
     const searchContext = kind === "search_anchors" && typeof input.context === "number" && Number.isInteger(input.context) && input.context > 0 ? input.context : undefined;
     const titleText = kind === "read_anchors" ? "read for edit" : kind === "search_anchors" ? "search anchors" : "apply changes";
     const title = theme.fg("toolTitle", theme.bold(titleText));
-    const styledPath = path ? linkedToolPath(theme.fg("accent", path), path, context) : undefined;
+    const styledPath = path ? linkedToolPath(theme.fg("accent", escapeTerminalControls(path)), path, context) : undefined;
     const target = styledPath ? styledPath + (range ? theme.fg("warning", `:${range}`) : "") : theme.fg("dim", "…");
     let suffix = "";
     if (operationCount !== undefined) {
@@ -240,13 +240,13 @@ export function renderHleditCall(
             offset === undefined || offset === 1 ? "" : `从第 ${offset} 行开始`,
             limit === undefined ? "" : `最多 ${limit} 行`,
         ].filter(Boolean);
-        suffix = theme.fg("muted", ` ${patternLiteral ? "包含" : "匹配"} ${JSON.stringify(pattern)}${options.length === 0 ? "" : `（${options.join("；")}）`}`);
+        suffix = theme.fg("muted", ` ${patternLiteral ? "包含" : "匹配"} ${escapeTerminalControls(JSON.stringify(pattern))}${options.length === 0 ? "" : `（${options.join("；")}）`}`);
     }
     return component((width) => [truncateToWidth(`${title} ${target}${suffix}`, width, "")]);
 }
 
 export function renderReadAnchorsResult(
-    result: TextResult,
+    result: RenderResult,
     options: ToolRenderResultOptions,
     theme: RenderTheme,
     context: ToolRenderContextLike,
@@ -304,7 +304,7 @@ export function renderReadAnchorsResult(
     }, () => sourceRowsComponent.invalidate());
 }
 
-function successfulChangeSummary(result: TextResult, theme: RenderTheme): string {
+function successfulChangeSummary(result: RenderResult, theme: RenderTheme): string {
     if (result.details.contentChanged === false) {
         const edits = typeof result.details.editsApplied === "number" ? result.details.editsApplied : undefined;
         const checked = edits === undefined ? "无需修改" : `无需修改 • 已检查 ${edits} 项操作`;
@@ -328,7 +328,7 @@ function successfulChangeSummary(result: TextResult, theme: RenderTheme): string
 }
 
 export function renderFileChangesResult(
-    result: TextResult,
+    result: RenderResult,
     options: ToolRenderResultOptions,
     theme: RenderTheme,
     context: ToolRenderContextLike,
@@ -392,10 +392,10 @@ export function renderFileChangesResult(
             }
         }
         if (diffWarning) {
-            lines.push(truncateToWidth(theme.fg("warning", `差异警告：${diffWarning}`), width, ""));
+            lines.push(truncateToWidth(theme.fg("warning", `差异警告：${escapeTerminalControls(diffWarning)}`), width, ""));
         }
         for (const warning of writeWarnings) {
-            lines.push(truncateToWidth(theme.fg("warning", `写入警告：${warning}`), width, ""));
+            lines.push(truncateToWidth(theme.fg("warning", `写入警告：${escapeTerminalControls(warning)}`), width, ""));
         }
         return lines;
     }, () => {

@@ -400,9 +400,9 @@ export function formatReadProofFailure(path: string, failure: ReadProofFailure):
 	const readInstruction = lastSuggestedLine < lastLine
 		? `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: ${limit} }) first, then continue with nextOffset until line ${lastLine} is covered.`
 		: `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: ${limit} }) first and confirm ${completionTarget}.`;
-	const resubmitInstruction = renames.length > 0
-		? "After the read succeeds, resubmit the original hledit_apply_file_changes call with every listed anchor rename applied."
-		: "After the read succeeds, resubmit the original hledit_apply_file_changes call.";
+	const resubmitInstruction = "After the read succeeds, use proof_id from the latest successful read page and current anchors"
+		+ (renames.length > 0 ? ", apply every listed anchor rename" : "")
+		+ ", then resubmit the hledit_apply_file_changes batch.";
 	lines.push(readInstruction, resubmitInstruction);
 	return lines.join("\n");
 }
@@ -617,13 +617,15 @@ export class ReadEvidenceStore {
 		const remappedAmbiguousTokens = this.addTokenReuseAmbiguities(lines, renames, evidence.ambiguousTokens);
 		// 被消费或失联的 token 失去原身份；持续保留到显式 read，捕获延迟重新占用。
 		for (const token of tokensNeedingDisambiguation) remappedAmbiguousTokens.add(token);
+		// [喵喵喵]: 消费全部已读行只是 remap 的中间态；保留 generation 与歧义，
+		// 由同一事务随后的 updatedAnchors 合并或容量淘汰决定最终状态。(2026-09-05)
 		const retained = this.storeEvidence(path, {
 			revision: newRevision,
 			proofId: evidence.proofId,
 			lines,
 			renames,
 			ambiguousTokens: remappedAmbiguousTokens,
-		});
+		}, true);
 		return { tokensNeedingDisambiguation, capacityExceeded: !retained };
 	}
 
@@ -675,6 +677,10 @@ export class ReadEvidenceStore {
 			return;
 		}
 		this.recordUpdatedAnchors(path, currentRevision, currentAnchors);
+	}
+
+	getProofId(path: string): string | undefined {
+		return this.files.get(path)?.proofId;
 	}
 
 	selectProof(path: string, changes: FileChangeParams["changes"], proofId?: string): ReadProofSelection {

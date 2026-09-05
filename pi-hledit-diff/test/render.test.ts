@@ -540,3 +540,115 @@ test("renderFileChangesResult shows a durability warning", () => {
 		"写入警告：文件内容已成功替换，但目录元数据未能同步；断电等极端场景下，持久性保证可能降低。",
 	]);
 });
+
+
+test("collapsed diffs only color visible rows while keeping complete summary counts", () => {
+	const diff = Array.from({ length: 2_000 }, (_, index) => `+${index + 1} value-${index}`).join("\n");
+	let calls = 0;
+	const countingTheme: RenderTheme = { ...theme, fg: (_name, text) => { calls++; return text; } };
+	const component = renderStandaloneDiff(diff, "notes.txt", false, countingTheme)!;
+	for (const width of [80, 120]) {
+		calls = 0;
+		const rows = component.render(width);
+		assert.match(rows[0]!, /\+2000/);
+		assert.ok(rows.some((line) => line.includes("展开")));
+		assert.ok(rows.length <= 29);
+		assert.ok(rows.every((line) => visibleWidth(line) <= width));
+		assert.ok(calls < 200, `${calls} color calls for ${rows.length} visible rows`);
+		assert.strictEqual(component.render(width), rows);
+	}
+});
+
+test("a long first diff row only colors visible wrapped fragments", () => {
+	let calls = 0;
+	const countingTheme: RenderTheme = { ...theme, fg: (_name, text) => { calls++; return text; } };
+	const component = renderStandaloneDiff(`+1 ${"x".repeat(8_000)}`, "notes.txt", false, countingTheme)!;
+	for (const width of [80, 120]) {
+		calls = 0;
+		const rows = component.render(width);
+		assert.ok(rows.some((line) => line.includes("展开")));
+		assert.ok(rows.length <= 29);
+		assert.ok(rows.every((line) => visibleWidth(line) <= width));
+		assert.ok(calls < 200, `${calls} color calls for a wrapped row`);
+	}
+});
+
+
+test("long highlighted diff rows keep wrapping bounded by the visible row budget", () => {
+	const source = `+1 const value = ${"x".repeat(32_000)}`;
+	const component = renderStandaloneDiff(source, "sample.ts", false, theme)!;
+	for (const width of [80, 120]) {
+		const rows = component.render(width);
+		assert.ok(rows.some((line) => line.includes("展开")));
+		assert.ok(rows.length <= 29);
+		assert.ok(rows.every((line) => visibleWidth(line) <= width));
+	}
+});
+
+test("source controls are visibly escaped in reads, diffs and updated anchors without changing details", () => {
+	const payload = "// safe\x1b[2J\x1b]52;c;VEVTVA==\x07\x9b2J\rtail\x08\x7f";
+	const result: TextResult = {
+		content: [{ type: "text", text: `1#AAA:${payload}` }],
+		details: {
+			disposition: "succeeded",
+			changePreview: { truncated: false, lines: [{ kind: "add", newLine: 1, text: payload, changeIndex: 0 }] },
+			updatedAnchors: { lines: [{ line: 1, anchor: "1#AAA", text: payload, textTruncated: false }], offset: 1, limit: 1, desiredLimit: 1, truncated: false },
+		},
+	};
+	const original = JSON.stringify(result);
+	for (const path of ["notes.txt", "sample.ts"]) {
+		const components = [
+			renderReadAnchorsResult(result, options(true), theme, { args: { path } }),
+			renderFileChangesResult(result, options(true), coloredTheme, { args: { path } }),
+			renderStandaloneDiff(`+1 ${payload}`, path, true, theme)!,
+		];
+		for (const component of components) {
+			const output = component.render(240).join("\n");
+			assert.doesNotMatch(output, /\x1b\[2J|\x1b\]52|[\x07\x08\x0d\x7f-\x9f]/);
+			assert.ok(output.includes("\\x1b"));
+			assert.ok(output.includes("\\x0d"));
+		}
+	}
+	assert.equal(JSON.stringify(result), original);
+});
+
+test("terminal controls are escaped in paths, patterns, errors, warnings and diff metadata", () => {
+	const payload = "\x1b[2J\x1b]52;c;VEVTVA==\x07\x9b2J";
+	const failure: TextResult = {
+		content: [{ type: "text", text: payload }],
+		details: { disposition: "rejected", error: { code: "io", message: payload } },
+	};
+	const success: TextResult = {
+		content: [{ type: "text", text: "Changes applied." }],
+		details: { disposition: "succeeded", warnings: [payload], previewError: payload },
+	};
+	const components = [
+		renderHleditCall("search_anchors", { path: `${payload}.txt`, pattern: payload }, theme),
+		renderReadAnchorsResult(failure, options(), theme, {}),
+		renderReadAnchorsResult(failure, options(true), theme, {}),
+		renderFileChangesResult(success, options(true), theme, {}),
+		renderStandaloneDiff(payload, "notes.txt", true, theme)!,
+	];
+	for (const component of components) {
+		const output = component.render(240).join("\n");
+		assert.doesNotMatch(output, /\x1b|[\x07\x7f-\x9f]/);
+		assert.match(output, /\\x1b/);
+	}
+});
+
+
+test("diff line limits only show continuation when a row is actually hidden", () => {
+	for (const expanded of [false, true]) {
+		const limit = expanded ? 2_000 : 24;
+		for (const width of [80, 120]) {
+			const sourceLines = limit - (width >= 120 ? 2 : 0);
+			const exact = Array.from({ length: sourceLines }, (_, index) => `+${index + 1} value`).join("\n");
+			const exactRows = renderStandaloneDiff(exact, "notes.txt", expanded, theme)!.render(width);
+			assert.equal(exactRows.length, limit + 3);
+			assert.ok(exactRows.every((line) => !line.includes("更多差异")));
+			const overflowing = renderStandaloneDiff(`${exact}\n+${sourceLines + 1} extra`, "notes.txt", expanded, theme)!.render(width);
+			assert.equal(overflowing.length, limit + 5);
+			assert.ok(overflowing.some((line) => line.includes("更多差异")));
+		}
+	}
+});

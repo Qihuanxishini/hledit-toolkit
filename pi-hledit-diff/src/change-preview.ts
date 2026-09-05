@@ -33,19 +33,29 @@ type PreviewBlock = {
 	newLines: string[];
 };
 
-const BLOCK_DIFF_LINE = /^([ +\-])\s*(\d+)\s(.*)$/;
+const BLOCK_DIFF_LINE = /^([ +\-])\s*(\d+)\s(.*)$/s;
 
-// 单块内部最小 diff：复用 generateDiffString(contextLines=0) 并把块内相对行号
-// 平移回文件坐标。旧块/新块之一为空时直接展开，不经过 diff。
-function appendBlockLines(target: ChangePreviewLine[], block: PreviewBlock, newStart: number): void {
-	if (block.oldLines.length === 0) {
-		block.newLines.forEach((text, index) => target.push({ kind: "add", newLine: newStart + index, text, changeIndex: block.changeIndex }));
-		return;
-	}
-	if (block.newLines.length === 0) {
+// [喵喵喵]: 受控简化 — 每次 apply 的最小 diff 累计输入不超过 2000 行/256 KiB；
+// 超限块直接展开旧/新行，再按输出预算保留首尾。预算内仍出现卡顿时升级为可中断 diff。
+function appendBlockLines(
+	target: ChangePreviewLine[],
+	block: PreviewBlock,
+	newStart: number,
+	remainingDiffInput: { lines: number; bytes: number },
+): boolean {
+	const isReplacement = block.oldLines.length > 0 && block.newLines.length > 0;
+	const inputLines = block.oldLines.length + block.newLines.length;
+	const inputBytes = isReplacement && inputLines <= remainingDiffInput.lines
+		? block.oldLines.reduce((bytes, text) => bytes + Buffer.byteLength(text, "utf8") + 1, 0)
+			+ block.newLines.reduce((bytes, text) => bytes + Buffer.byteLength(text, "utf8") + 1, 0)
+		: Infinity;
+	if (!isReplacement || inputLines > remainingDiffInput.lines || inputBytes > remainingDiffInput.bytes) {
 		block.oldLines.forEach((text, index) => target.push({ kind: "remove", oldLine: block.oldStart + index, text, changeIndex: block.changeIndex }));
-		return;
+		block.newLines.forEach((text, index) => target.push({ kind: "add", newLine: newStart + index, text, changeIndex: block.changeIndex }));
+		return isReplacement;
 	}
+	remainingDiffInput.lines -= inputLines;
+	remainingDiffInput.bytes -= inputBytes;
 	const blockDiff = generateDiffString(`${block.oldLines.join("\n")}\n`, `${block.newLines.join("\n")}\n`, 0).diff;
 	for (const rawLine of blockDiff.split("\n")) {
 		const match = BLOCK_DIFF_LINE.exec(rawLine);
@@ -66,6 +76,7 @@ function appendBlockLines(target: ChangePreviewLine[], block: PreviewBlock, newS
 			});
 		}
 	}
+	return false;
 }
 
 const PREVIEW_LINE_TRUNCATION_MARKER = " … [preview line truncated] … ";
@@ -152,12 +163,15 @@ function previewFromBlocks(blocks: PreviewBlock[]): VerifiedChangePreview {
 		(left.oldStart + left.oldLines.length) - (right.oldStart + right.oldLines.length),
 	);
 	const lines: ChangePreviewLine[] = [];
+	const remainingDiffInput = { lines: MAX_PREVIEW_LINES, bytes: MAX_PREVIEW_BYTES };
+	let truncated = false;
 	let shift = 0;
 	for (const block of ordered) {
-		appendBlockLines(lines, block, block.oldStart + shift);
+		if (appendBlockLines(lines, block, block.oldStart + shift, remainingDiffInput)) truncated = true;
 		shift += block.newLines.length - block.oldLines.length;
 	}
-	return capPreviewLines(lines);
+	const preview = capPreviewLines(lines);
+	return truncated ? { ...preview, truncated: true } : preview;
 }
 
 // anchored apply：每个 change 的旧行必须能从同 revision 消费行证据完整取出；

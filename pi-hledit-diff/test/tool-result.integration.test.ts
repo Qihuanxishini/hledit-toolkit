@@ -29,6 +29,7 @@ function registerExtensionForTest(): {
 } {
 	const registeredTools = new Map<string, RegisteredTool>();
 	const eventListeners = new Map<string, ExtensionEventListener>();
+	let activeTools = ["read", "edit", "bash"];
 	const pi = {
 		registerTool(tool: RegisteredTool) {
 			registeredTools.set(tool.name, tool);
@@ -36,6 +37,12 @@ function registerExtensionForTest(): {
 		registerCommand() {},
 		on(eventName: string, listener: ExtensionEventListener) {
 			eventListeners.set(eventName, listener);
+		},
+		getActiveTools() {
+			return [...activeTools];
+		},
+		setActiveTools(next: string[]) {
+			activeTools = [...next];
 		},
 	};
 
@@ -95,15 +102,16 @@ test("registered tool metadata stays concise and names each flattened guideline"
 	assert.match(readGuidelines, /Copy only LN#HASH tokens[\s\S]*hidden proof carries interior lines/);
 	assert.match(searchTool.description, /literal text[\s\S]*RE2 matches/);
 	assert.match(searchGuidelines, /locate matching lines[\s\S]*not to inspect broad contiguous text[\s\S]*hledit_read_anchors/);
-	assert.match(searchGuidelines, /Zero-match or truncated results do not prove unseen lines/);
-	assert.match(applyTool.description, /boundary anchors[\s\S]*complete read proof/);
-	assert.match(applyGuidelines, /proof_id from the latest successful hledit_read_anchors or hledit_search_anchors result for that path/);
-	assert.match(applyGuidelines, /zero-match search invalidates proof[\s\S]*failed read creates none/);
+	assert.match(searchGuidelines, /Only returned complete, non-truncated lines provide proof[\s\S]*zero-match search clears prior proof/);
+	assert.match(applyTool.description, /non-overlapping inclusive ranges[\s\S]*complete read proof/);
+	assert.match(applyGuidelines, /latest proof_id returned for that path[\s\S]*current LN#HASH tokens/);
+	assert.match(applyGuidelines, /After rereading[\s\S]*latest successful hledit_read_anchors or hledit_search_anchors result[\s\S]*last page/);
+	assert.match(applyGuidelines, /failed read creates no proof/);
 	assert.match(applyGuidelines, /raw text without LN#HASH prefixes[\s\S]*\\n separates lines[\s\S]*one blank line/);
-	assert.match(applyGuidelines, /Never overwrite a nonempty readable file with write/);
+	assert.match(applyGuidelines, /For targeted edits[\s\S]*write only for a new\/empty file[\s\S]*complete-file rewrite/);
 	const applySchema = JSON.stringify(applyTool.parameters);
-	assert.match(applySchema, /latest successful read\/search result for this path/);
-	assert.match(applySchema, /New text; \\\\n separates lines\./i);
+	assert.match(applySchema, /Current proof_id returned for this path[\s\S]*latest read\/search/);
+	assert.ok(applySchema.includes(JSON.stringify("Raw text; \\n separates lines; no LN#HASH prefixes.")));
 
 	assert.match(searchTool.description, /one text file[\s\S]*not a directory/i);
 	assert.match(searchGuidelines, /one file[\s\S]*never a directory[\s\S]*enumerate files first[\s\S]*project-wide search/);
@@ -259,6 +267,8 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 	const resultText = applyResult.content[0]?.text ?? "";
 	assert.match(resultText, /^Applied 1 change; line delta: \+1 -1\.\n\nUpdated anchors:\n/);
 	assert.match(resultText, /TWO/);
+	assert.equal(applyResult.details.proofId, readResult.details.proofId);
+	assert.equal(resultText.split("\n").at(-1), `proof_id: ${readResult.details.proofId}`);
 	assert.equal(resultText.match(/^Updated anchors:$/gm)?.length, 1);
 	assert.ok(resultText.length < 250);
 	assert.doesNotMatch(resultText, /Later changes inside this window/);
@@ -295,6 +305,8 @@ test("apply tool reports a no-op without touching the target", async (t) => {
 	assert.equal(applyResult.details.disposition, "succeeded");
 	assert.equal(applyResult.details.contentChanged, false);
 	assert.match(applyResult.content[0]?.text ?? "", /No changes were needed/);
+	assert.equal(applyResult.details.proofId, readResult.details.proofId);
+	assert.equal(applyResult.content[0]?.text.split("\n").at(-1), `proof_id: ${readResult.details.proofId}`);
 	assert.equal(after.mtimeMs, before.mtimeMs);
 });
 
@@ -327,7 +339,7 @@ test("apply tool accepts byte-truncated updated anchor contexts", async (t) => {
 	// 同时 details 仍保留 CLI 的完整截断窗口供 evidence 与 TUI 使用。
 	const updatedLine = applyResult.details.updatedAnchors?.lines.find((line) => line.line === 5);
 	assert.ok(updatedLine);
-	assert.equal(applyResult.content[0]?.text ?? "", `Applied 1 change; line delta: +1 -1.\n\nUpdated anchors:\n${updatedLine.anchor}:CHANGED`);
+	assert.equal(applyResult.content[0]?.text ?? "", `Applied 1 change; line delta: +1 -1.\n\nUpdated anchors:\n${updatedLine.anchor}:CHANGED\n\nproof_id: ${readResult.details.proofId}`);
 	assert.equal(applyResult.details.updatedAnchors?.truncated, true);
 	assert.ok((applyResult.details.updatedAnchors?.lines.length ?? 0) > 1);
 	assert.equal((await readFile(target, "utf8")).split(/\r?\n/)[4], "CHANGED");
@@ -406,6 +418,8 @@ test("apply tool deleting the only line leaves an empty file", async (t) => {
 
 	assert.equal(applyResult.details.disposition, "succeeded");
 	assert.match(applyResult.content[0]?.text ?? "", /\(the file is empty\)/);
+	assert.equal(applyResult.details.proofId, undefined);
+	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /^proof_id:/m);
 	assert.equal(await readFile(target, "utf8"), "");
 });
 
@@ -603,6 +617,83 @@ test("proof recovery stops on source-line truncation", async (t) => {
 	assert.equal(await readFile(target, "utf8"), original);
 });
 
+test("truncated recovery preserves its source budget and proof across session replay", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL)!;
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-truncated-budget-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	const original = `top\n${"x".repeat(49 * 1024)}\n${"中🙂".repeat(16_000)}\nbottom\n`;
+	await writeFile(target, original);
+	const context = { cwd: directory };
+	const first = await readTool.execute("first", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
+	const last = await readTool.execute("last", { path: "target.txt", offset: 4, limit: 1 } as never, undefined, undefined, context);
+	const apply = await applyTool.execute("apply", {
+		path: "target.txt", proof_id: last.details.proofId,
+		changes: [{ operation: "replace_range", start_anchor: first.details.read!.lines[0]!.anchor, end_anchor: last.details.read!.lines[0]!.anchor, lines: "replacement" }],
+	} as never, undefined, undefined, context);
+	assert.equal(apply.details.error?.code, "source_line_truncated");
+	assert.equal(apply.details.recoveredReads?.length, 1);
+	assert.deepEqual(apply.details.recoveredRead?.lines.map((line) => line.line), [1, 2]);
+	const text = apply.content[0]!.text;
+	const proofId = /^proof_id: (\S+)$/m.exec(text)?.[1];
+	assert.ok(proofId);
+	assert.equal(proofId, apply.details.proofId);
+	assert.deepEqual(text.split("\n").filter((line) => line.startsWith("proof_id:")), [`proof_id: ${proofId}`]);
+	const sourceStart = text.indexOf(formatReadMetadata(apply.details.recoveredReads![0]!));
+	assert.ok(sourceStart >= 0);
+	assert.ok(Buffer.byteLength(text.slice(sourceStart), "utf8") <= MAX_RECOVERY_TEXT_BYTES);
+	assert.equal(Buffer.from(text, "utf8").toString("utf8"), text);
+	assert.match(text, /Do not resubmit this hledit_apply_file_changes call/);
+	assert.equal(await readFile(target, "utf8"), original);
+
+	// [喵喵喵]: 新实例先初始化空分支，再通过 session_tree 恢复，确保续编只能依赖重放的证据。
+	const restored = registerExtensionForTest();
+	const restoredApply = restored.registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
+	const emptyContext = { ...context, hasUI: false, sessionManager: { getBranch: () => [] } };
+	await restored.eventListeners.get("session_start")!({ reason: "startup" } as never, emptyContext as never);
+	const retained = apply.details.recoveredRead!.lines.find((line) => line.line === 2)!;
+	const continuationParams = {
+		path: "target.txt", proof_id: proofId,
+		changes: [{ operation: "replace_range", start_anchor: retained.anchor, end_anchor: retained.anchor, lines: "short" }],
+	};
+	const beforeReplay = await restoredApply.execute("before-replay", continuationParams as never, undefined, undefined, emptyContext);
+	assert.equal(beforeReplay.details.error?.code, "invalid_proof_id");
+	assert.equal(await readFile(target, "utf8"), original);
+
+	const branch = JSON.parse(JSON.stringify([
+		{ type: "message", message: { role: "toolResult", toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL, details: apply.details } },
+	]));
+	const restoredContext = { ...context, hasUI: false, sessionManager: { getBranch: () => branch } };
+	await restored.eventListeners.get("session_tree")!({} as never, restoredContext as never);
+	const continuation = await restoredApply.execute("continue", continuationParams as never, undefined, undefined, restoredContext);
+	assert.equal(continuation.details.disposition, "succeeded");
+	assert.equal(continuation.details.proofId, proofId);
+	assert.equal(await readFile(target, "utf8"), original.replace("x".repeat(49 * 1024), "short"));
+});
+
+test("successive single-line edits preserve proof identity and lone carriage returns", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL)!;
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-proof-continuation-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "a\rb\nkeep\n");
+	const context = { cwd: directory };
+	const read = await readTool.execute("read", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
+	let anchor = read.details.read!.lines[0]!.anchor;
+	for (const lines of ["a\rB", "a\rC"]) {
+		const result = await applyTool.execute("apply", {
+			path: "target.txt", proof_id: read.details.proofId,
+			changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines }],
+		} as never, undefined, undefined, context);
+		assert.equal(result.details.disposition, "succeeded", JSON.stringify(result.details.error));
+		assert.equal(await readFile(target, "utf8"), `${lines}\nkeep\n`);
+		anchor = result.details.updatedAnchors!.lines.find((line) => line.line === 1)!.anchor;
+	}
+});
 test("apply without proof_id rejects before trying to recover a missing target", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
@@ -657,10 +748,8 @@ test("multi-page proof recovery completes internally before apply is retried", a
 	assert.doesNotMatch(recoveryText, /Do not resubmit apply before then/);
 	// 多页补读只有一个权威 proof id；逐页重复输出会让调用方抄到已经作废的那个。
 	const proofIdLines = recoveryText.split("\n").filter((line) => line.startsWith("proof_id:"));
-	assert.equal(proofIdLines.length, 0);
 	assert.ok(apply.details.proofId);
-	assert.equal(recoveryText.match(/Use proof_id: \S+/g)?.length, 1);
-	assert.ok(recoveryText.includes(`Use proof_id: ${apply.details.proofId}`));
+	assert.deepEqual(proofIdLines, [`proof_id: ${apply.details.proofId}`]);
 });
 
 test("an oversized proof gap is refused without reading anything back", async (t) => {
@@ -696,6 +785,7 @@ test("an oversized proof gap is refused without reading anything back", async (t
 	assert.match(text, /spans 2998 lines, above the 1200-line automatic recovery budget/);
 	assert.match(text, /No recovery read was started/);
 	assert.match(text, /Call hledit_read_anchors\(\{ path: "target\.txt", offset: \d+, limit: \d+ \}\)/);
+	assert.match(text, /proof_id from the latest successful read page and current anchors/);
 	// 关键：拒绝的正文里不得夹带任何源码行，否则预算就白设了。
 	assert.doesNotMatch(text, /^\d+#[A-Za-z0-9_-]{3}:/m);
 	assert.equal(await readFile(target, "utf8"), original);
@@ -740,6 +830,9 @@ test("proof recovery stops at its byte budget and keeps the pages it already rea
 	);
 	assert.match(apply.content[0]?.text ?? "", /Automatic recovery stopped at its budget/);
 	assert.match(apply.content[0]?.text ?? "", /page\(s\) already read are recorded below/);
+	assert.ok(apply.details.proofId);
+	assert.equal(/^proof_id: (\S+)$/m.exec(apply.content[0]?.text ?? "")?.[1], apply.details.proofId);
+	assert.match(apply.content[0]?.text ?? "", /proof_id from the latest successful read page and current anchors/);
 	assert.equal(await readFile(target, "utf8"), original);
 });
 

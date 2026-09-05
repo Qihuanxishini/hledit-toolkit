@@ -15,10 +15,16 @@ function resolveLanguage(path: string | undefined): string | undefined {
 	}
 }
 
+// [喵喵喵]: 先可视化不可信文本的 C0/C1/DEL，再添加主题 ANSI；
+// 只改变显示副本，原始内容仍用于 hash、proof 与写入。(2026-09-05)
+export function escapeTerminalControls(text: string): string {
+	return text.replace(/[\x00-\x1f\x7f-\x9f]/g, (character) => `\\x${character.charCodeAt(0).toString(16).padStart(2, "0")}`);
+}
+
 // width 按规范化后的纯文本测量：ANSI 序列本就不占显示宽度，用纯文本测量可以让换行
 // 计算不依赖高亮器的输出形状。高亮失败时降级为纯文本，不影响布局。
 function highlightText(text: string, language: string | undefined): HighlightedText {
-	const normalized = text.replace(/\t/g, "    ");
+	const normalized = escapeTerminalControls(text.replace(/\t/g, "    "));
 	const width = visibleWidth(normalized);
 	if (!language || !normalized) return { text: normalized, width };
 	try {

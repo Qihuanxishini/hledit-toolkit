@@ -27,7 +27,7 @@ import {
 	formatChangeShapeIssue,
 	formatSingleLineRangeExpansionIssue,
 } from "./src/file-changes.ts";
-import { formatBatchUpdatedAnchorContext, type BatchAnchorContext } from "./src/post-edit-context.ts";
+import { formatUpdatedAnchorSpans, parseUpdatedAnchorSpans } from "./src/post-edit-context.ts";
 import { decodeFileChangeInput, prepareReadAnchorsArguments, prepareSearchAnchorsArguments } from "./src/prepare-arguments.ts";
 import {
 	formatReadProofFailure,
@@ -41,9 +41,7 @@ import {
 	applyFileChangesResult,
 	attachEvidencePath,
 	fileChangeCheckFailure,
-	producedLineRangesFromEditDeltas,
 	shouldMarkHleditResultAsError,
-	parseEditDeltas,
 	parseRunObject,
 	rejectedToolResult,
 	type TextResult,
@@ -95,11 +93,9 @@ function finalizeSuccessfulEditResult(
 	changePreview: VerifiedChangePreview | undefined,
 ): TextResult {
 	const parsed = parseRunObject(run)!;
-	const updatedAnchorContext = parsed.updatedAnchors as BatchAnchorContext;
-	const postEditContext = formatBatchUpdatedAnchorContext(
-		updatedAnchorContext,
-		producedLineRangesFromEditDeltas(parseEditDeltas(parsed.editDeltas) ?? []),
-	);
+	// result.ts 已校验span 与 editDeltas 一一对应。
+	const updatedAnchorSpans = parseUpdatedAnchorSpans(parsed.updatedAnchorSpans)!;
+	const postEditContext = formatUpdatedAnchorSpans(updatedAnchorSpans);
 	const modelPostEditContext = result.details.contentChanged === false ? undefined : postEditContext.text;
 
 	return {
@@ -110,12 +106,8 @@ function finalizeSuccessfulEditResult(
 			path: normalizedPath,
 			evidencePath,
 			revision: result.details.revision as string,
-			updatedAnchors: updatedAnchorContext,
-			postEditContext: {
-				offset: postEditContext.offset,
-				limit: postEditContext.limit,
-				truncated: postEditContext.truncated,
-			},
+			updatedAnchorSpans,
+			postEditContext: { truncated: postEditContext.truncated },
 			...(changePreview
 				? { changePreview }
 				: { previewError: "A verified change preview could not be built for this edit; the write itself succeeded." }),
@@ -142,25 +134,6 @@ async function runFileChangesWithDiff(
 	const normalizedPath = normalizeToolPath(params.path);
 	const evidencePath = await resolveReadEvidencePath(ctx.cwd, normalizedPath);
 	const normalizedParams = { ...params, path: normalizedPath };
-	// 请求层自洽性先于 evidence 校验：它不依赖文件状态，且重读无法修复，
-	// 不能让它落到 insufficient_read_proof 的"去重读"指令上。
-	const shapeIssue = findChangeShapeIssue(normalizedParams);
-	if (shapeIssue) {
-		return attachEvidencePath(
-			rejectedToolResult(
-				`The atomic batch was rejected; no content was written.\n${formatChangeShapeIssue(shapeIssue)}`,
-				{
-					code: shapeIssue.code,
-					message: shapeIssue.code === "reversed_anchor_range"
-						? `Change ${shapeIssue.changeNumber} submitted start_anchor ${shapeIssue.startAnchor} below end_anchor ${shapeIssue.endAnchor}; swap them instead of rereading.`
-						: `Change ${shapeIssue.changeNumber} pasted the anchor token ${shapeIssue.anchorToken} into lines; strip the prefix instead of rereading.`,
-					changeNumber: shapeIssue.changeNumber,
-				},
-			),
-			normalizedPath,
-			evidencePath,
-		);
-	}
 	if (!normalizedParams.proof_id) {
 		return attachEvidencePath(
 			rejectedToolResult("The apply request is missing proof_id. Call hledit_read_anchors first and use its returned proof_id.", {
@@ -172,6 +145,26 @@ async function runFileChangesWithDiff(
 		);
 	}
 	const applyWithinQueue = async (): Promise<TextResult> => {
+		// 请求层自洽性先于 evidence 校验：它不依赖文件状态，且重读无法修复，
+		// 不能让它落到 insufficient_read_proof 的"去重读"指令上。锚点前缀检查
+		// 对照当前证据里的全部 token，因此放在队列内读取。
+		const shapeIssue = findChangeShapeIssue(normalizedParams, evidence.anchorTokens(evidencePath));
+		if (shapeIssue) {
+			return attachEvidencePath(
+				rejectedToolResult(
+					`The atomic batch was rejected; no content was written.\n${formatChangeShapeIssue(shapeIssue)}`,
+					{
+						code: shapeIssue.code,
+						message: shapeIssue.code === "reversed_anchor_range"
+							? `Change ${shapeIssue.changeNumber} submitted start_anchor ${shapeIssue.startAnchor} below end_anchor ${shapeIssue.endAnchor}; swap them instead of rereading.`
+							: `Change ${shapeIssue.changeNumber} pasted the anchor token ${shapeIssue.anchorToken} into lines; strip the prefix instead of rereading.`,
+						changeNumber: shapeIssue.changeNumber,
+					},
+				),
+				normalizedPath,
+				evidencePath,
+			);
+		}
 		const proofSelection = evidence.selectProof(evidencePath, normalizedParams.changes, normalizedParams.proof_id);
 		if ("failure" in proofSelection) {
 			if (proofSelection.failure.code !== "invalid_proof_id") {
@@ -291,7 +284,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		description: "Read contiguous text lines with LN#HASH anchors for stale-safe edits.",
 		promptGuidelines: [
 			"Use hledit_read_anchors to obtain contiguous current proof for edits not already covered by successful hledit_search_anchors output or verified updated anchors.",
-			"For replace_range or delete_range, use hledit_read_anchors to cover every source line when current proof is incomplete; sparse endpoints are not proof. Copy only LN#HASH tokens into anchor fields; hidden proof carries interior lines.",
+			"For replace_range or delete_range, cover every source line with hledit_read_anchors when current proof is incomplete; sparse endpoints are not proof.",
 		],
 		parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 		// provider 侧按 schema 约束采样，从源头消除畸形参数；不支持的模型自动回落普通调用。
@@ -316,7 +309,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		label: "Search Anchors",
 		description: "Search one text file (not a directory) for literal text or RE2 matches.",
 		promptGuidelines: [
-			"Use hledit_search_anchors on one file, never a directory; enumerate files first for project-wide search. Use it to locate matching lines, not to inspect broad contiguous text; use hledit_read_anchors for that. Only returned complete, non-truncated lines provide proof; read any range gaps. A zero-match search clears prior proof for that path.",
+			"Use hledit_search_anchors on one file, never a directory; enumerate files first for project-wide search. Use it to locate matching lines, not to inspect broad contiguous text; use hledit_read_anchors for that. Only returned complete, non-truncated lines provide proof; read any range gaps.",
 		],
 		parameters: HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },
@@ -339,7 +332,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		label: "Apply File Changes",
 		description: "Atomically edit one text file with non-overlapping inclusive ranges or before/after anchor inserts; requires complete read proof.",
 		promptGuidelines: [
-			"Use hledit_apply_file_changes with the latest proof_id returned for that path and current LN#HASH tokens. After rereading, use the latest successful hledit_read_anchors or hledit_search_anchors result (last page); a failed read creates no proof. A successful apply may return proof_id for further edits with verified updated anchors.",
+			"Use hledit_apply_file_changes with the latest proof_id returned for that path and current LN#HASH tokens; any proof_id issued for the file's current revision is accepted. A failed read creates no proof. A successful apply may return proof_id for further edits with verified updated anchors.",
 			"In hledit_apply_file_changes.lines, use raw text without LN#HASH prefixes: \\n separates lines; one trailing \\n terminates the last line, and an empty string writes one blank line. For targeted edits, do not use write to bypass read proof; use write only for a new/empty file or an intentional complete-file rewrite when the recovery guidance allows it.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,

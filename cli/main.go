@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-const version = "3.2.0"
+const version = "3.3.0"
 
 // splitArgs lets the small command parsers accept flags before or after
 // positional arguments. A standard -- separator protects flag-like paths and
@@ -160,21 +160,21 @@ func run(argv []string) int {
 
 	case "capabilities":
 		return mustRun(emitJSON(CLICapabilities{
-			OK:                  true,
-			Version:             version,
-			AnchorProtocolV2:    true,
-			BatchInsertAfter:    true,
-			BatchCheck:          true,
-			BatchUpdatedAnchors: true,
-			BatchStaleContext:   true,
-			ReadRangeMetadata:   true,
-			BatchWireV3:         true,
-			BatchReadProof:      true,
-			BatchEditDeltas:     true,
-			SearchIgnoreCase:    true,
-			SearchRegex:         true,
-			SearchLiteral:       true,
-			Search:              true,
+			OK:                      true,
+			Version:                 version,
+			AnchorProtocolV2:        true,
+			BatchInsertAfter:        true,
+			BatchCheck:              true,
+			BatchUpdatedAnchorSpans: true,
+			BatchStaleContext:       true,
+			ReadRangeMetadata:       true,
+			BatchWireV3:             true,
+			BatchReadProof:          true,
+			BatchEditDeltas:         true,
+			SearchIgnoreCase:        true,
+			SearchRegex:             true,
+			SearchLiteral:           true,
+			Search:                  true,
 		}))
 
 	case "-h", "--help", "help":

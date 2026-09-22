@@ -72,12 +72,7 @@ func runBatchApply(path string) error {
 		revision = rawFileRevision(encoded)
 	}
 	result := batchEditResultFromPlan(plan, revision)
-	result.UpdatedAnchors = buildUpdatedAnchorContext(
-		plan.RebuiltLines,
-		plan.FirstChanged,
-		plan.LastChanged,
-		plan.LinesAdded,
-	)
+	result.UpdatedAnchorSpans = buildUpdatedAnchorSpans(plan.RebuiltLines, plan.EditDeltas)
 	if !plan.ContentChanged {
 		return emitJSON(result)
 	}

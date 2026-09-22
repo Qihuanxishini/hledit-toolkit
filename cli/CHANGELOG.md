@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Bump the CLI version to 3.3.0. Successful `batch` responses now return `updatedAnchorSpans`: one context-free span per edit that produced lines, covering exactly that edit's produced range in the new file, sharing an 80-line / 16 KiB budget. Pure deletions produce no span; `--check` returns `null`. The single `updatedAnchors` window (with context lines) and the `batchUpdatedAnchors` capability are removed in favour of `batchUpdatedAnchorSpans`.
 - Reduce the public CLI surface to JSON-only `read-range`, `search`, and `batch`; remove legacy `read`, `anchors`, `replace`, `replace-range`, `insert`, `--grep`, `--json`, and `--pretty` command paths.
 - Add the dedicated `search` verb and `search:true` capability for RE2/literal anchored lookup with context, case folding, `totalMatches`, and physical-line pagination. Broad whole-file regexes are rejected so integrations use contiguous range reads instead.
 - Rename search capabilities to `searchIgnoreCase`, `searchRegex`, and `searchLiteral` to reflect their exclusive ownership by the `search` verb.

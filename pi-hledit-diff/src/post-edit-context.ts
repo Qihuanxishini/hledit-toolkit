@@ -1,6 +1,6 @@
 import { ANCHOR_HASH_PATTERN } from "./file-changes.ts";
 
-// 锚点 token 形状在每个 anchor window 的逐行校验热路径上使用，只编译一次。
+// 锚点 token 形状在每个 anchor span 的逐行校验热路径上使用，只编译一次。
 const ANCHOR_TOKEN_PATTERN = new RegExp(`^(\\d+)#${ANCHOR_HASH_PATTERN}$`);
 
 export type BatchAnchorLine = {
@@ -20,8 +20,6 @@ export type BatchAnchorContext = {
 
 export type PostEditContextResult = {
 	text: string;
-	offset: number;
-	limit: number;
 	truncated: boolean;
 };
 
@@ -73,46 +71,37 @@ export function parseAnchorContext(value: unknown): BatchAnchorContext | undefin
 	return { lines, offset, limit, desiredLimit, truncated: value.truncated };
 }
 
-export function parseBatchUpdatedAnchorContext(parsed: Record<string, unknown> | null): BatchAnchorContext | undefined {
-	return parseAnchorContext(parsed?.updatedAnchors);
+// 成功 batch 的产出 span：每个 span精确覆盖一个编辑在新坐标下写出的区间，按物理顺序
+// 排列且互不重叠。span 与 editDeltas 的一一对应由 result.ts 对照请求校验。
+export function parseUpdatedAnchorSpans(value: unknown): BatchAnchorContext[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const spans: BatchAnchorContext[] = [];
+	let previousEnd = 0;
+	for (const item of value) {
+		const span = parseAnchorContext(item);
+		if (!span || span.desiredLimit < 1 || span.offset <= previousEnd) return undefined;
+		previousEnd = span.offset + span.desiredLimit - 1;
+		spans.push(span);
+	}
+	return spans;
 }
 
 // 一个 change 在新文件坐标下写出的行区间；纯删除什么都没写出，产出空区间（end < start）。
 export type ProducedLineRange = { start: number; end: number };
 
-// 只有落在本次编辑产出区间内的锚点才是模型无法从旧证据推出的新信息：区间外的行
-// 已由 editDeltas 平移与 verified rename 覆盖。CLI 窗口按 firstChanged..lastChanged 取
-// 整段，跨度大的多 change batch 会把截断额度塞满无关上下文，因此模型正文按产出
-// 区间过滤；details.updatedAnchors 仍保留完整窗口供 evidence 与 TUI 使用。
-export function formatBatchUpdatedAnchorContext(
-	context: BatchAnchorContext,
-	producedLineRanges: readonly ProducedLineRange[],
-): PostEditContextResult {
-	// 纯删除的空区间既没新行可展示，也不应因落在窗口外而报不完整。
-	const nonEmptyRanges = producedLineRanges.filter((range) => range.end >= range.start);
-	const producedLines = context.lines.filter((line) =>
-		nonEmptyRanges.some((range) => line.line >= range.start && line.line <= range.end));
-	const windowEnd = context.offset + context.limit - 1;
-	// 只关心产出行本身是否完整可得：CLI 的 context.truncated 只说明上下文行被砍，
-	// 而上下文行本就不再进入模型正文；窗口真的没盖到产出行时，下面的边界比较
-	// 会直接命中（parseAnchorContext 保证 lines 从 offset 起逐行连续且 limit === lines.length）。
-	const incomplete = producedLines.some((line) => line.textTruncated)
-		|| nonEmptyRanges.some((range) => range.start < context.offset || range.end > windowEnd);
+// span 里的行全部是本次编辑新写入的，模型没有任何旧锚点可用，因此整体进入模型正文；
+// 区间外的行已由 editDeltas 平移与 verified rename 覆盖，CLI 不再返回。纯删除没有 span，
+// 不输出 anchor 块；只有 span 被预算截断或产出行文本被截断时才提示不完整。
+export function formatUpdatedAnchorSpans(spans: readonly BatchAnchorContext[]): PostEditContextResult {
+	const producedLines = spans.flatMap((span) => span.lines);
+	const incomplete = spans.some((span) => span.truncated || span.lines.some((line) => line.textTruncated));
 
 	const output: string[] = [];
-	if (context.lines.length === 0) {
-		output.push("Updated anchors:", "(the file is empty)");
-	} else if (producedLines.length > 0) {
+	if (producedLines.length > 0) {
 		output.push("Updated anchors:", ...producedLines.map((line) => `${line.anchor}:${line.text}`));
 	}
 	if (incomplete) {
 		output.push("Updated anchors are incomplete; call hledit_read_anchors for any changed line you need to edit again.");
 	}
-
-	return {
-		text: output.join("\n"),
-		offset: context.offset,
-		limit: context.limit,
-		truncated: incomplete,
-	};
+	return { text: output.join("\n"), truncated: incomplete };
 }

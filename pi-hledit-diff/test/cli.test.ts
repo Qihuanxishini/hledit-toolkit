@@ -6,17 +6,17 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { HLEDIT_MAX_OUTPUT_BYTES, parseHleditCapabilities, resolveHleditBin, runHledit } from "../src/cli.ts";
-import { parseBatchUpdatedAnchorContext } from "../src/post-edit-context.ts";
+import { parseUpdatedAnchorSpans } from "../src/post-edit-context.ts";
 import { applyFileChangesResult } from "../src/result.ts";
 
 // CLI 声明的完整能力集；解析结果只保留 version，其余字段仅用于构造被校验的输入。
 const DECLARED_CAPABILITIES = {
-	version: "3.2.0",
+	version: "3.3.0",
 	anchorProtocolV2: true,
 	readRangeMetadata: true,
 	batchInsertAfter: true,
 	batchCheck: true,
-	batchUpdatedAnchors: true,
+	batchUpdatedAnchorSpans: true,
 	batchStaleContext: true,
 	batchWireV3: true,
 	batchReadProof: true,
@@ -107,9 +107,9 @@ test("bundled batch emits plugin-compatible updated anchors", async (t) => {
 	const applied = await runHledit(["batch", target], request, directory, undefined);
 	assert.equal(applied.exitCode, 0);
 	const parsed = JSON.parse(applied.stdout) as Record<string, unknown>;
-	const updatedAnchors = parseBatchUpdatedAnchorContext(parsed);
+	const updatedAnchors = parseUpdatedAnchorSpans(parsed.updatedAnchorSpans);
 	assert.ok(updatedAnchors);
-	assert.equal(updatedAnchors.lines.some((line) => line.text === "TWO"), true);
+	assert.equal(updatedAnchors.flatMap((window) => window.lines).some((line) => line.text === "TWO"), true);
 	assert.equal(await readFile(target, "utf8"), "one\nTWO\nthree\n");
 });
 

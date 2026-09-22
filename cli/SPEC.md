@@ -34,12 +34,12 @@ The response is the compatibility gate for the Pi extension:
 ```json
 {
   "ok": true,
-  "version": "3.2.0",
+  "version": "3.3.0",
   "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,
   "batchCheck": true,
-  "batchUpdatedAnchors": true,
+  "batchUpdatedAnchorSpans": true,
   "batchStaleContext": true,
   "batchWireV3": true,
   "batchReadProof": true,
@@ -143,7 +143,7 @@ Batch wire v3 has one canonical shape:
 
 All edits are validated against one original snapshot before writing. Conflicting ranges, duplicate insertion boundaries, inserts inside a consumed range, invalid anchors, and stale anchors reject the entire request with zero writes. The planner orders non-conflicting edits by physical boundary and rebuilds the file once.
 
-Success includes the resulting revision, `contentChanged`, aggregate edit statistics, one `editDeltas` entry per request edit, and—except for `--check`—a bounded `updatedAnchors` window:
+Success includes the resulting revision, `contentChanged`, aggregate edit statistics, one `editDeltas` entry per request edit, and—except for `--check`, where it is `null`—`updatedAnchorSpans`: one context-free span per edit that produced lines, in physical order, covering exactly that edit's produced range in the new file. Pure deletions produce no span. The spans share one budget (80 lines / 16 KiB); once it is exhausted, later spans are still emitted with empty `lines` and `truncated:true` so callers can match spans to `editDeltas` one-to-one.
 
 ```json
 {
@@ -152,13 +152,15 @@ Success includes the resulting revision, `contentChanged`, aggregate edit statis
   "contentChanged": true,
   "editsApplied": 1,
   "editDeltas": [{ "oldStart": 12, "oldEnd": 12, "delta": 0 }],
-  "updatedAnchors": {
-    "lines": [{ "line": 12, "anchor": "12#aB3", "text": "updated" }],
-    "offset": 10,
-    "limit": 1,
-    "desiredLimit": 1,
-    "truncated": false
-  }
+  "updatedAnchorSpans": [
+    {
+      "lines": [{ "line": 12, "anchor": "12#aB3", "text": "updated" }],
+      "offset": 12,
+      "limit": 1,
+      "desiredLimit": 1,
+      "truncated": false
+    }
+  ]
 }
 ```
 

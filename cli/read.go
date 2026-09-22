@@ -298,8 +298,10 @@ func appendJSONReadLine(result []ReadLine, byteCount int, lineNum int, line stri
 }
 
 // collectAnnotatedLines gathers full lines unless a single source line exceeds
-// the complete page budget. The final boolean reports only that true line case.
-func collectAnnotatedLines(lines []string, startIdx, maxLines, maxBytes int) ([]ReadLine, bool, int) {
+// the complete page budget. The boolean reports only that true line case; the
+// final int is the JSON byte count consumed, so callers sharing one budget
+// across several windows can subtract exactly what was used.
+func collectAnnotatedLines(lines []string, startIdx, maxLines, maxBytes int) ([]ReadLine, bool, int, int) {
 	result := make([]ReadLine, 0)
 	byteCount := 0
 	for i := startIdx; i < len(lines) && len(result) < maxLines && byteCount < maxBytes; i++ {
@@ -308,22 +310,22 @@ func collectAnnotatedLines(lines []string, startIdx, maxLines, maxBytes int) ([]
 		var appended bool
 		result, byteCount, appended = appendJSONReadLine(result, byteCount, lineNum, lines[i], maxBytes)
 		if !appended {
-			return result, false, lineNum
+			return result, false, lineNum, byteCount
 		}
 		if result[len(result)-1].TextTruncated {
-			return result, true, 0
+			return result, true, 0, byteCount
 		}
 		if len(result) == previousCount {
-			return result, false, lineNum
+			return result, false, lineNum, byteCount
 		}
 		if byteCount >= maxBytes || len(result) >= maxLines {
 			if i < len(lines)-1 {
-				return result, false, i + 2
+				return result, false, i + 2, byteCount
 			}
 			break
 		}
 	}
-	return result, false, 0
+	return result, false, 0, byteCount
 }
 
 // collectMatchLines gathers matching/context lines. The final boolean reports
@@ -431,7 +433,7 @@ func cmdReadRange(path string, offset, limit int) error {
 	}
 
 	lineBudget := readJSONLineBudget(file.Revision, len(file.Lines), readOutputMaxBytes)
-	lines, sourceLineTruncated, nextOffset := collectAnnotatedLines(file.Lines, offset-1, limit, lineBudget)
+	lines, sourceLineTruncated, nextOffset, _ := collectAnnotatedLines(file.Lines, offset-1, limit, lineBudget)
 	return emitJSON(ReadResult{
 		OK: true, Revision: file.Revision, TotalLines: len(file.Lines), Lines: lines,
 		Truncated: sourceLineTruncated || nextOffset > 0, NextOffset: nextOffset,

@@ -280,8 +280,8 @@ func TestCmdBatch(t *testing.T) {
 		if got.EditsApplied != 1 || got.LinesAdded != 1 || got.LinesDeleted != 2 {
 			t.Fatalf("batch metadata = %#v; want editsApplied 1 lines +1 -2", got)
 		}
-		if got.UpdatedAnchors == nil {
-			t.Fatal("batch result did not include updated anchors")
+		if got.UpdatedAnchorSpans == nil {
+			t.Fatal("batch result did not include updated anchor spans")
 		}
 		if want := []string{"alpha", "delta", "delta"}; !equalLines(batchTestReadLines(t, target), want) {
 			t.Fatalf("target lines = %#v, want %#v", batchTestReadLines(t, target), want)
@@ -308,8 +308,8 @@ func TestCmdBatch(t *testing.T) {
 		if !got.OK || got.ContentChanged || got.EditsApplied != 1 {
 			t.Fatalf("batch output = %#v; want successful one-operation no-op", got)
 		}
-		if got.UpdatedAnchors == nil {
-			t.Fatal("no-op batch result did not include updated anchors")
+		if got.UpdatedAnchorSpans == nil {
+			t.Fatal("no-op batch result did not include updated anchor spans")
 		}
 		after, err := os.Stat(target)
 		if err != nil {

@@ -51,13 +51,13 @@ test("read CLI validation and evidence update hold the canonical file queue", as
 			disposition: "succeeded",
 			evidencePath: target,
 			revision: REVISION_B,
-			updatedAnchors: {
+			updatedAnchorSpans: [{
 				lines: [{ line: 1, anchor: "1#BBB", text: "new", textTruncated: false }],
 				offset: 1,
 				limit: 1,
 				desiredLimit: 1,
 				truncated: false,
-			},
+			}],
 		}, directory);
 	});
 	let otherFileMutationStarted = false;

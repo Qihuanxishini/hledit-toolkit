@@ -48,19 +48,21 @@ type EditDelta struct {
 
 // BatchEditResult is written to stdout after a successful batch edit.
 // Checked is true when the batch was run with --check (validate-only, no write).
+// UpdatedAnchorSpans holds one span per edit that produced lines, covering
+// exactly the produced range; --check leaves it null.
 type BatchEditResult struct {
-	OK               bool           `json:"ok"`
-	FirstChangedLine int            `json:"firstChangedLine,omitempty"`
-	LastChangedLine  int            `json:"lastChangedLine,omitempty"`
-	LinesAdded       int            `json:"linesAdded"`
-	LinesDeleted     int            `json:"linesDeleted"`
-	EditsApplied     int            `json:"editsApplied"`
-	ContentChanged   bool           `json:"contentChanged"`
-	Revision         string         `json:"revision"`
-	EditDeltas       []EditDelta    `json:"editDeltas"`
-	Warnings         []string       `json:"warnings,omitempty"`
-	Checked          bool           `json:"checked,omitempty"`
-	UpdatedAnchors   *AnchorContext `json:"updatedAnchors,omitempty"`
+	OK                 bool            `json:"ok"`
+	FirstChangedLine   int             `json:"firstChangedLine,omitempty"`
+	LastChangedLine    int             `json:"lastChangedLine,omitempty"`
+	LinesAdded         int             `json:"linesAdded"`
+	LinesDeleted       int             `json:"linesDeleted"`
+	EditsApplied       int             `json:"editsApplied"`
+	ContentChanged     bool            `json:"contentChanged"`
+	Revision           string          `json:"revision"`
+	EditDeltas         []EditDelta     `json:"editDeltas"`
+	Warnings           []string        `json:"warnings,omitempty"`
+	Checked            bool            `json:"checked,omitempty"`
+	UpdatedAnchorSpans []AnchorContext `json:"updatedAnchorSpans"`
 }
 
 // BatchEditError is written to stdout when any anchor in the batch is stale.
@@ -76,21 +78,21 @@ type BatchEditError struct {
 
 // CLICapabilities describes the strict protocol required by the Pi extension.
 type CLICapabilities struct {
-	OK                  bool   `json:"ok"`
-	Version             string `json:"version"`
-	AnchorProtocolV2    bool   `json:"anchorProtocolV2"`
-	BatchInsertAfter    bool   `json:"batchInsertAfter"`
-	BatchCheck          bool   `json:"batchCheck"`
-	BatchUpdatedAnchors bool   `json:"batchUpdatedAnchors"`
-	BatchStaleContext   bool   `json:"batchStaleContext"`
-	ReadRangeMetadata   bool   `json:"readRangeMetadata"`
-	BatchWireV3         bool   `json:"batchWireV3"`
-	BatchReadProof      bool   `json:"batchReadProof"`
-	BatchEditDeltas     bool   `json:"batchEditDeltas"`
-	SearchIgnoreCase    bool   `json:"searchIgnoreCase"`
-	SearchRegex         bool   `json:"searchRegex"`
-	SearchLiteral       bool   `json:"searchLiteral"`
-	Search              bool   `json:"search"`
+	OK                      bool   `json:"ok"`
+	Version                 string `json:"version"`
+	AnchorProtocolV2        bool   `json:"anchorProtocolV2"`
+	BatchInsertAfter        bool   `json:"batchInsertAfter"`
+	BatchCheck              bool   `json:"batchCheck"`
+	BatchUpdatedAnchorSpans bool   `json:"batchUpdatedAnchorSpans"`
+	BatchStaleContext       bool   `json:"batchStaleContext"`
+	ReadRangeMetadata       bool   `json:"readRangeMetadata"`
+	BatchWireV3             bool   `json:"batchWireV3"`
+	BatchReadProof          bool   `json:"batchReadProof"`
+	BatchEditDeltas         bool   `json:"batchEditDeltas"`
+	SearchIgnoreCase        bool   `json:"searchIgnoreCase"`
+	SearchRegex             bool   `json:"searchRegex"`
+	SearchLiteral           bool   `json:"searchLiteral"`
+	Search                  bool   `json:"search"`
 }
 
 // ────────────────────────────────────────────────────────────────────────────

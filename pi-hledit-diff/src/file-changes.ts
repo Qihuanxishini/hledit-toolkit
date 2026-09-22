@@ -114,8 +114,11 @@ function submittedAnchorTokens(changes: FileChangeParams["changes"]): Set<string
 	return tokens;
 }
 
-export function findChangeShapeIssue(params: FileChangeParams): ChangeShapeIssue | undefined {
+// knownAnchors 是该文件当前证据里的全部锚点：模型把 read 输出整段贴进 insert 的 lines 时，
+// 行首 token 是依附行之后的行，不在本次提交的锚点里，只有对照证据才能拦住。
+export function findChangeShapeIssue(params: FileChangeParams, knownAnchors?: ReadonlySet<string>): ChangeShapeIssue | undefined {
 	const submittedAnchors = submittedAnchorTokens(params.changes);
+	for (const anchor of knownAnchors ?? []) submittedAnchors.add(anchor);
 	for (const [index, change] of params.changes.entries()) {
 		const changeNumber = index + 1;
 		if (change.operation === "replace_range" || change.operation === "delete_range") {
@@ -134,8 +137,8 @@ export function findChangeShapeIssue(params: FileChangeParams): ChangeShapeIssue
 		if (change.operation === "delete_range") continue;
 
 		for (const [lineIndex, text] of change.lines.entries()) {
-			// 只有当行首 token 正是本次请求提交过的 anchor 时才判定为误贴 read 输出：
-			// 真实源码里出现恰好等于当前 anchor 的行首 token 需要 hash 自碰撞，可忽略。
+			// 只有当行首 token 是本次提交过或当前证据中的 anchor 时才判定为误贴 read 输出：
+			// 真实源码里出现恰好等于现存 anchor 的行首 token 需要 hash 自碰撞，可忽略。
 			const anchorToken = ANCHOR_LINE_PREFIX_PATTERN.exec(text)?.[1];
 			if (anchorToken !== undefined && submittedAnchors.has(anchorToken)) {
 				return { code: "anchor_token_in_lines", changeNumber, replacementLineNumber: lineIndex + 1, anchorToken };

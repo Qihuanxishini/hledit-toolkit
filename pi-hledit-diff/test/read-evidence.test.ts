@@ -195,18 +195,41 @@ test("search pagination records complete rows but excludes text-truncated rows",
 	assert.ok("proof" in store.selectProof(PATH, replaceRange("6#AAF", "6#AAF")));
 });
 
-test("empty search reads invalidate existing proof for that path", () => {
+test("empty search reads keep same-revision proof and drop proof once the revision changes", () => {
 	const store = new ReadEvidenceStore();
-	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }]));
-	store.recordRead(PATH, readMetadata(REVISION_A, [], { pattern: "missing" }));
-	const sameRevisionSelection = store.selectProof(PATH, replaceRange("1#AAA", "1#AAA"));
-	assert.ok("failure" in sameRevisionSelection);
-	assert.deepEqual(sameRevisionSelection.failure.reportedMissingLines, [1]);
+	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }]), "first");
+	store.recordRead(PATH, readMetadata(REVISION_A, [], { pattern: "missing" }), "unused");
+	assert.equal(store.getProofId(PATH), "first");
+	assertProofSelection(store.selectProof(PATH, replaceRange("1#AAA", "1#AAA"), "first"), {
+		proof: { revision: REVISION_A, anchors: ["1#AAA"] },
+	});
 
 	store.recordRead(PATH, readMetadata(REVISION_B, [], { pattern: "missing" }));
+	assert.equal(store.getProofId(PATH), undefined);
 	const selection = store.selectProof(PATH, replaceRange("1#AAA", "1#AAA"));
 	assert.ok("failure" in selection);
 	assert.deepEqual(selection.failure.reportedMissingLines, [1]);
+});
+
+test("every proof id issued for the current revision stays valid until the revision changes", () => {
+	const store = new ReadEvidenceStore();
+	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }]), "page1");
+	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 2, anchor: "2#BBB" }]), "page2");
+	assert.equal(store.getProofId(PATH), "page2");
+	for (const proofId of ["page1", "page2"]) {
+		assertProofSelection(store.selectProof(PATH, replaceRange("1#AAA", "2#BBB"), proofId), {
+			proof: { revision: REVISION_A, anchors: ["1#AAA", "2#BBB"] },
+		});
+	}
+
+	store.recordRead(PATH, readMetadata(REVISION_B, [{ line: 1, anchor: "1#AAA" }]), "fresh");
+	const expired = store.selectProof(PATH, replaceRange("1#AAA", "1#AAA"), "page1");
+	assert.ok("failure" in expired);
+	assert.equal(expired.failure.code, "invalid_proof_id");
+	assert.match(expired.failure.message, /current proof_id is fresh/);
+	assertProofSelection(store.selectProof(PATH, replaceRange("1#AAA", "1#AAA"), "fresh"), {
+		proof: { revision: REVISION_B, anchors: ["1#AAA"] },
+	});
 });
 
 test("oversized ranges fail without enumerating every requested line", () => {
@@ -372,13 +395,13 @@ test("successful apply replaces old evidence with updated anchors", () => {
 	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }]));
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [{ line: 4, anchor: "4#BBB", text: "changed", textTruncated: false }],
 			offset: 4,
 			limit: 1,
 			desiredLimit: 1,
 			truncated: false,
-		},
+		}],
 	}), "/workspace");
 
 	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: "1#AAA", lines: ["next"] }]));
@@ -438,13 +461,13 @@ test("a same-revision no-op apply merges its window instead of shrinking evidenc
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_A,
 		contentChanged: false,
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [{ line: 3, anchor: "3#AAC", text: "line 3", textTruncated: false }],
 			offset: 3,
 			limit: 1,
 			desiredLimit: 1,
 			truncated: false,
-		},
+		}],
 	}), "/workspace");
 
 	// 远离窗口的旧证据在同 revision 下仍然字节级有效，必须保留。
@@ -668,7 +691,7 @@ test("a successful apply remaps out-of-range evidence to shifted line numbers", 
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 2, oldEnd: 2, delta: 1 }],
-		updatedAnchors: { lines: newWindowLines, offset: 2, limit: 2, desiredLimit: 2, truncated: false },
+		updatedAnchorSpans: [{ lines: newWindowLines, offset: 2, limit: 2, desiredLimit: 2, truncated: false }],
 	}), "/workspace");
 
 	// 未受影响的行 1 原样保留；旧行 3/5 平移到 4/6；旧行 4（空行，结构行）hash 重算。
@@ -700,7 +723,7 @@ test("submitting a pre-edit anchor uses a verified rename without rereading", ()
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 2, oldEnd: 2, delta: 1 }],
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [
 				{ line: 2, anchor: computeAnchorTag(2, "BRAVO-1"), text: "BRAVO-1", textTruncated: false },
 				{ line: 3, anchor: computeAnchorTag(3, "BRAVO-2"), text: "BRAVO-2", textTruncated: false },
@@ -709,7 +732,7 @@ test("submitting a pre-edit anchor uses a verified rename without rereading", ()
 			limit: 2,
 			desiredLimit: 2,
 			truncated: false,
-		},
+		}],
 	}), "/workspace");
 
 	// 模型提交编辑前的旧行 3 锚点：唯一更名且完整 proof 仍成立时直接规范化。
@@ -732,7 +755,7 @@ test("a rename hint does not hide an unrelated proof gap in the same batch", () 
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 2, oldEnd: 2, delta: 1 }],
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [
 				{ line: 2, anchor: computeAnchorTag(2, "BRAVO-1"), text: "BRAVO-1", textTruncated: false },
 				{ line: 3, anchor: computeAnchorTag(3, "BRAVO-2"), text: "BRAVO-2", textTruncated: false },
@@ -741,7 +764,7 @@ test("a rename hint does not hide an unrelated proof gap in the same batch", () 
 			limit: 2,
 			desiredLimit: 2,
 			truncated: false,
-		},
+		}],
 	}), "/workspace");
 
 	// 同一批次：一个可由更名解释的旧锚点 + 一个从未读取的远端范围。
@@ -778,7 +801,7 @@ test("verified rename chains normalize to the latest anchor", () => {
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 2, oldEnd: 2, delta: 1 }],
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [
 				{ line: 2, anchor: computeAnchorTag(2, "BRAVO-1"), text: "BRAVO-1", textTruncated: false },
 				{ line: 3, anchor: computeAnchorTag(3, "BRAVO-2"), text: "BRAVO-2", textTruncated: false },
@@ -787,19 +810,19 @@ test("verified rename chains normalize to the latest anchor", () => {
 			limit: 2,
 			desiredLimit: 2,
 			truncated: false,
-		},
+		}],
 	}), "/workspace");
 	// 编辑 2：文件顶部插入一行（charlie 4 -> 5）。
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_C,
 		editDeltas: [{ oldStart: 1, oldEnd: 0, delta: 1 }],
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [{ line: 1, anchor: computeAnchorTag(1, "HEADER"), text: "HEADER", textTruncated: false }],
 			offset: 1,
 			limit: 1,
 			desiredLimit: 1,
 			truncated: false,
-		},
+		}],
 	}), "/workspace");
 
 	// 提交最早一轮读取的锚点：唯一更名链直接规范化到最新名字。
@@ -830,10 +853,10 @@ test("consuming all observed lines preserves the proof generation in live and re
 			details: applyDetails("succeeded", {
 				revision: REVISION_B,
 				editDeltas: [{ oldStart: 2, oldEnd: 2, delta: 0 }],
-				updatedAnchors: {
+				updatedAnchorSpans: [{
 					lines: [{ line: 2, anchor: newAnchor, text: "after", textTruncated: false }],
 					offset: 2, limit: 1, desiredLimit: 1, truncated: false,
-				},
+				}],
 			}),
 		},
 	];
@@ -853,6 +876,11 @@ test("consuming all observed lines preserves the proof generation in live and re
 		assert.ok("failure" in consumed);
 		assert.match(consumed.failure.message, /lost its unique identity/);
 		store.recordRead(PATH, readMetadata(REVISION_B, [{ line: 2, anchor: newAnchor, text: "after" }]), "next-read");
+		// 同 revision 的显式重读只追加 id，旧 generation 的 id 继续有效。
+		assertProofSelection(store.selectProof(PATH, replaceRange(newAnchor, newAnchor), proofId), {
+			proof: { revision: REVISION_B, anchors: [newAnchor] },
+		});
+		store.recordRead(PATH, readMetadata(REVISION_C, [{ line: 2, anchor: newAnchor, text: "after" }]), "changed-read");
 		const expired = store.selectProof(PATH, replaceRange(newAnchor, newAnchor), proofId);
 		assert.ok("failure" in expired);
 		assert.equal(expired.failure.code, "invalid_proof_id");
@@ -868,13 +896,13 @@ test("evidence consumed by the edit is dropped and never remapped", () => {
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 2, oldEnd: 2, delta: 0 }],
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [{ line: 2, anchor: computeAnchorTag(2, "BRAVO"), text: "BRAVO", textTruncated: false }],
 			offset: 2,
 			limit: 1,
 			desiredLimit: 1,
 			truncated: false,
-		},
+		}],
 	}), "/workspace");
 
 	// 旧行 2 的证据必须被窗口的新内容取代，而不是把旧锚点平移过来。
@@ -893,13 +921,13 @@ test("a success without edit deltas falls back to window-only evidence", () => {
 	]));
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [{ line: 1, anchor: computeAnchorTag(1, "ALPHA"), text: "ALPHA", textTruncated: false }],
 			offset: 1,
 			limit: 1,
 			desiredLimit: 1,
 			truncated: false,
-		},
+		}],
 	}), "/workspace");
 
 	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: computeAnchorTag(9, "iota"), lines: ["x"] }]));
@@ -921,7 +949,7 @@ test("reused rename tokens are rejected until an explicit read establishes curre
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 2, oldEnd: 1, delta: 1 }],
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [
 				{ line: 2, anchor: reusedAnchor, text: "needle", textTruncated: false },
 				{ line: 3, anchor: shiftedAnchor, text: "needle", textTruncated: false },
@@ -930,7 +958,7 @@ test("reused rename tokens are rejected until an explicit read establishes curre
 			limit: 2,
 			desiredLimit: 2,
 			truncated: false,
-		},
+		}],
 	}), "/workspace");
 
 	const ambiguous = store.selectProof(PATH, [{ operation: "insert_after", anchor: reusedAnchor, lines: ["x"] }]);
@@ -960,13 +988,13 @@ test("a consumed token reused by a shifted duplicate is rejected until reread", 
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 2, oldEnd: 2, delta: -1 }],
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [{ line: 2, anchor: consumedAnchor, text: "needle", textTruncated: false }],
 			offset: 2,
 			limit: 1,
 			desiredLimit: 1,
 			truncated: false,
-		},
+		}],
 	}), "/workspace");
 
 	const ambiguous = store.selectProof(PATH, [{ operation: "insert_after", anchor: consumedAnchor, lines: ["x"] }]);
@@ -992,7 +1020,7 @@ test("a consumed rename alias stays ambiguous across delayed token reuse", () =>
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 2, oldEnd: 1, delta: 1 }],
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [
 				{ line: 2, anchor: insertedAnchor, text: "inserted", textTruncated: false },
 				{ line: 3, anchor: shiftedAnchor, text: "needle", textTruncated: false },
@@ -1001,12 +1029,12 @@ test("a consumed rename alias stays ambiguous across delayed token reuse", () =>
 			limit: 2,
 			desiredLimit: 2,
 			truncated: false,
-		},
+		}],
 	}), "/workspace");
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_C,
 		editDeltas: [{ oldStart: 3, oldEnd: 3, delta: -1 }],
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [
 				{ line: 2, anchor: insertedAnchor, text: "inserted", textTruncated: false },
 				{ line: 3, anchor: computeAnchorTag(3, "after"), text: "after", textTruncated: false },
@@ -1015,18 +1043,18 @@ test("a consumed rename alias stays ambiguous across delayed token reuse", () =>
 			limit: 2,
 			desiredLimit: 2,
 			truncated: false,
-		},
+		}],
 	}), "/workspace");
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_D,
 		editDeltas: [{ oldStart: 2, oldEnd: 2, delta: 0 }],
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [{ line: 2, anchor: originalAnchor, text: "needle", textTruncated: false }],
 			offset: 2,
 			limit: 1,
 			desiredLimit: 1,
 			truncated: false,
-		},
+		}],
 	}), "/workspace");
 
 	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: originalAnchor, lines: ["x"] }]));
@@ -1045,7 +1073,7 @@ test("branch replay reconstructs reused-token ambiguity", () => {
 	const apply = applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 2, oldEnd: 1, delta: 1 }],
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [
 				{ line: 2, anchor: reusedAnchor, text: "needle", textTruncated: false },
 				{ line: 3, anchor: shiftedAnchor, text: "needle", textTruncated: false },
@@ -1054,7 +1082,7 @@ test("branch replay reconstructs reused-token ambiguity", () => {
 			limit: 2,
 			desiredLimit: 2,
 			truncated: false,
-		},
+		}],
 	});
 	const store = new ReadEvidenceStore();
 	store.restoreFromBranch({
@@ -1135,7 +1163,7 @@ test("updated-anchor overflow cannot erase a reused-token ambiguity", () => {
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: originalLine, oldEnd: originalLine - 1, delta: 1 }],
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [
 				{ line: originalLine, anchor: reusedAnchor, text: "needle", textTruncated: false },
 				{ line: originalLine + 1, anchor: shiftedAnchor, text: "needle", textTruncated: false },
@@ -1144,7 +1172,7 @@ test("updated-anchor overflow cannot erase a reused-token ambiguity", () => {
 			limit: 2,
 			desiredLimit: 2,
 			truncated: false,
-		},
+		}],
 	}), "/workspace");
 
 	// 容量降级不能把 updatedAnchors 误当成显式重读，否则旧 token 会重新获得当前语义。
@@ -1171,13 +1199,13 @@ test("remap overflow cannot be repopulated from updated anchors", () => {
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 1, oldEnd: 0, delta: 1 }],
-		updatedAnchors: {
+		updatedAnchorSpans: [{
 			lines: [{ line: 1, anchor: insertedAnchor, text: "header", textTruncated: false }],
 			offset: 1,
 			limit: 1,
 			desiredLimit: 1,
 			truncated: false,
-		},
+		}],
 	}), "/workspace");
 
 	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: insertedAnchor, lines: ["x"] }]));

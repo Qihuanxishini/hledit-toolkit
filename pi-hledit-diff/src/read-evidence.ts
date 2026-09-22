@@ -8,7 +8,7 @@ import {
 } from "./active-tools.ts";
 import { computeAnchorTag } from "./anchor-hash.ts";
 import { lineFromAnchor, type HleditBatchReadProof } from "./file-changes.ts";
-import { parseAnchorContext, type BatchAnchorContext } from "./post-edit-context.ts";
+import { parseAnchorContext, parseUpdatedAnchorSpans, type BatchAnchorContext } from "./post-edit-context.ts";
 import { nextProofId } from "./proof-id.ts";
 import {
 	isRawRevision,
@@ -34,7 +34,11 @@ type EvidenceLine = {
 
 type EvidenceState = {
 	revision: string;
+	// 最新发出的 proof id，用于正文回显。
 	proofId: string;
+	// [喵喵喵]: 同一 revision 内发出的全部 proof id 都可提交。id 只是"哪次读"的标签，
+	// 准确性由 revision + 逐行覆盖 + CLI 复检保证；分页后模型抄了第一页的 id 不该被拒。
+	proofIds: Set<string>;
 	lines: Map<number, EvidenceLine>;
 	// 成功编辑造成的锚点更名（旧锚点 -> 内容未变的新锚点），仅用于失败恢复提示。
 	renames: Map<string, string>;
@@ -60,8 +64,9 @@ function evidenceUsage(path: string, state: EvidenceState): EvidenceUsage {
 		bytes += Buffer.byteLength(older, "utf8") + Buffer.byteLength(current, "utf8");
 	}
 	for (const token of state.ambiguousTokens) bytes += Buffer.byteLength(token, "utf8");
+	for (const id of state.proofIds) bytes += Buffer.byteLength(id, "utf8");
 	return {
-		records: state.lines.size + state.renames.size + state.ambiguousTokens.size,
+		records: state.lines.size + state.renames.size + state.ambiguousTokens.size + state.proofIds.size,
 		bytes,
 	};
 }
@@ -486,15 +491,18 @@ export class ReadEvidenceStore {
 	}
 
 	recordRead(path: string, read: HleditReadMetadata, proofId?: string): void {
+		const existing = this.files.get(path);
+		const sameRevision = existing?.revision === read.revision;
 		if (read.requested.pattern !== undefined && read.lines.length === 0) {
-			// [喵喵喵]: 0 命中不是一次成功的编辑证明；必须清除该文件的旧 proof，
-			// 防止模型在查询失败后误用历史锚点。(2026-08-01)
-			this.deleteFile(path);
+			// [喵喵喵]: 0 命中不产生新证据，但响应带着当前 revision：与现有证据同 revision
+			// 说明文件字节未变，旧 proof 仍然成立；只有 revision 变化才说明证据过期。(2026-09-22)
+			if (sameRevision) this.touch(path);
+			else this.deleteFile(path);
 			return;
 		}
 		const activeProofId = proofId ?? nextProofId();
-		const existing = this.files.get(path);
-		const sameRevision = existing?.revision === read.revision;
+		const proofIds = sameRevision ? new Set(existing.proofIds) : new Set<string>();
+		proofIds.add(activeProofId);
 		const lines = sameRevision ? new Map(existing.lines) : new Map<number, EvidenceLine>();
 		const renames = sameRevision ? new Map(existing.renames) : new Map<string, string>();
 		const ambiguousTokens = sameRevision ? new Set(existing.ambiguousTokens) : new Set<string>();
@@ -512,6 +520,7 @@ export class ReadEvidenceStore {
 		const next: EvidenceState = {
 			revision: read.revision,
 			proofId: activeProofId,
+			proofIds,
 			lines,
 			renames,
 			ambiguousTokens: this.addTokenReuseAmbiguities(lines, renames, ambiguousTokens),
@@ -524,20 +533,28 @@ export class ReadEvidenceStore {
 		this.storeEvidence(path, {
 			revision: read.revision,
 			proofId: activeProofId,
+			proofIds: new Set([activeProofId]),
 			lines: freshLines,
 			renames: new Map(),
 			ambiguousTokens: new Set(),
 		});
 	}
 
+	// 合并 CLI 返回的锚点窗口：成功 apply 的产出窗口，或 stale 拒绝时的当前快照。
 	recordUpdatedAnchors(
 		path: string,
 		revision: string,
-		context: BatchAnchorContext,
+		contexts: readonly BatchAnchorContext[],
 		tokensNeedingDisambiguation?: ReadonlySet<string>,
 	): void {
-		if (!isRawRevision(revision) || context.lines.length === 0) {
+		if (!isRawRevision(revision)) {
 			this.deleteFile(path);
+			return;
+		}
+		const windowLines = contexts.flatMap((context) => context.lines);
+		if (windowLines.length === 0 && !tokensNeedingDisambiguation) {
+			// 没有任何新行可合并（例如纯删除）时保持 remap 后的状态。
+			this.touch(path);
 			return;
 		}
 		const existing = this.files.get(path);
@@ -545,7 +562,7 @@ export class ReadEvidenceStore {
 		const lines = sameRevision ? new Map(existing.lines) : new Map<number, EvidenceLine>();
 		const renames = sameRevision ? new Map(existing.renames) : new Map<string, string>();
 		const ambiguousTokens = sameRevision ? new Set(existing.ambiguousTokens) : new Set<string>();
-		for (const line of context.lines) {
+		for (const line of windowLines) {
 			if (line.textTruncated) continue;
 			const info = { anchor: line.anchor, text: line.text };
 			lines.set(line.line, info);
@@ -555,11 +572,13 @@ export class ReadEvidenceStore {
 			// 目标行可能在更晚的编辑中才重新产生旧 token；不能只检查本次 anchor window。
 			for (const token of tokensNeedingDisambiguation) nextAmbiguousTokens.add(token);
 		}
+		// [喵喵喵]: 受控 apply 产生的新 revision 延续同一 proof generation；
+		// 只有显式 read 才轮换 proofId，避免 updatedAnchors 无法继续用于后续编辑。
+		const proofId = existing?.proofId ?? nextProofId();
 		const next: EvidenceState = {
 			revision,
-			// [喵喵喵]: 受控 apply 产生的新 revision 延续同一 proof generation；
-			// 只有显式 read 才轮换 proofId，避免 updatedAnchors 无法继续用于后续编辑。
-			proofId: existing?.proofId ?? nextProofId(),
+			proofId,
+			proofIds: existing ? new Set(existing.proofIds) : new Set([proofId]),
 			lines,
 			renames,
 			// updatedAnchors 不能消歧；模型仍可能持有编辑前或已消费行的同 token。
@@ -622,6 +641,7 @@ export class ReadEvidenceStore {
 		const retained = this.storeEvidence(path, {
 			revision: newRevision,
 			proofId: evidence.proofId,
+			proofIds: new Set(evidence.proofIds),
 			lines,
 			renames,
 			ambiguousTokens: remappedAmbiguousTokens,
@@ -631,15 +651,15 @@ export class ReadEvidenceStore {
 
 	private recordApplyResult(path: string, details: HleditDetails): void {
 		if (details.disposition === "succeeded" && isRawRevision(details.revision)) {
-			const updatedAnchors = parseAnchorContext(details.updatedAnchors);
-			if (!updatedAnchors) {
+			const updatedAnchorSpans = parseUpdatedAnchorSpans(details.updatedAnchorSpans);
+			if (!updatedAnchorSpans) {
 				this.invalidate(path);
 				return;
 			}
 			const remap = this.remapEvidenceForApply(path, details.revision, parseEditDeltas(details.editDeltas));
 			// remap 容量超限时必须保持无 evidence；updatedAnchors 不能越过淘汰重建身份。
 			if (remap.capacityExceeded) return;
-			this.recordUpdatedAnchors(path, details.revision, updatedAnchors, remap.tokensNeedingDisambiguation);
+			this.recordUpdatedAnchors(path, details.revision, updatedAnchorSpans, remap.tokensNeedingDisambiguation);
 			return;
 		}
 
@@ -676,20 +696,31 @@ export class ReadEvidenceStore {
 			this.touch(path);
 			return;
 		}
-		this.recordUpdatedAnchors(path, currentRevision, currentAnchors);
+		this.recordUpdatedAnchors(path, currentRevision, [currentAnchors]);
 	}
 
 	getProofId(path: string): string | undefined {
 		return this.files.get(path)?.proofId;
 	}
 
+	// 该文件当前证据中的全部锚点 token，供请求层的锚点前缀误贴检查使用。
+	anchorTokens(path: string): ReadonlySet<string> {
+		const evidence = this.files.get(path);
+		if (!evidence) return new Set();
+		return new Set([...evidence.lines.values()].map((line) => line.anchor));
+	}
+
 	selectProof(path: string, changes: FileChangeParams["changes"], proofId?: string): ReadProofSelection {
 		const evidence = this.files.get(path);
-		if (proofId !== undefined && (!evidence || evidence.proofId !== proofId)) {
+		if (proofId !== undefined && !evidence?.proofIds.has(proofId)) {
+			// 证据仍在时直接给出当前 id：模型若已审阅过目标行，换 id 重提即可，
+			// 逐行覆盖与 CLI 复检不会因此放松；没有证据才需要重读。
 			return {
 				failure: {
 					code: "invalid_proof_id",
-					message: "The submitted proof_id is missing, expired, or belongs to a different read. Call hledit_read_anchors again and use the returned proof_id.",
+					message: evidence
+						? `The submitted proof_id ${proofId} belongs to an earlier revision of this file; the current proof_id is ${evidence.proofId}. Resubmit with it if you have already reviewed the target lines in the latest read; otherwise call hledit_read_anchors first.`
+						: "The submitted proof_id is missing, expired, or belongs to a different read. Call hledit_read_anchors again and use the returned proof_id.",
 					reportedMissingLines: [],
 				},
 			};

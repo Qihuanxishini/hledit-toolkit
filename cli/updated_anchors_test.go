@@ -78,7 +78,79 @@ func TestBuildUpdatedAnchorContext(t *testing.T) {
 	})
 }
 
-func TestCmdBatchReturnsUpdatedAnchors(t *testing.T) {
+func TestBuildUpdatedAnchorSpans(t *testing.T) {
+	numbered := func(count int) []string {
+		lines := make([]string, count)
+		for i := range lines {
+			lines[i] = intToStr(i + 1)
+		}
+		return lines
+	}
+
+	t.Run("returns one context-free span per producing edit in new coordinates", func(t *testing.T) {
+		// 原始 1..10：在第 2 行后插入 2 行，替换原 5..6 为 1 行，删除原 9 行。
+		lines := numbered(10)
+		rebuilt := append([]string{}, lines[:2]...)
+		rebuilt = append(rebuilt, "ins-a", "ins-b", lines[2], lines[3], "REPL", lines[6], lines[7], lines[9])
+		got := buildUpdatedAnchorSpans(rebuilt, []EditDelta{
+			{OldStart: 3, OldEnd: 2, Delta: 2},
+			{OldStart: 5, OldEnd: 6, Delta: -1},
+			{OldStart: 9, OldEnd: 9, Delta: -1},
+		})
+		if len(got) != 2 {
+			t.Fatalf("spans = %#v, want 2 (pure deletion produces none)", got)
+		}
+		if got[0].Offset != 3 || got[0].Limit != 2 || got[0].DesiredLimit != 2 || got[0].Truncated {
+			t.Fatalf("insert span = %#v", got[0])
+		}
+		if got[0].Lines[0].Anchor != formatTag(3, "ins-a") || got[0].Lines[1].Text != "ins-b" {
+			t.Fatalf("insert span lines = %#v", got[0].Lines)
+		}
+		if got[1].Offset != 7 || got[1].Limit != 1 || got[1].DesiredLimit != 1 || got[1].Truncated {
+			t.Fatalf("replace span = %#v", got[1])
+		}
+		if got[1].Lines[0].Anchor != formatTag(7, "REPL") {
+			t.Fatalf("replace span line = %#v", got[1].Lines[0])
+		}
+	})
+
+	t.Run("shares the line budget across spans and keeps exhausted spans countable", func(t *testing.T) {
+		lines := numbered(200)
+		got := buildUpdatedAnchorSpans(lines, []EditDelta{
+			{OldStart: 1, OldEnd: 70, Delta: 0},
+			{OldStart: 100, OldEnd: 119, Delta: 0},
+			{OldStart: 150, OldEnd: 150, Delta: 0},
+		})
+		if len(got) != 3 {
+			t.Fatalf("spans = %d, want 3", len(got))
+		}
+		if got[0].Limit != 70 || got[0].Truncated {
+			t.Fatalf("first span = %#v", got[0])
+		}
+		if got[1].Offset != 100 || got[1].Limit != updatedAnchorSpansMaxLines-70 || got[1].DesiredLimit != 20 || !got[1].Truncated {
+			t.Fatalf("second span = %#v", got[1])
+		}
+		if got[2].Offset != 150 || got[2].Limit != 0 || len(got[2].Lines) != 0 || got[2].DesiredLimit != 1 || !got[2].Truncated {
+			t.Fatalf("exhausted span = %#v", got[2])
+		}
+	})
+
+	t.Run("caps by bytes and marks an oversized produced line", func(t *testing.T) {
+		got := buildUpdatedAnchorSpans([]string{string(make([]byte, updatedAnchorSpansMaxBytes*2))}, []EditDelta{{OldStart: 1, OldEnd: 1, Delta: 0}})
+		if len(got) != 1 || !got[0].Truncated || len(got[0].Lines) != 1 || !got[0].Lines[0].TextTruncated {
+			t.Fatalf("spans = %#v", got)
+		}
+	})
+
+	t.Run("returns no spans for a batch that only deletes", func(t *testing.T) {
+		got := buildUpdatedAnchorSpans([]string{"keep"}, []EditDelta{{OldStart: 2, OldEnd: 3, Delta: -2}})
+		if len(got) != 0 {
+			t.Fatalf("spans = %#v, want none", got)
+		}
+	})
+}
+
+func TestCmdBatchReturnsUpdatedAnchorSpans(t *testing.T) {
 	dir := t.TempDir()
 	target := editTestWriteLinesFile(t, dir, "target.txt", "alpha", "bravo", "charlie")
 
@@ -89,11 +161,11 @@ func TestCmdBatchReturnsUpdatedAnchors(t *testing.T) {
 	})
 	var got BatchEditResult
 	batchTestMustUnmarshal(t, out, &got)
-	if got.UpdatedAnchors == nil || len(got.UpdatedAnchors.Lines) != 3 {
-		t.Fatalf("updated anchors = %#v", got.UpdatedAnchors)
+	if len(got.UpdatedAnchorSpans) != 1 || len(got.UpdatedAnchorSpans[0].Lines) != 1 {
+		t.Fatalf("updated anchor spans = %#v", got.UpdatedAnchorSpans)
 	}
-	if got.UpdatedAnchors.Lines[1].Anchor != formatTag(2, "BRAVO") {
-		t.Fatalf("changed anchor = %#v", got.UpdatedAnchors.Lines[1])
+	if got.UpdatedAnchorSpans[0].Offset != 2 || got.UpdatedAnchorSpans[0].Lines[0].Anchor != formatTag(2, "BRAVO") {
+		t.Fatalf("changed span = %#v", got.UpdatedAnchorSpans[0])
 	}
 
 	checkOut := batchTestCheckReq(t, target, BatchEditOp{
@@ -103,7 +175,7 @@ func TestCmdBatchReturnsUpdatedAnchors(t *testing.T) {
 	})
 	var checked BatchEditResult
 	batchTestMustUnmarshal(t, checkOut, &checked)
-	if checked.UpdatedAnchors != nil {
-		t.Fatalf("check mode returned updated anchors: %#v", checked.UpdatedAnchors)
+	if checked.UpdatedAnchorSpans != nil {
+		t.Fatalf("check mode returned updated anchor spans: %#v", checked.UpdatedAnchorSpans)
 	}
 }

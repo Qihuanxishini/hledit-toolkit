@@ -22,7 +22,7 @@
 - 读取错误一律给出可操作正文：`pattern` 转发 RE2 编译原文并说明 RE2 不支持 lookahead/lookbehind/backreference（可改用 `literal:true`），`broad_pattern` 指向 `hledit_read_anchors`。
 - 单行 `replace_range` 输出多行且首行重复原行时，插件先用 `batch --check` 验证整个请求，再返回字段级范围修复指引，不自动扩大或执行范围。
 - CLI 在临时文件同步后、原子替换前复检原始字节 revision。`source_changed_before_commit` 是确认零写入；已启动进程的取消、超时、输出超限或异常响应属于 `outcome_unknown`，必须重新读取。
-- 成功 apply 使用 `editDeltas` 重映射未消费 evidence，再合并新 revision 的 `updatedAnchors`。唯一、非歧义、同 revision 且替换后完整 proof 仍成立的 verified rename 会被内部规范化并报告在 `details.resolvedAnchors`；旧 token 被当前行重新占用，或其源行/alias 最终目标被消费失联时，身份会保持 ambiguous 直到覆盖当前行的显式读取。
+- 成功 apply 使用 `editDeltas` 重映射未消费 evidence，再合并新 revision 的 `updatedAnchorSpans`（每个产出了行的编辑各一个精确覆盖产出区间的 span）。唯一、非歧义、同 revision 且替换后完整 proof 仍成立的 verified rename 会被内部规范化并报告在 `details.resolvedAnchors`；旧 token 被当前行重新占用，或其源行/alias 最终目标被消费失联时，身份会保持 ambiguous 直到覆盖当前行的显式读取。
 - 读取、proof 选择、CLI mutation 与 evidence 更新按 canonical real path 使用同一 file mutation queue。同文件状态事务串行，不同文件仍可并行。
 - evidence 有界：单文件最多 10,000 records / 4 MiB logical UTF-8 payload，session 最多 50,000 records / 16 MiB；超限按完整文件淘汰并安全降级为补读。branch replay 使用相同顺序与容量规则，只恢复经过严格验证的 apply `recoveredRead`。
 - 仅接受有效 UTF-8 文本；revision 基于原始字节，BOM、CRLF/LF 与末尾换行差异都会改变 revision。写入逐行保留未修改 terminator、UTF-8 BOM 与末尾换行状态。
@@ -36,7 +36,7 @@ CLI 3.x capability 健康时，插件始终启用这三个专用工具并替换 
 - 连续锚点读取和搜索都使用 `LN#HASH` gutter、语法高亮和紧凑预览；摘要显示实际范围、总行数、EOF、匹配统计或下一 offset。
 - 文件修改在 120 列及以上显示 old/new 双栏，更窄时显示统一 diff；多项修改在标题中分别显示范围。
 - `details.changePreview` 是提交绑定的结构化局部 diff；上限为 2,000 行 / 256 KiB UTF-8，超长单行保留首尾并标记截断。截断统计使用 CLI 验证的 `linesAdded` / `linesDeleted`，不把局部 hunk 数冒充完整统计。
-- expanded 结果直接消费 `details.updatedAnchors`，不从模型正文反向解析；历史结果只保留 `details.diff` 的渲染回退。
+- expanded 结果直接消费 `details.updatedAnchorSpans`，不从模型正文反向解析；历史结果只保留 `details.diff` 的渲染回退。
 - 组件缓存同宽布局与语法高亮，并从当前 Pi theme 派生颜色。
 
 ## CLI 要求
@@ -52,12 +52,12 @@ bin/hledit.exe
 ```json
 {
   "ok": true,
-  "version": "3.2.0",
+  "version": "3.3.0",
   "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,
   "batchCheck": true,
-  "batchUpdatedAnchors": true,
+  "batchUpdatedAnchorSpans": true,
   "batchStaleContext": true,
   "batchWireV3": true,
   "batchReadProof": true,
@@ -69,7 +69,7 @@ bin/hledit.exe
 }
 ```
 
-成功 JSON 读取包含合法 `revision`、`totalLines`、锚点行和截断状态。内部 batch 携带 `{revision, anchors}` proof；CLI 重新验证逐行覆盖、锚点和当前原始字节 revision。成功 batch 包含新 `revision`、`updatedAnchors`、`editDeltas`、`linesAdded` 与 `linesDeleted`，插件逐项核对请求区间和统计；不兼容成功响应按结果未知处理。batch wire v3 中 `delete` 必须省略 `lines`。
+成功 JSON 读取包含合法 `revision`、`totalLines`、锚点行和截断状态。内部 batch 携带 `{revision, anchors}` proof；CLI 重新验证逐行覆盖、锚点和当前原始字节 revision。成功 batch 包含新 `revision`、`updatedAnchorSpans`、`editDeltas`、`linesAdded` 与 `linesDeleted`，插件逐项核对请求区间、产出 span 和统计；不兼容成功响应按结果未知处理。batch wire v3 中 `delete` 必须省略 `lines`。
 
 ## 开发
 

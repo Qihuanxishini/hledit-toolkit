@@ -108,7 +108,7 @@ func TestReadRangeAndSearchErrorsStayStructured(t *testing.T) {
 func TestReadRangePaginatesWithoutTruncatingNextLine(t *testing.T) {
 	lines := []string{strings.Repeat("a", 30*1024), strings.Repeat("b", 30*1024), "tail"}
 	budget := readJSONLineBudget(rawFileRevision([]byte("fixture")), len(lines), readOutputMaxBytes)
-	page, textTruncated, nextOffset := collectAnnotatedLines(lines, 0, 160, budget)
+	page, textTruncated, nextOffset, _ := collectAnnotatedLines(lines, 0, 160, budget)
 	if textTruncated || len(page) != 1 || page[0].TextTruncated || nextOffset != 2 {
 		t.Fatalf("page = %#v, textTruncated=%v, nextOffset=%d; want one complete line then offset 2", page, textTruncated, nextOffset)
 	}

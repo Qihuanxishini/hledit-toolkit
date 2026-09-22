@@ -1,7 +1,7 @@
 import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
 import { nextProofId } from "./proof-id.ts";
 import { ANCHOR_HASH_PATTERN, lineFromAnchor } from "./file-changes.ts";
-import { parseAnchorContext, parseBatchUpdatedAnchorContext, type BatchAnchorContext, type ProducedLineRange } from "./post-edit-context.ts";
+import { parseAnchorContext, parseUpdatedAnchorSpans, type BatchAnchorContext, type ProducedLineRange } from "./post-edit-context.ts";
 import { MAX_READ_LIMIT, suggestedReadWindow, type NormalizedReadRequest, type NormalizedSearchRequest } from "./read-args.ts";
 import type { FileChangeParams } from "./schema.ts";
 
@@ -129,7 +129,7 @@ export type HleditDetails = Record<string, unknown> & {
 	evidencePath?: string;
 	revision?: string;
 	proofId?: string;
-	updatedAnchors?: BatchAnchorContext;
+	updatedAnchorSpans?: BatchAnchorContext[];
 	read?: HleditReadMetadata;
 	recoveredRead?: HleditReadMetadata;
 	recoveredReads?: HleditReadMetadata[];
@@ -656,7 +656,7 @@ function appendCurrentAnchorContext(lines: string[], context: BatchAnchorContext
 	const lastLine = context.limit === 0 ? undefined : context.offset + context.limit - 1;
 	lines.push(lastLine === undefined
 		? "Current anchor snapshot at submission time (the file is empty):"
-		: `Current anchor snapshot at submission time (local window: lines ${context.offset}-${lastLine}):`);
+		: `Current anchor snapshot at submission time (local span: lines ${context.offset}-${lastLine}):`);
 	lines.push(context.lines.map((line) => `${line.anchor}:${line.text}`).join("\n") || "(file is empty)");
 	if (context.truncated || context.lines.some((line) => line.textTruncated)) {
 		lines.push(`The current snapshot is truncated. Call hledit_read_anchors with offset:${context.offset} and limit:${context.desiredLimit} to obtain the complete range.`);
@@ -839,7 +839,7 @@ function formatApplyFailureResult(
 	if (error.code === "stale") {
 		appendCurrentAnchorContext(lines, error.currentAnchors);
 		if (error.currentAnchors) {
-			lines.push("Only reuse these anchors after confirming that the window still covers the intended target and complete range; otherwise call hledit_read_anchors again.");
+			lines.push("Only reuse these anchors after confirming that the span still covers the intended target and complete range; otherwise call hledit_read_anchors again.");
 		} else {
 			lines.push(staleReadInstruction(result, context.path));
 		}
@@ -926,7 +926,16 @@ function isValidApplySuccess(parsed: Record<string, unknown> | null, context: Ap
 	if (!editDeltas || editDeltas.length !== parsed.editsApplied) return false;
 	if (editDeltas.reduce((sum, delta) => sum + delta.delta, 0) !== parsed.linesAdded - parsed.linesDeleted) return false;
 	if (!editDeltasMatchRequest(editDeltas, context)) return false;
-	return parseBatchUpdatedAnchorContext(parsed) !== undefined;
+	// 产出 span必须与 editDeltas 换算出的非空产出区间逐项对应：窗口是 evidence 合并与
+	// 模型正文的直接来源，对不上就不能当成功结果消费。
+	const spans = parseUpdatedAnchorSpans(parsed.updatedAnchorSpans);
+	if (!spans) return false;
+	const producedRanges = producedLineRangesFromEditDeltas(editDeltas).filter((range) => range.end >= range.start);
+	if (spans.length !== producedRanges.length) return false;
+	return spans.every((span, index) =>
+		span.offset === producedRanges[index]!.start &&
+		span.desiredLimit === producedRanges[index]!.end - producedRanges[index]!.start + 1,
+	);
 }
 
 function isValidFileChangeCheckSuccess(parsed: Record<string, unknown> | null): boolean {
@@ -946,7 +955,7 @@ function invalidFileChangeCheckText(): string {
 }
 
 function invalidApplySuccessText(): string {
-	return `The bundled hledit returned an incompatible success response. The file may have changed; call hledit_read_anchors before retrying. Expected ok:true, a valid revision, editsApplied and editDeltas consistent with the request, line-count statistics, and valid updatedAnchors.\n\n${HLEDIT_INSTALL_HINT}`;
+	return `The bundled hledit returned an incompatible success response. The file may have changed; call hledit_read_anchors before retrying. Expected ok:true, a valid revision, editsApplied and editDeltas consistent with the request, line-count statistics, and updatedAnchorSpans matching the produced ranges.\n\n${HLEDIT_INSTALL_HINT}`;
 }
 
 function outcomeUnknownText(run: HleditRun): string {

@@ -24,7 +24,7 @@
 - 使用 v2 `LN#HASH`（三位 URL-safe Base64 hash）锚点检测读取后发生的文件变化，拒绝 stale 修改。
 - 一次 batch 原子提交同一文件中的多个非冲突修改，并在原子替换前复检原始字节 revision。
 - 单次重建文件，避免多 edit 场景下反复复制整份内容。
-- batch 成功后直接返回 `updatedAnchors` 与 `editDeltas`，无需再次启动 `read-range`；插件用 `editDeltas` 把未受影响行的读取证据平移到新行号，顺序多次编辑同一文件通常不再需要中间重读。
+- batch 成功后直接返回 `updatedAnchorSpans` 与 `editDeltas`，无需再次启动 `read-range`；每个产出了行的编辑各得一个精确覆盖产出区间的 span，插件用 `editDeltas` 把未受影响行的读取证据平移到新行号，顺序多次编辑同一文件通常不再需要中间重读。
 - 模型提交编辑前的旧锚点时，插件会对持续存活的平移目标给出 verified rename；若旧 token 被当前行重新占用，或其源行/alias 目标被消费失联，则在显式重读前拒绝立即与延迟复用。
 - JSON 读取返回基于原始字节的 SHA-256 revision；插件在 canonical file queue 内维护有界 evidence，并将完整消费行 proof 注入 anchored batch。公开 change 只需复制首尾或依附行的 `LN#HASH` token。
 - CLI 健康时，三个专用工具替代内置 `edit`；apply 始终独立检查当前 branch 的读取证据，CLI 缺失或不兼容时恢复内置 `edit`。
@@ -64,12 +64,12 @@ npm run check
 
 ```json
 {
-  "version": "3.2.0",
+  "version": "3.3.0",
   "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,
   "batchCheck": true,
-  "batchUpdatedAnchors": true,
+  "batchUpdatedAnchorSpans": true,
   "batchStaleContext": true,
   "batchWireV3": true,
   "batchReadProof": true,
@@ -81,7 +81,7 @@ npm run check
 }
 ```
 
-读取结果必须携带 `revision`、`totalLines` 和严格截断元数据。连续范围或专用 search 返回的完整匹配行都可形成局部写入证据；revision 与已读 anchors 保持在内部，不加入模型工具 schema。batch wire v3 中 `delete` 必须省略 `lines`，旧 `delete.lines:[]` 形状直接拒绝。成功 batch 响应必须携带新 `revision`、合法的 `updatedAnchors` 与非空且与请求一致的 `editDeltas`（插件逐项互核，内部矛盾按结果未知处理）；失败可按需返回 `currentRevision` 和同一快照的 `currentAnchors`。插件要求 CLI 3.x、拒绝已删除的 `contentReplaceOnce` 字段，并且不保留旧 CLI、旧 wire、无 proof batch 写入、内容匹配替换或自动 stale 重试路径。
+读取结果必须携带 `revision`、`totalLines` 和严格截断元数据。连续范围或专用 search 返回的完整匹配行都可形成局部写入证据；revision 与已读 anchors 保持在内部，不加入模型工具 schema。batch wire v3 中 `delete` 必须省略 `lines`，旧 `delete.lines:[]` 形状直接拒绝。成功 batch 响应必须携带新 `revision`、与 `editDeltas` 产出区间逐项对应的 `updatedAnchorSpans` 与非空且与请求一致的 `editDeltas`（插件逐项互核，内部矛盾按结果未知处理）；失败可按需返回 `currentRevision` 和同一快照的 `currentAnchors`。插件要求 CLI 3.x、拒绝已删除的 `contentReplaceOnce` 字段，并且不保留旧 CLI、旧 wire、无 proof batch 写入、内容匹配替换或自动 stale 重试路径。
 
 ## 开发仓库与运行目录
 

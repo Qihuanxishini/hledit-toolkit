@@ -11,7 +11,7 @@ import {
 } from "./diff-renderer.ts";
 import { fileChangeLineRanges } from "./file-changes.ts";
 import { DEFAULT_READ_LIMIT, normalizeToolPath } from "./read-args.ts";
-import { parseAnchorContext } from "./post-edit-context.ts";
+import { parseUpdatedAnchorSpans } from "./post-edit-context.ts";
 import { createHighlightedTextCache, escapeTerminalControls } from "./syntax-highlight.ts";
 import type { HleditReadMetadata, HleditToolKind, TextResult } from "./result.ts";
 
@@ -364,18 +364,19 @@ export function renderFileChangesResult(
         return [truncateToWidth(successfulChangeSummary(result, theme), width, "")];
     });
 
-    const updatedAnchorContext = parseAnchorContext(result.details.updatedAnchors);
-    const windowLastLine = updatedAnchorContext && updatedAnchorContext.limit > 0
-        ? updatedAnchorContext.offset + updatedAnchorContext.limit - 1
-        : undefined;
-    const updatedAnchorHeading = windowLastLine === undefined
-        ? "更新后的锚点（局部窗口）"
-        : `更新后的锚点（局部窗口：第 ${updatedAnchorContext!.offset}-${windowLastLine} 行）`;
-    const updatedAnchors = options.expanded && updatedAnchorContext
-        ? updatedAnchorContext.lines.map((line) => ({ anchor: line.anchor, lineNumber: line.line, content: line.text }))
+    const updatedAnchorSpans = parseUpdatedAnchorSpans(result.details.updatedAnchorSpans) ?? [];
+    const spanRanges = updatedAnchorSpans.map((span) => {
+        const last = span.offset + span.desiredLimit - 1;
+        return last === span.offset ? `第 ${span.offset} 行` : `第 ${span.offset}-${last} 行`;
+    });
+    const updatedAnchorHeading = spanRanges.length === 0
+        ? "更新后的锚点（产出区间）"
+        : `更新后的锚点（产出区间：${spanRanges.join("、")}）`;
+    const updatedAnchors = options.expanded
+        ? updatedAnchorSpans.flatMap((span) => span.lines.map((line) => ({ anchor: line.anchor, lineNumber: line.line, content: line.text })))
         : [];
     const updatedAnchorRows = createAnchoredSourceRowsComponent(updatedAnchors, path, theme);
-    const anchorWindowTruncated = updatedAnchorContext?.truncated === true || updatedAnchorContext?.lines.some((line) => line.textTruncated) === true;
+    const anchorSpanTruncated = updatedAnchorSpans.some((span) => span.truncated || span.lines.some((line) => line.textTruncated));
     if (updatedAnchors.length === 0 && !diffWarning && writeWarnings.length === 0) return changeBodyComponent;
 
     return component((width) => {
@@ -387,8 +388,8 @@ export function renderFileChangesResult(
                 truncateToWidth(theme.fg("muted", theme.bold(updatedAnchorHeading)), width, ""),
                 ...updatedAnchorRows.render(width),
             );
-            if (anchorWindowTruncated) {
-                lines.push(truncateToWidth(theme.fg("warning", "更新后的锚点窗口或行内容已截断；编辑前请重新读取所需范围"), width, ""));
+            if (anchorSpanTruncated) {
+                lines.push(truncateToWidth(theme.fg("warning", "更新后的锚点 span 或行内容已截断；编辑前请重新读取所需范围"), width, ""));
             }
         }
         if (diffWarning) {

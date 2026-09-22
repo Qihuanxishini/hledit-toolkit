@@ -99,13 +99,11 @@ test("registered tool metadata stays concise and names each flattened guideline"
 	assert.match(readTool.description, /contiguous text lines[\s\S]*LN#HASH anchors/);
 	assert.match(readGuidelines, /successful hledit_search_anchors output[\s\S]*verified updated anchors/);
 	assert.match(readGuidelines, /cover every source line[\s\S]*sparse endpoints are not proof/);
-	assert.match(readGuidelines, /Copy only LN#HASH tokens[\s\S]*hidden proof carries interior lines/);
 	assert.match(searchTool.description, /literal text[\s\S]*RE2 matches/);
 	assert.match(searchGuidelines, /locate matching lines[\s\S]*not to inspect broad contiguous text[\s\S]*hledit_read_anchors/);
-	assert.match(searchGuidelines, /Only returned complete, non-truncated lines provide proof[\s\S]*zero-match search clears prior proof/);
+	assert.match(searchGuidelines, /Only returned complete, non-truncated lines provide proof[\s\S]*read any range gaps/);
 	assert.match(applyTool.description, /non-overlapping inclusive ranges[\s\S]*complete read proof/);
-	assert.match(applyGuidelines, /latest proof_id returned for that path[\s\S]*current LN#HASH tokens/);
-	assert.match(applyGuidelines, /After rereading[\s\S]*latest successful hledit_read_anchors or hledit_search_anchors result[\s\S]*last page/);
+	assert.match(applyGuidelines, /latest proof_id returned for that path[\s\S]*current LN#HASH tokens[\s\S]*any proof_id issued for the file's current revision is accepted/);
 	assert.match(applyGuidelines, /failed read creates no proof/);
 	assert.match(applyGuidelines, /raw text without LN#HASH prefixes[\s\S]*\\n separates lines[\s\S]*one blank line/);
 	assert.match(applyGuidelines, /For targeted edits[\s\S]*write only for a new\/empty file[\s\S]*complete-file rewrite/);
@@ -123,7 +121,7 @@ test("registered tool metadata stays concise and names each flattened guideline"
 			+ (tool.promptGuidelines ?? []).join("").length,
 		0,
 	);
-	assert.ok(protocolCharacters <= 4600, `registered hledit protocol uses ${protocolCharacters} characters; expected at most 4600`);
+	assert.ok(protocolCharacters <= 4400, `registered hledit protocol uses ${protocolCharacters} characters; expected at most 4400`);
 });
 
 
@@ -271,7 +269,7 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 	assert.equal(resultText.split("\n").at(-1), `proof_id: ${readResult.details.proofId}`);
 	assert.equal(resultText.match(/^Updated anchors:$/gm)?.length, 1);
 	assert.ok(resultText.length < 250);
-	assert.doesNotMatch(resultText, /Later changes inside this window/);
+	assert.doesNotMatch(resultText, /Later changes inside this span/);
 	assert.equal(await readFile(join(directory, "target.txt"), "utf8"), "one\nTWO\nthree\n");
 });
 
@@ -310,7 +308,7 @@ test("apply tool reports a no-op without touching the target", async (t) => {
 	assert.equal(after.mtimeMs, before.mtimeMs);
 });
 
-test("apply tool accepts byte-truncated updated anchor contexts", async (t) => {
+test("apply tool returns a complete produced span for a long-line file", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
@@ -335,13 +333,14 @@ test("apply tool accepts byte-truncated updated anchor contexts", async (t) => {
 	);
 
 	assert.equal(applyResult.details.disposition, "succeeded");
-	// 字节截断只砍掉上下文行；产出行完整可得时模型正文不得报不完整，
-	// 同时 details 仍保留 CLI 的完整截断窗口供 evidence 与 TUI 使用。
-	const updatedLine = applyResult.details.updatedAnchors?.lines.find((line) => line.line === 5);
+	// span 只覆盖产出行，不再携带上下文：长行文件的单行替换也能完整返回。
+	const spans = applyResult.details.updatedAnchorSpans;
+	assert.equal(spans?.length, 1);
+	const updatedLine = spans?.[0]?.lines.find((line) => line.line === 5);
 	assert.ok(updatedLine);
 	assert.equal(applyResult.content[0]?.text ?? "", `Applied 1 change; line delta: +1 -1.\n\nUpdated anchors:\n${updatedLine.anchor}:CHANGED\n\nproof_id: ${readResult.details.proofId}`);
-	assert.equal(applyResult.details.updatedAnchors?.truncated, true);
-	assert.ok((applyResult.details.updatedAnchors?.lines.length ?? 0) > 1);
+	assert.equal(spans?.[0]?.truncated, false);
+	assert.equal(spans?.[0]?.lines.length, 1);
 	assert.equal((await readFile(target, "utf8")).split(/\r?\n/)[4], "CHANGED");
 });
 
@@ -380,15 +379,13 @@ test("apply tool lists only produced lines for a wide multi-change batch", async
 
 	assert.equal(applyResult.details.disposition, "succeeded");
 	const resultText = applyResult.content[0]?.text ?? "";
-	// CLI 窗口从 firstChanged 起取一整段，跨度大时只能覆盖首个变更：
-	// 模型正文只得到该变更的产出行，不得混入任何未变更的上下文行。
-	assert.match(resultText, /^Applied 2 changes; line delta: \+2 -2\.\n\nUpdated anchors:\n10#[A-Za-z0-9_-]{3}:FIRST\n/);
-	assert.match(resultText, /Updated anchors are incomplete/);
+	// 每个变更各得一个产出 span：相距很远的两处修改都返回新锚点，且不混入未变更的上下文行。
+	assert.match(resultText, /^Applied 2 changes; line delta: \+2 -2\.\n\nUpdated anchors:\n10#[A-Za-z0-9_-]{3}:FIRST\n180#[A-Za-z0-9_-]{3}:LAST\n/);
+	assert.doesNotMatch(resultText, /Updated anchors are incomplete/);
 	assert.doesNotMatch(resultText, /:line \d+/);
 	assert.ok(resultText.length < 250);
 
-	// details 仍保留 CLI 完整窗口（含上下文行）供 evidence 与 TUI 使用。
-	assert.ok((applyResult.details.updatedAnchors?.lines.length ?? 0) > 1);
+	assert.equal(applyResult.details.updatedAnchorSpans?.length, 2);
 	const written = (await readFile(target, "utf8")).split(/\r?\n/);
 	assert.equal(written[9], "FIRST");
 	assert.equal(written[179], "LAST");
@@ -417,7 +414,9 @@ test("apply tool deleting the only line leaves an empty file", async (t) => {
 	);
 
 	assert.equal(applyResult.details.disposition, "succeeded");
-	assert.match(applyResult.content[0]?.text ?? "", /\(the file is empty\)/);
+	// 纯删除没有产出 span：模型正文不含 anchor 块，details 记录空 span列表。
+	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /Updated anchors/);
+	assert.deepEqual(applyResult.details.updatedAnchorSpans, []);
 	assert.equal(applyResult.details.proofId, undefined);
 	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /^proof_id:/m);
 	assert.equal(await readFile(target, "utf8"), "");
@@ -503,6 +502,117 @@ test("apply tool rejects an anchor token pasted into lines instead of writing it
 	assert.match(text, new RegExp(`Line 1 of lines begins with ${anchor}:`));
 	assert.match(text, /Rereading the file cannot resolve this/);
 	assert.equal(await readFile(target, "utf8"), "const a = 1;\nconst b = 2;\nconst c = 3;\n");
+});
+
+test("apply tool rejects read output pasted into an insert even when the tokens were not submitted as anchors", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	const original = "const a = 1;\nconst b = 2;\nconst c = 3;\n";
+	await writeFile(target, original, "utf8");
+	const context = { cwd: directory };
+
+	const readResult = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const [first, second, third] = readResult.details.read!.lines;
+	const applyResult = await applyTool.execute(
+		"apply",
+		{
+			path: "target.txt", proof_id: readResult.details.proofId,
+			changes: [{ operation: "insert_after", anchor: first!.anchor, lines: `${second!.anchor}:${second!.text}\n${third!.anchor}:${third!.text}` }],
+		} as never,
+		undefined,
+		undefined,
+		context,
+	);
+
+	assert.equal(applyResult.details.disposition, "rejected");
+	assert.equal(applyResult.details.error?.code, "anchor_token_in_lines");
+	assert.match(applyResult.content[0]?.text ?? "", new RegExp(`Line 1 of lines begins with ${second!.anchor}:`));
+	assert.equal(await readFile(target, "utf8"), original);
+});
+
+test("zero-match search keeps same-revision proof and echoes the current proof_id", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const searchTool = registeredTools.get(HLEDIT_SEARCH_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && searchTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "one\ntwo\nthree\n", "utf8");
+	const context = { cwd: directory };
+
+	const readResult = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const proofId = readResult.details.proofId;
+	assert.ok(proofId);
+	const searchResult = await searchTool.execute("search", { path: "target.txt", pattern: "missing", literal: true } as never, undefined, undefined, context);
+	assert.equal(searchResult.details.disposition, "succeeded");
+	assert.equal(searchResult.details.proofId, proofId);
+	assert.equal(searchResult.content[0]?.text.split("\n")[0], `proof_id: ${proofId}`);
+
+	const anchor = readResult.details.read!.lines[1]!.anchor;
+	const applyResult = await applyTool.execute(
+		"apply",
+		{ path: "target.txt", proof_id: proofId, changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: "TWO" }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(applyResult.details.disposition, "succeeded", JSON.stringify(applyResult.details.error));
+	assert.equal(await readFile(target, "utf8"), "one\nTWO\nthree\n");
+
+	// 文件已变：零命中搜索带来新 revision，旧证据随之失效。
+	await writeFile(target, "one\nTWO\nthree\nfour\n", "utf8");
+	const staleSearch = await searchTool.execute("search", { path: "target.txt", pattern: "missing", literal: true } as never, undefined, undefined, context);
+	assert.equal(staleSearch.details.proofId, undefined);
+	assert.doesNotMatch(staleSearch.content[0]?.text ?? "", /^proof_id:/m);
+});
+
+test("apply tool accepts any proof_id issued for the current revision and names the current one otherwise", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
+	assert.ok(readTool && applyTool);
+
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "one\ntwo\nthree\n", "utf8");
+	const context = { cwd: directory };
+
+	const page1 = await readTool.execute("read", { path: "target.txt", offset: 1, limit: 2 } as never, undefined, undefined, context);
+	const page2 = await readTool.execute("read", { path: "target.txt", offset: 3, limit: 1 } as never, undefined, undefined, context);
+	assert.notEqual(page1.details.proofId, page2.details.proofId);
+	const anchor = page2.details.read!.lines[0]!.anchor;
+	const applyWithFirstPage = await applyTool.execute(
+		"apply",
+		{ path: "target.txt", proof_id: page1.details.proofId, changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: "THREE" }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(applyWithFirstPage.details.disposition, "succeeded", JSON.stringify(applyWithFirstPage.details.error));
+	assert.equal(await readFile(target, "utf8"), "one\ntwo\nTHREE\n");
+
+	await writeFile(target, "one\ntwo\nTHREE\nfour\n", "utf8");
+	const fresh = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const expired = await applyTool.execute(
+		"apply",
+		{ path: "target.txt", proof_id: page1.details.proofId, changes: [{ operation: "replace_range", start_anchor: fresh.details.read!.lines[3]!.anchor, end_anchor: fresh.details.read!.lines[3]!.anchor, lines: "FOUR" }] } as never,
+		undefined,
+		undefined,
+		context,
+	);
+	assert.equal(expired.details.error?.code, "invalid_proof_id");
+	assert.match(expired.content[0]?.text ?? "", new RegExp(`current proof_id is ${fresh.details.proofId}`));
+	assert.equal(await readFile(target, "utf8"), "one\ntwo\nTHREE\nfour\n");
 });
 
 test("apply tool rejects a reversed anchor range with a swap instruction instead of a reread loop", async (t) => {
@@ -691,7 +801,7 @@ test("successive single-line edits preserve proof identity and lone carriage ret
 		} as never, undefined, undefined, context);
 		assert.equal(result.details.disposition, "succeeded", JSON.stringify(result.details.error));
 		assert.equal(await readFile(target, "utf8"), `${lines}\nkeep\n`);
-		anchor = result.details.updatedAnchors!.lines.find((line) => line.line === 1)!.anchor;
+		anchor = result.details.updatedAnchorSpans![0]!.lines.find((line) => line.line === 1)!.anchor;
 	}
 });
 test("apply without proof_id rejects before trying to recover a missing target", async (t) => {

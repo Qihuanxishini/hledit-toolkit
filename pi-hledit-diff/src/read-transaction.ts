@@ -45,6 +45,16 @@ export async function runSearchAnchorsTransaction(
 		const result = readAnchorsResult(await run(buildSearchArgs(request), undefined, cwd, signal), request);
 		const queuedResult = { ...result, details: { ...result.details, path: request.path, evidencePath } };
 		evidence.updateFromToolResult(HLEDIT_SEARCH_ANCHORS_TOOL, queuedResult.details, cwd);
-		return queuedResult;
+		// [喵喵喵]: 0 命中不发新 id，但同 revision 的旧证据仍有效；把现有 id 回显给模型，
+		// 避免它为了拿 id 再做一次无意义的重读。(2026-09-22)
+		const retainedProofId = queuedResult.details.disposition === "succeeded" && !queuedResult.details.proofId
+			? evidence.getProofId(evidencePath)
+			: undefined;
+		if (!retainedProofId) return queuedResult;
+		const [first, ...rest] = queuedResult.content;
+		return {
+			content: first ? [{ ...first, text: `proof_id: ${retainedProofId}\n${first.text}` }, ...rest] : queuedResult.content,
+			details: { ...queuedResult.details, proofId: retainedProofId },
+		};
 	});
 }

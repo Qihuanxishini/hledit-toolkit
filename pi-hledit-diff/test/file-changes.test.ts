@@ -257,7 +257,7 @@ test("findChangeShapeIssue matches a token submitted by any change in the batch"
 
 test("findChangeShapeIssue leaves anchor-shaped content alone unless the token was submitted", () => {
   // 真实文件里可能出现锚点形状的行首（例如记录 hledit 输出的文档）；
-  // 只有当它恰好等于本次提交的 anchor 时才能断定为误贴。
+  // 只有当它恰好等于本次提交或当前证据里的 anchor 时才能断定为误贴。
   assert.equal(
     findChangeShapeIssue(shapeParams([{ operation: "replace_range", start_anchor: "3#Cd1", end_anchor: "3#Cd1", lines: ["120#-Sf:sample output"] }])),
     undefined,
@@ -265,6 +265,16 @@ test("findChangeShapeIssue leaves anchor-shaped content alone unless the token w
   assert.equal(
     findChangeShapeIssue(shapeParams([{ operation: "insert_after", anchor: "7#Ef2", lines: ["7#Ef2 without a colon", "  7#Ef2:indented"] }])),
     undefined,
+  );
+});
+
+test("findChangeShapeIssue also matches anchors known from the file's current evidence", () => {
+  // 把 read 输出整段贴进 insert：行首 token 是依附行之后的行，不在提交锚点里。
+  const params = shapeParams([{ operation: "insert_after", anchor: "7#Ef2", lines: ["8#Gh3:next line", "9#Ij4:another"] }]);
+  assert.equal(findChangeShapeIssue(params), undefined);
+  assert.deepEqual(
+    findChangeShapeIssue(params, new Set(["7#Ef2", "8#Gh3", "9#Ij4"])),
+    { code: "anchor_token_in_lines", changeNumber: 1, replacementLineNumber: 1, anchorToken: "8#Gh3" },
   );
 });
 

@@ -156,7 +156,7 @@ test("readAnchorsResult formats a complete empty search result", () => {
 });
 test("applyFileChangesResult summarizes successful file changes", () => {
     const result = applyFileChangesResult({
-        stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 2, contentChanged: true, firstChangedLine: 3, lastChangedLine: 5, linesAdded: 4, linesDeleted: 1, editDeltas: [{ oldStart: 3, oldEnd: 3, delta: 2 }, { oldStart: 5, oldEnd: 4, delta: 1 }], updatedAnchors: { lines: [{ line: 3, anchor: "3#BHJ", text: "changed" }], offset: 3, limit: 1, desiredLimit: 1, truncated: false } }),
+        stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 2, contentChanged: true, firstChangedLine: 3, lastChangedLine: 5, linesAdded: 4, linesDeleted: 1, editDeltas: [{ oldStart: 3, oldEnd: 3, delta: 2 }, { oldStart: 5, oldEnd: 4, delta: 1 }], updatedAnchorSpans: [{ lines: [{ line: 3, anchor: "3#BHJ", text: "changed" }, { line: 4, anchor: "4#BHK", text: "more" }, { line: 5, anchor: "5#BHL", text: "lines" }], offset: 3, limit: 3, desiredLimit: 3, truncated: false }, { lines: [{ line: 7, anchor: "7#BHM", text: "inserted" }], offset: 7, limit: 1, desiredLimit: 1, truncated: false }] }),
         stderr: "",
         exitCode: 0,
     });
@@ -178,7 +178,7 @@ test("applyFileChangesResult summarizes successful file changes", () => {
 
 test("applyFileChangesResult reports a successful no-op", () => {
     const result = applyFileChangesResult({
-        stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 1, contentChanged: false, firstChangedLine: 3, lastChangedLine: 3, linesAdded: 1, linesDeleted: 1, editDeltas: [{ oldStart: 3, oldEnd: 3, delta: 0 }], updatedAnchors: { lines: [{ line: 3, anchor: "3#BHJ", text: "unchanged" }], offset: 3, limit: 1, desiredLimit: 1, truncated: false } }),
+        stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 1, contentChanged: false, firstChangedLine: 3, lastChangedLine: 3, linesAdded: 1, linesDeleted: 1, editDeltas: [{ oldStart: 3, oldEnd: 3, delta: 0 }], updatedAnchorSpans: [{ lines: [{ line: 3, anchor: "3#BHJ", text: "unchanged" }], offset: 3, limit: 1, desiredLimit: 1, truncated: false }] }),
         stderr: "",
         exitCode: 0,
     });
@@ -190,7 +190,7 @@ test("applyFileChangesResult reports a successful no-op", () => {
 
 test("applyFileChangesResult preserves post-write durability warnings", () => {
     const result = applyFileChangesResult({
-        stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 1, contentChanged: true, linesAdded: 1, linesDeleted: 1, warnings: ["file was replaced, but directory metadata could not be synchronized: access denied"], editDeltas: [{ oldStart: 1, oldEnd: 1, delta: 0 }], updatedAnchors: { lines: [{ line: 1, anchor: "1#BHJ", text: "changed" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false } }),
+        stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 1, contentChanged: true, linesAdded: 1, linesDeleted: 1, warnings: ["file was replaced, but directory metadata could not be synchronized: access denied"], editDeltas: [{ oldStart: 1, oldEnd: 1, delta: 0 }], updatedAnchorSpans: [{ lines: [{ line: 1, anchor: "1#BHJ", text: "changed" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false }] }),
         stderr: "",
         exitCode: 0,
     });
@@ -203,7 +203,7 @@ test("applyFileChangesResult preserves post-write durability warnings", () => {
 test("applyFileChangesResult localizes unknown warnings with a generic durability note", () => {
 	const rawWarning = "some future write warning";
 	const result = applyFileChangesResult({
-		stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 1, contentChanged: true, linesAdded: 1, linesDeleted: 1, warnings: [rawWarning], editDeltas: [{ oldStart: 1, oldEnd: 1, delta: 0 }], updatedAnchors: { lines: [{ line: 1, anchor: "1#BHJ", text: "changed" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false } }),
+		stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 1, contentChanged: true, linesAdded: 1, linesDeleted: 1, warnings: [rawWarning], editDeltas: [{ oldStart: 1, oldEnd: 1, delta: 0 }], updatedAnchorSpans: [{ lines: [{ line: 1, anchor: "1#BHJ", text: "changed" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false }] }),
 		stderr: "",
 		exitCode: 0,
 	});
@@ -238,7 +238,7 @@ test("applyFileChangesResult marks a batch that never started as unavailable", (
   assert.equal(result.content[0]?.text, "spawn failed");
 });
 
-test("applyFileChangesResult requires editsApplied and updatedAnchors", () => {
+test("applyFileChangesResult requires editsApplied and updatedAnchorSpans", () => {
     const missing = applyFileChangesResult({ stdout: '{"ok":true}', stderr: "", exitCode: 0 });
     const invalid = applyFileChangesResult({ stdout: '{"ok":true,"editsApplied":-1}', stderr: "", exitCode: 0 });
     const missingAnchors = applyFileChangesResult({ stdout: '{"ok":true,"editsApplied":1}', stderr: "", exitCode: 0 });
@@ -246,7 +246,7 @@ test("applyFileChangesResult requires editsApplied and updatedAnchors", () => {
     assert.deepEqual(missing.details, { disposition: "outcome_unknown" });
     assert.deepEqual(invalid.details, { disposition: "outcome_unknown", editsApplied: -1 });
     assert.deepEqual(missingAnchors.details, { disposition: "outcome_unknown", editsApplied: 1 });
-    assert.match(missingAnchors.content[0]?.text ?? "", /valid updatedAnchors/);
+    assert.match(missingAnchors.content[0]?.text ?? "", /updatedAnchorSpans matching/);
 });
 
 test("applyFileChangesResult rejects internally inconsistent editDeltas", () => {
@@ -256,7 +256,7 @@ test("applyFileChangesResult rejects internally inconsistent editDeltas", () => 
 		contentChanged: true,
 		linesAdded: 4,
 		linesDeleted: 1,
-		updatedAnchors: { lines: [{ line: 3, anchor: "3#BHJ", text: "changed" }], offset: 3, limit: 1, desiredLimit: 1, truncated: false },
+		updatedAnchorSpans: [{ lines: [{ line: 3, anchor: "3#BHJ", text: "changed" }], offset: 3, limit: 1, desiredLimit: 1, truncated: false }],
 	};
 	const run = (payload: Record<string, unknown>) =>
 		applyFileChangesResult({ stdout: JSON.stringify(payload), stderr: "", exitCode: 0 });
@@ -274,7 +274,7 @@ test("applyFileChangesResult rejects internally inconsistent editDeltas", () => 
 		contentChanged: true,
 		editsApplied: 1,
 		editDeltas: [{ oldStart: 3, oldEnd: 3, delta: 3 }],
-		updatedAnchors: base.updatedAnchors,
+		updatedAnchorSpans: base.updatedAnchorSpans,
 	});
 	assert.equal(missingLineCounts.details.disposition, "outcome_unknown");
 
@@ -296,7 +296,10 @@ test("applyFileChangesResult verifies editDeltas against the anchored batch requ
 			{ operation: "replace_range" as const, start_anchor: "5#BKM", end_anchor: "6#BLN", lines: ["z"] },
 		],
 	};
-	const payload = (editDeltas: Array<Record<string, unknown>>, editsApplied = 2) => JSON.stringify({
+	const payload = (editDeltas: Array<Record<string, unknown>>, editsApplied = 2, updatedAnchorSpans: unknown = [
+		{ lines: [{ line: 3, anchor: "3#BHJ", text: "x" }, { line: 4, anchor: "4#BHK", text: "y" }], offset: 3, limit: 2, desiredLimit: 2, truncated: false },
+		{ lines: [{ line: 7, anchor: "7#BHL", text: "z" }], offset: 7, limit: 1, desiredLimit: 1, truncated: false },
+	]) => JSON.stringify({
 		ok: true,
 		revision: REVISION,
 		editsApplied,
@@ -304,15 +307,34 @@ test("applyFileChangesResult verifies editDeltas against the anchored batch requ
 		linesAdded: 3,
 		linesDeleted: 2,
 		editDeltas,
-		updatedAnchors: { lines: [{ line: 3, anchor: "3#BHJ", text: "x" }], offset: 3, limit: 1, desiredLimit: 1, truncated: false },
+		updatedAnchorSpans,
 	});
 
 	// CLI 物理顺序：insert_after 2 → 空区间 [3,2]；replace [5,6] 1 行 → delta -1。
+	const consistentDeltas = [{ oldStart: 3, oldEnd: 2, delta: 2 }, { oldStart: 5, oldEnd: 6, delta: -1 }];
 	const consistent = applyFileChangesResult(
-		{ stdout: payload([{ oldStart: 3, oldEnd: 2, delta: 2 }, { oldStart: 5, oldEnd: 6, delta: -1 }]), stderr: "", exitCode: 0 },
+		{ stdout: payload(consistentDeltas), stderr: "", exitCode: 0 },
 		context,
 	);
 	assert.equal(consistent.details.disposition, "succeeded");
+
+	// 产出 span必须与 editDeltas 换算出的产出区间逐项对应。
+	const spanOffsetMismatch = applyFileChangesResult(
+		{ stdout: payload(consistentDeltas, 2, [
+			{ lines: [{ line: 3, anchor: "3#BHJ", text: "x" }, { line: 4, anchor: "4#BHK", text: "y" }], offset: 3, limit: 2, desiredLimit: 2, truncated: false },
+			{ lines: [{ line: 8, anchor: "8#BHL", text: "z" }], offset: 8, limit: 1, desiredLimit: 1, truncated: false },
+		]), stderr: "", exitCode: 0 },
+		context,
+	);
+	assert.equal(spanOffsetMismatch.details.disposition, "outcome_unknown");
+	assert.match(spanOffsetMismatch.content[0]?.text ?? "", /updatedAnchorSpans matching the produced ranges/);
+	const spanCountMismatch = applyFileChangesResult(
+		{ stdout: payload(consistentDeltas, 2, [
+			{ lines: [{ line: 3, anchor: "3#BHJ", text: "x" }, { line: 4, anchor: "4#BHK", text: "y" }], offset: 3, limit: 2, desiredLimit: 2, truncated: false },
+		]), stderr: "", exitCode: 0 },
+		context,
+	);
+	assert.equal(spanCountMismatch.details.disposition, "outcome_unknown");
 
 	const wrongInterval = applyFileChangesResult(
 		{ stdout: payload([{ oldStart: 3, oldEnd: 2, delta: 2 }, { oldStart: 7, oldEnd: 8, delta: -1 }]), stderr: "", exitCode: 0 },
@@ -516,11 +538,11 @@ test("model body snapshot: stale rejection with snapshot context and field-level
 		"  Current line at the same number: 2#BBK:modified\n" +
 		"  After verifying the intended target, explicitly replace start_anchor/end_anchor with 2#BBK in a new request.\n" +
 		"This information is for verification only. The tool never repairs anchors or retries a batch automatically.\n" +
-		"Current anchor snapshot at submission time (local window: lines 1-3):\n" +
+		"Current anchor snapshot at submission time (local span: lines 1-3):\n" +
 		"1#BHJ:one\n" +
 		"2#BBK:modified\n" +
 		"3#BJL:three\n" +
-		"Only reuse these anchors after confirming that the window still covers the intended target and complete range; otherwise call hledit_read_anchors again.",
+		"Only reuse these anchors after confirming that the span still covers the intended target and complete range; otherwise call hledit_read_anchors again.",
 	);
 	assert.equal(result.details.disposition, "rejected");
 });

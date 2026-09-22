@@ -383,7 +383,7 @@ test("renderFileChangesResult caches expanded anchors without mutating the diff 
 			disposition: "succeeded",
 			diff: "-2 beta\n+2 BETA",
 			editsApplied: 1,
-			updatedAnchors: { lines: [{ line: 2, anchor: "2#ZZZ", text: "BETA", textTruncated: false }], offset: 2, limit: 1, desiredLimit: 1, truncated: false },
+			updatedAnchorSpans: [{ lines: [{ line: 2, anchor: "2#ZZZ", text: "BETA", textTruncated: false }], offset: 2, limit: 1, desiredLimit: 1, truncated: false }],
 		},
 	};
 	const component = renderFileChangesResult(result, options(true), theme, { args: { path: "notes.txt" } });
@@ -407,7 +407,7 @@ test("renderFileChangesResult keeps updated anchors whose hash contains URL-safe
 			disposition: "succeeded",
 			diff: "-7 old\n+7 gamma",
 			editsApplied: 1,
-			updatedAnchors: {
+			updatedAnchorSpans: [{
 				lines: [
 					{ line: 7, anchor: "7#a-_", text: "gamma", textTruncated: false },
 					{ line: 8, anchor: "8#_x-", text: "delta", textTruncated: false },
@@ -416,7 +416,7 @@ test("renderFileChangesResult keeps updated anchors whose hash contains URL-safe
 				limit: 2,
 				desiredLimit: 2,
 				truncated: false,
-			},
+			}],
 		},
 	};
 	const output = render(renderFileChangesResult(result, options(true), theme, { args: { path: "notes.txt" } }), 72);
@@ -434,13 +434,13 @@ test("renderFileChangesResult shows structured updated anchors even when no diff
 			editsApplied: 1,
 			linesAdded: 1,
 			linesDeleted: 1,
-			updatedAnchors: {
+			updatedAnchorSpans: [{
 				lines: [{ line: 3, anchor: "3#ABC", text: "current", textTruncated: false }],
 				offset: 3,
 				limit: 1,
 				desiredLimit: 1,
 				truncated: false,
-			},
+			}],
 		},
 	};
 	const output = render(renderFileChangesResult(result, options(true), theme, { args: { path: "notes.txt" } }), 72);
@@ -592,7 +592,7 @@ test("source controls are visibly escaped in reads, diffs and updated anchors wi
 		details: {
 			disposition: "succeeded",
 			changePreview: { truncated: false, lines: [{ kind: "add", newLine: 1, text: payload, changeIndex: 0 }] },
-			updatedAnchors: { lines: [{ line: 1, anchor: "1#AAA", text: payload, textTruncated: false }], offset: 1, limit: 1, desiredLimit: 1, truncated: false },
+			updatedAnchorSpans: [{ lines: [{ line: 1, anchor: "1#AAA", text: payload, textTruncated: false }], offset: 1, limit: 1, desiredLimit: 1, truncated: false }],
 		},
 	};
 	const original = JSON.stringify(result);

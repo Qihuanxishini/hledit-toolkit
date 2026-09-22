@@ -91,7 +91,7 @@ The optional proof is required by the Pi extension. Its revision and strictly in
 
 ## Output and safety
 
-A successful batch includes `revision`, `contentChanged`, edit counts, `editDeltas`, and a bounded `updatedAnchors` window. `--check` adds `checked:true` and never writes. A no-op reports `contentChanged:false` without changing the target.
+A successful batch includes `revision`, `contentChanged`, edit counts, `editDeltas`, and `updatedAnchorSpans`: one bounded span per edit that produced lines, covering exactly its produced range. `--check` adds `checked:true` and never writes. A no-op reports `contentChanged:false` without changing the target.
 
 Logical failures return JSON on stdout with exit code `0`; malformed command-line usage exits `2`. Read paths reject binary or invalid UTF-8 files. Revisions hash original bytes, including BOM, line endings, and trailing newline. Writes preserve untouched terminators and BOM state, use a temporary sibling plus atomic replacement, and recheck the original revision immediately before commit.
 

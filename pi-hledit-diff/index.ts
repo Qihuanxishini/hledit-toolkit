@@ -12,7 +12,7 @@ import {
 	preferBuiltInEditFallback,
 	preferAnchoredEditingTools,
 } from "./src/active-tools.ts";
-import { HLEDIT_INSTALL_HINT, parseHleditCapabilities, resolveHleditBin, runHledit, type HleditRun } from "./src/cli.ts";
+import { HLEDIT_INSTALL_HINT, parseHleditCapabilities, resolveHleditBin, runHledit } from "./src/cli.ts";
 import {
 	buildAnchoredChangePreview,
 	emptyChangePreview,
@@ -27,7 +27,6 @@ import {
 	findSingleLineRangeExpansionIssue,
 	singleLineRangeExpansionResult,
 } from "./src/file-changes.ts";
-import { formatUpdatedAnchorSpans, parseUpdatedAnchorSpans } from "./src/post-edit-context.ts";
 import { decodeFileChangeInput, prepareReadAnchorsArguments, prepareSearchAnchorsArguments } from "./src/prepare-arguments.ts";
 import {
 	formatReadProofFailure,
@@ -41,7 +40,6 @@ import { runReadAnchorsTransaction, runSearchAnchorsTransaction } from "./src/re
 import { applyFileChangesResult, fileChangeCheckFailure } from "./src/apply-result.ts";
 import {
 	attachEvidencePath,
-	parseRunObject,
 	rejectedToolResult,
 	shouldMarkHleditResultAsError,
 	type TextResult,
@@ -81,33 +79,22 @@ function appendCurrentProofId(result: TextResult, proofId: string | undefined): 
 	};
 }
 
-// 成功响应已由 result.ts 验证；这里统一追加局部锚点上下文与提交绑定的 change preview。
+// 成功响应和锚点正文已由 apply-result.ts 验证并生成；这里追加提交绑定的 change preview。
 // 不再前后读取完整文件：preview 只由已验证输入构成，外部并发修改不可能混入
 //（详见 change-preview.ts 与 D4）。preview 构建失败只降级为 previewError，
 // 不得改变已确认成功的 disposition。
 function finalizeSuccessfulEditResult(
 	result: TextResult,
-	run: HleditRun,
 	normalizedPath: string,
 	evidencePath: string,
 	changePreview: VerifiedChangePreview | undefined,
 ): TextResult {
-	const parsed = parseRunObject(run)!;
-	// result.ts 已校验span 与 editDeltas 一一对应。
-	const updatedAnchorSpans = parseUpdatedAnchorSpans(parsed.updatedAnchorSpans)!;
-	const postEditContext = formatUpdatedAnchorSpans(updatedAnchorSpans);
-	const modelPostEditContext = result.details.contentChanged === false ? undefined : postEditContext.text;
-
 	return {
 		...result,
-		content: modelPostEditContext ? appendResultText(result, modelPostEditContext) : result.content,
 		details: {
 			...result.details,
 			path: normalizedPath,
 			evidencePath,
-			revision: result.details.revision as string,
-			updatedAnchorSpans,
-			postEditContext: { truncated: postEditContext.truncated },
 			...(changePreview
 				? { changePreview }
 				: { previewError: "A verified change preview could not be built for this edit; the write itself succeeded." }),
@@ -162,7 +149,6 @@ async function runFileChangesWithDiff(
 					evidencePath,
 					cwd: ctx.cwd,
 					signal,
-					evidence,
 					run: runHledit,
 				});
 				if (recovered) return recovered;
@@ -208,7 +194,7 @@ async function runFileChangesWithDiff(
 		}
 		const changePreview = tryBuildChangePreview(result, () =>
 			buildAnchoredChangePreview(effectiveParams.changes, proofSelection.consumedLines));
-		const finalized = finalizeSuccessfulEditResult(result, run, normalizedPath, evidencePath, changePreview);
+		const finalized = finalizeSuccessfulEditResult(result, normalizedPath, evidencePath, changePreview);
 		if (!proofSelection.renamedAnchors) return finalized;
 		const resolved = proofSelection.renamedAnchors
 			.map((rename) => `${rename.requested} -> ${rename.current}`)

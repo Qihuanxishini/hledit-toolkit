@@ -3,16 +3,15 @@ import {
 	formatReadProofDiagnosis,
 	lineRangeDescription,
 	readProofFailureContext,
-	type ReadEvidenceStore,
 	type ReadProofFailure,
 } from "./read-evidence.ts";
 import type { HleditReadRunner } from "./read-transaction.ts";
 import { formatReadMetadata, readAnchorsResult } from "./read-result.ts";
 import { attachEvidencePath, rejectedToolResult, type HleditReadMetadata, type TextResult } from "./result.ts";
 
-// 编辑证明缺口的定向补读：在调用方已持有的 file mutation queue 事务内，用 read-range 把
-// selectProof 指出的缺失行读回来、记进 evidence，再把源码原样返回给调用方复核后显式重提
-// batch。这一趟往返正是"模型必须看过被消费的行"这条不变量的执行点，因此这里不自动重放修改。
+// 编辑证明缺口的定向补读：在调用方持有的 file mutation queue 事务内收集缺失行，
+// 把源码原样返回给调用方复核后显式重提 batch；证据由调用方在队列放行前统一登记。
+// 这一趟往返执行“模型必须看过被消费的行”的不变量，因此这里不自动重放修改。
 //
 // 读到的每一行都会回灌进调用方上下文，所以补读必须有预算。三个上限各管一件事，任一触发
 // 都停止自动补读并返回终止性指导：
@@ -30,13 +29,12 @@ export type ReadProofRecoveryRequest = {
 	evidencePath: string;
 	cwd: string;
 	signal: AbortSignal | undefined;
-	evidence: ReadEvidenceStore;
 	run: HleditReadRunner;
 };
 
 // failure 没给出目标区间时无处可读（例如锚点行号本身不可用），交回调用方走普通拒绝。
 export async function recoverMissingReadProof(request: ReadProofRecoveryRequest): Promise<TextResult | undefined> {
-	const { failure, path, evidencePath, cwd, signal, evidence, run } = request;
+	const { failure, path, evidencePath, cwd, signal, run } = request;
 	const range = failure.suggestedReadRange;
 	if (!range) return undefined;
 
@@ -50,6 +48,7 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 	// 所有返回路径共用：诊断段 + 本路径指令 + 已渲染页面，并始终带上已完成补读的结构化
 	// 结果。details 里的 recoveredReads 是 branch replay 的唯一依据（read-result.ts 的
 	// READ_PROOF_RECOVERY_CODES），漏带就会让实时 evidence 与重放结果分歧。
+	// [喵喵喵]: 实时登记也只消费返回结果，统一使用最终 proof id；逐页提前登记会让容量淘汰与重放分歧。
 	const recoveryResult = (
 		code: string,
 		message: string,
@@ -146,7 +145,6 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 		renderedPages.push(renderedPage);
 		renderedBytes += renderedPageBytes;
 		proofId = readResult.details.proofId;
-		evidence.recordRead(evidencePath, recoveredRead, proofId);
 
 		const nextOffset = recoveredRead.nextOffset;
 		// 先判定是否已覆盖缺口，再判定预算：最后一页正好把缺口读完时不该报超预算。

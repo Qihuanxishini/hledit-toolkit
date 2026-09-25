@@ -1,6 +1,6 @@
 import { anchorTokenLine, lineFromAnchor } from "./anchor.ts";
 import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
-import { parseAnchorContext, parseUpdatedAnchorSpans, type BatchAnchorContext } from "./post-edit-context.ts";
+import { formatUpdatedAnchorSpans, parseAnchorContext, parseUpdatedAnchorSpans, type BatchAnchorContext } from "./post-edit-context.ts";
 import { suggestedReadWindow } from "./read-args.ts";
 import {
 	isIntegerAtLeast,
@@ -413,29 +413,33 @@ function editDeltasMatchRequest(deltas: HleditEditDelta[], context: ApplyResultC
 	);
 }
 
-function isValidApplySuccess(parsed: Record<string, unknown> | null, context: ApplyResultContext): boolean {
-	if (parsed?.ok !== true || !isRawRevision(parsed.revision)) return false;
-	if (typeof parsed.editsApplied !== "number" || !Number.isSafeInteger(parsed.editsApplied) || parsed.editsApplied < 0) return false;
-	if (context.changes && parsed.editsApplied !== context.changes.length) return false;
-	if (parsed.contentChanged !== undefined && typeof parsed.contentChanged !== "boolean") return false;
-	if (parsed.warnings !== undefined && (!Array.isArray(parsed.warnings) || !parsed.warnings.every((warning) => typeof warning === "string"))) return false;
+function parseApplySuccess(
+	parsed: Record<string, unknown> | null,
+	context: ApplyResultContext,
+): { editDeltas: HleditEditDelta[]; updatedAnchorSpans: BatchAnchorContext[] } | undefined {
+	if (parsed?.ok !== true || !isRawRevision(parsed.revision)) return undefined;
+	if (typeof parsed.editsApplied !== "number" || !Number.isSafeInteger(parsed.editsApplied) || parsed.editsApplied < 0) return undefined;
+	if (context.changes && parsed.editsApplied !== context.changes.length) return undefined;
+	if (parsed.contentChanged !== undefined && typeof parsed.contentChanged !== "boolean") return undefined;
+	if (parsed.warnings !== undefined && (!Array.isArray(parsed.warnings) || !parsed.warnings.every((warning) => typeof warning === "string"))) return undefined;
 	// bundled CLI 恒输出 linesAdded/linesDeleted（无 omitempty）；delta 总和是同一份
 	// 统计的另一投影，二者不一致即内部矛盾。
-	if (!isIntegerAtLeast(parsed.linesAdded, 0) || !isIntegerAtLeast(parsed.linesDeleted, 0)) return false;
+	if (!isIntegerAtLeast(parsed.linesAdded, 0) || !isIntegerAtLeast(parsed.linesDeleted, 0)) return undefined;
 	const editDeltas = parseEditDeltas(parsed.editDeltas);
-	if (!editDeltas || editDeltas.length !== parsed.editsApplied) return false;
-	if (editDeltas.reduce((sum, delta) => sum + delta.delta, 0) !== parsed.linesAdded - parsed.linesDeleted) return false;
-	if (!editDeltasMatchRequest(editDeltas, context)) return false;
+	if (!editDeltas || editDeltas.length !== parsed.editsApplied) return undefined;
+	if (editDeltas.reduce((sum, delta) => sum + delta.delta, 0) !== parsed.linesAdded - parsed.linesDeleted) return undefined;
+	if (!editDeltasMatchRequest(editDeltas, context)) return undefined;
 	// 产出 span必须与 editDeltas 换算出的非空产出区间逐项对应：窗口是 evidence 合并与
 	// 模型正文的直接来源，对不上就不能当成功结果消费。
 	const spans = parseUpdatedAnchorSpans(parsed.updatedAnchorSpans);
-	if (!spans) return false;
+	if (!spans) return undefined;
 	const producedRanges = producedLineRangesFromEditDeltas(editDeltas).filter((range) => range.end >= range.start);
-	if (spans.length !== producedRanges.length) return false;
-	return spans.every((span, index) =>
+	if (spans.length !== producedRanges.length) return undefined;
+	if (!spans.every((span, index) =>
 		span.offset === producedRanges[index]!.start &&
 		span.desiredLimit === producedRanges[index]!.end - producedRanges[index]!.start + 1,
-	);
+	)) return undefined;
+	return { editDeltas, updatedAnchorSpans: spans };
 }
 
 function isValidFileChangeCheckSuccess(parsed: Record<string, unknown> | null): boolean {
@@ -512,8 +516,6 @@ export function extractCliSummary(parsed: Record<string, unknown> | null): Recor
 		summary.warnings = parsed.warnings.map(localizeApplyWarning);
 		summary.rawWarnings = parsed.warnings;
 	}
-	const editDeltas = parseEditDeltas(parsed.editDeltas);
-	if (editDeltas) summary.editDeltas = editDeltas;
 	if (isRawRevision(parsed.revision)) summary.revision = parsed.revision;
 	if (isRawRevision(parsed.currentRevision)) summary.currentRevision = parsed.currentRevision;
 	return summary;
@@ -521,7 +523,7 @@ export function extractCliSummary(parsed: Record<string, unknown> | null): Recor
 
 export function applyFileChangesResult(run: HleditRun, context: ApplyResultContext = {}): TextResult {
 	const parsed = parseRunObject(run);
-	const applySuccessValid = isValidApplySuccess(parsed, context);
+	const success = run.exitCode === 0 ? parseApplySuccess(parsed, context) : undefined;
 	const applyError = parsed ? parseApplyErrorMetadata(parsed, context) : undefined;
 	const disposition: HleditDisposition =
 		run.exitCode !== 0
@@ -532,15 +534,21 @@ export function applyFileChangesResult(run: HleditRun, context: ApplyResultConte
 				? applyError
 					? "rejected"
 					: "unavailable"
-				: !applySuccessValid
+				: !success
 					? "outcome_unknown"
 					: "succeeded";
+	// [喵喵喵]: 已验证的 span 同时生成正文和持久化 details；入口无需重新解析 CLI 输出。
+	const postEditContext = success ? formatUpdatedAnchorSpans(success.updatedAnchorSpans) : undefined;
+	const text = formatApplyRunText(run, context, parsed, success !== undefined, applyError);
+	const anchorText = parsed?.contentChanged === false ? undefined : postEditContext?.text;
 	return {
-		content: [{ type: "text", text: formatApplyRunText(run, context, parsed, applySuccessValid, applyError) }],
+		content: [{ type: "text", text: anchorText ? `${text}\n\n${anchorText}` : text }],
 		details: {
 			disposition,
 			...(context.path ? { path: context.path } : {}),
 			...extractCliSummary(parsed),
+			...success,
+			...(postEditContext ? { postEditContext: { truncated: postEditContext.truncated } } : {}),
 			...(applyError ? { error: applyError } : {}),
 		},
 	};

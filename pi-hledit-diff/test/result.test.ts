@@ -179,7 +179,7 @@ test("applyFileChangesResult summarizes successful file changes", () => {
         exitCode: 0,
     });
 
-    assert.equal(result.content[0]?.text, "Applied 2 changes; line delta: +4 -1.");
+    assert.equal(result.content[0]?.text, "Applied 2 changes; line delta: +4 -1.\n\nUpdated anchors:\n3#BHJ:changed\n4#BHK:more\n5#BHL:lines\n7#BHM:inserted");
     assert.deepEqual(result.details, {
         disposition: "succeeded",
         revision: REVISION,
@@ -190,6 +190,15 @@ test("applyFileChangesResult summarizes successful file changes", () => {
         linesAdded: 4,
         linesDeleted: 1,
         editDeltas: [{ oldStart: 3, oldEnd: 3, delta: 2 }, { oldStart: 5, oldEnd: 4, delta: 1 }],
+        updatedAnchorSpans: [
+            { lines: [
+                { line: 3, anchor: "3#BHJ", text: "changed", textTruncated: false },
+                { line: 4, anchor: "4#BHK", text: "more", textTruncated: false },
+                { line: 5, anchor: "5#BHL", text: "lines", textTruncated: false },
+            ], offset: 3, limit: 3, desiredLimit: 3, truncated: false },
+            { lines: [{ line: 7, anchor: "7#BHM", text: "inserted", textTruncated: false }], offset: 7, limit: 1, desiredLimit: 1, truncated: false },
+        ],
+        postEditContext: { truncated: false },
     });
     assert.equal(isFailedHleditResult(result.details), false);
 });
@@ -204,6 +213,7 @@ test("applyFileChangesResult reports a successful no-op", () => {
     assert.equal(result.content[0]?.text, "No changes were needed; the original anchors are still valid.");
     assert.equal(result.details.disposition, "succeeded");
     assert.equal(result.details.contentChanged, false);
+    assert.deepEqual(result.details.updatedAnchorSpans?.[0]?.lines, [{ line: 3, anchor: "3#BHJ", text: "unchanged", textTruncated: false }]);
 });
 
 test("applyFileChangesResult preserves post-write durability warnings", () => {
@@ -213,7 +223,7 @@ test("applyFileChangesResult preserves post-write durability warnings", () => {
         exitCode: 0,
     });
 
-    assert.equal(result.content[0]?.text, "Applied 1 change; line delta: +1 -1.\nWarnings:\n- The file content was replaced, but directory metadata could not be synchronized; durability may be reduced in extreme scenarios such as power loss.");
+    assert.equal(result.content[0]?.text, "Applied 1 change; line delta: +1 -1.\nWarnings:\n- The file content was replaced, but directory metadata could not be synchronized; durability may be reduced in extreme scenarios such as power loss.\n\nUpdated anchors:\n1#BHJ:changed");
     assert.deepEqual(result.details.warnings, ["The file content was replaced, but directory metadata could not be synchronized; durability may be reduced in extreme scenarios such as power loss."]);
     assert.deepEqual(result.details.rawWarnings, ["file was replaced, but directory metadata could not be synchronized: access denied"]);
 });
@@ -281,6 +291,9 @@ test("applyFileChangesResult rejects internally inconsistent editDeltas", () => 
 
 	const countMismatch = run({ ...base, editsApplied: 2, editDeltas: [{ oldStart: 3, oldEnd: 3, delta: 3 }] });
 	assert.equal(countMismatch.details.disposition, "outcome_unknown");
+	assert.equal(countMismatch.details.updatedAnchorSpans, undefined);
+	assert.equal(countMismatch.details.editDeltas, undefined);
+	assert.doesNotMatch(countMismatch.content[0]?.text ?? "", /Updated anchors:/);
 	assert.match(countMismatch.content[0]?.text ?? "", /editDeltas consistent with the request/);
 
 	const sumMismatch = run({ ...base, editsApplied: 1, editDeltas: [{ oldStart: 3, oldEnd: 3, delta: 1 }] });

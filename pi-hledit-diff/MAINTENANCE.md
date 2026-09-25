@@ -147,7 +147,7 @@ pi-hledit-diff/
 - 公开 schema 要求 `proof_id`，但不暴露 raw revision 或 CLI `proof`；插件仅接受该 canonical path 当前 revision 内发出过的 id，再从 branch evidence 注入每个消费行或 insert 依附行的完整 hidden proof；
 - proof id 无效或跨路径使用时不启动 CLI；proof 行覆盖不完整时，apply 在同一 canonical file queue 内自动分页执行定向只读，直到完整覆盖目标缺口或触及恢复预算。成功恢复通过 `recoveredReads` 与新的 `proof_id` 返回当前证据，调用方审阅后显式重提 batch。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；插件不自动重放修改；
 - 定向补读有硬预算（`src/read-recovery.ts`）：缺口跨度 1,200 行、4 页、96 KiB 正文。补读会把读到的每一行原样回灌进模型上下文，所以跨度超限时一个子进程都不启动，直接返回 `proof_recovery_budget_exceeded` 与显式分块读取指令；页数或字节超限时保留已读页（仍是有效 proof）并返回同一 code。三个上限决定单次工具结果最多占多少上下文窗口，不是性能调优值；
-- 补读页面不再逐页输出 `proof_id`。多页恢复只有一个权威 proof id，逐页重复会让调用方抄到已作废的那个；正文在页面之前单独给出 `Use proof_id: <id>`，`details.proofId` 与之一致；
+- 多页补读通过 `recoveredReads` 返回页面，正文与 `details.proofId` 使用同一个最终 proof id。补读函数只收集页面；调用方在 canonical file queue 放行前经 `updateFromToolResult` 统一登记，每页一次。实时执行与 branch replay 使用相同的登记顺序和容量淘汰规则；
 - 仅对命中 `single_line_range_expansion` 启发式的请求先执行一次 `batch --check`，用于确认当前 revision、hidden proof、全部锚点与操作冲突后再返回字段级指导；普通 apply 直接执行非 check `batch`，CLI 在同一路径完整验证并于原子替换前复检 raw-byte revision。
 
 内部请求：
@@ -265,12 +265,12 @@ Windows 使用 `golang.org/x/sys/windows` 处理 DACL，正文写入临时文件
 | `src/cli.ts` | CLI 3.x capability 门禁、bounded output 和 exit-confirmed 进程终止。 |
 | `src/result.ts` | 共享结果类型、disposition、edit delta 校验与结果构造器。 |
 | `src/read-result.ts` | 读取响应校验、补读 metadata 校验及读取正文和错误提示。 |
-| `src/apply-result.ts` | 写入响应校验、stale 诊断与写入结果正文。 |
+| `src/apply-result.ts` | 写入响应校验、stale 诊断与写入结果正文；校验得到的 delta/span 直接用于 details 和更新锚点正文。 |
 | `src/anchor.ts` / `src/anchor-hash.ts` | 规范锚点语法、行号提取与 hash 算法。 |
 | `src/read-args.ts` | 工具路径归一化、读取/搜索参数与补读窗口。 |
 | `src/change-preview.ts` | 提交绑定 preview、UTF-8 cap、结构重验和 diff 文本桥。 |
 | `src/post-edit-context.ts` | `updatedAnchorSpans` 验证与模型正文格式化。 |
-| `src/render.ts` / `src/diff-renderer.ts` | 结构化锚点与自适应 diff TUI。 |
+| `src/render.ts` / `src/diff-renderer.ts` | 结构化锚点与自适应 diff TUI；读取预览折叠时最多显示 12 个源码屏幕行，展开保留完整页面，模型正文与 proof 不受展示裁剪影响。 |
 | `src/syntax-highlight.ts` | 两套 TUI 共用的语言解析与按行高亮缓存。 |
 | `src/compaction-files.ts` | 三工具结构化结果的 compaction fileOps。 |
 

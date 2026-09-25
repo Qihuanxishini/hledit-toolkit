@@ -1,5 +1,5 @@
 import { keyHint, type AgentToolResult, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { getCapabilities, hyperlink, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { getCapabilities, hyperlink, sliceByColumn, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { changePreviewDiffText, parseChangePreview } from "./change-preview.ts";
@@ -31,7 +31,7 @@ type AnchoredSourceLine = {
 	content: string;
 };
 
-const COLLAPSED_ANCHOR_LINES = 12;
+const COLLAPSED_ANCHOR_ROWS = 12;
 
 function expandHint(): string {
 	try {
@@ -98,6 +98,7 @@ function createAnchoredSourceRowsComponent(
 	lines: AnchoredSourceLine[],
 	path: string | undefined,
 	theme: RenderTheme,
+	maxRows = Number.POSITIVE_INFINITY,
 ): RenderComponent {
 	const anchorWidth = lines.reduce((width, line) => Math.max(width, line.anchor.length), 0);
 	const prefixWidth = anchorWidth + 4;
@@ -109,12 +110,19 @@ function createAnchoredSourceRowsComponent(
 		const rendered: string[] = [];
 
 		for (const line of lines) {
+			const remainingRows = maxRows - rendered.length;
+			if (remainingRows <= 0) break;
 			const highlighted = highlighter.highlight(line);
+			// [喵喵喵]: 按屏幕行预算裁剪显示副本，再换行；隐藏尾部不参与布局，原始源码与 proof 保持完整。
+			const visibleBudget = contentWidth * remainingRows;
+			const displayText = highlighted.width > visibleBudget
+				? `${sliceByColumn(highlighted.text, 0, visibleBudget, true)}\x1b[0m`
+				: highlighted.text;
 			const sourceRows = highlighted.width <= contentWidth
-				? [highlighted.text]
-				: wrapTextWithAnsi(highlighted.text, contentWidth);
+				? [displayText]
+				: wrapTextWithAnsi(displayText, contentWidth);
 			const wrapped = sourceRows.length > 0 ? sourceRows : [""];
-			for (const [index, source] of wrapped.entries()) {
+			for (const [index, source] of wrapped.slice(0, remainingRows).entries()) {
 				const anchor = index === 0 ? line.anchor.padStart(anchorWidth, " ") : " ".repeat(anchorWidth);
 				const prefix = `${theme.fg(index === 0 ? "accent" : "dim", anchor)}${theme.fg("dim", " │ ")}`;
 				const renderedLine = `${prefix}${source}`;
@@ -197,9 +205,10 @@ export function renderReadAnchorsResult(
 		return component((width) => [truncateToWidth(theme.fg("warning", "缺少结构化读取结果；请重新读取目标文件"), width, "")]);
 	}
 	const path = pathFromContext(context);
-	const visible = options.expanded ? read.lines : read.lines.slice(0, COLLAPSED_ANCHOR_LINES);
+	const visible = options.expanded ? read.lines : read.lines.slice(0, COLLAPSED_ANCHOR_ROWS);
 	const sourceRowsComponent = createAnchoredSourceRowsComponent(
 		visible.map((line) => ({ anchor: line.anchor, lineNumber: line.line, content: line.text })), path, theme,
+		options.expanded ? Number.POSITIVE_INFINITY : COLLAPSED_ANCHOR_ROWS + 1,
 	);
 	return component((width) => {
 		if (width === 0) return [];
@@ -218,12 +227,16 @@ export function renderReadAnchorsResult(
 		].filter(Boolean).join(" ");
 		if (read.lines.length === 0 || width < 18) return [truncateToWidth(header, width, "")];
 
+		const sourceRows = sourceRowsComponent.render(width);
+		const wrappedRowsHidden = !options.expanded && sourceRows.length > COLLAPSED_ANCHOR_ROWS;
 		const output = [
 			truncateToWidth(header, width, ""),
 			theme.fg("dim", "─".repeat(width)),
-			...sourceRowsComponent.render(width),
+			...(wrappedRowsHidden ? sourceRows.slice(0, COLLAPSED_ANCHOR_ROWS) : sourceRows),
 		];
-		if (!options.expanded && read.lines.length > visible.length) {
+		if (wrappedRowsHidden) {
+			output.push("", truncateToWidth(theme.fg("muted", `… 预览已折叠 • ${expandHint()}`), width, ""));
+		} else if (!options.expanded && read.lines.length > visible.length) {
 			output.push("", truncateToWidth(theme.fg("muted", `… 还有 ${read.lines.length - visible.length} 行锚点 • ${expandHint()}`), width, ""));
 		}
 		if (read.nextOffset !== undefined) {

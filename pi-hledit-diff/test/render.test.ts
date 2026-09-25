@@ -121,6 +121,37 @@ test("renderReadAnchorsResult shows actual range, total lines, and EOF", () => {
     assert.ok(output.every((line) => visibleWidth(line) <= 80));
 });
 
+for (const text of ["x".repeat(30_000), "字🙂e\u0301".repeat(2_000)]) {
+	test(`collapsed anchor preview bounds wrapped rows (${text.length} characters)`, () => {
+		const result: TextResult = {
+			content: [{ type: "text", text: `proof_id: test1\n1#AAB:${text}` }],
+			details: {
+				disposition: "succeeded", proofId: "test1",
+				read: {
+					path: "sample.txt", revision: `sha256:${"a".repeat(64)}`,
+					requested: { offset: 1, limit: 1 },
+					actual: { firstLine: 1, lastLine: 1, lineCount: 1, totalLines: 1 },
+					lines: [{ line: 1, anchor: "1#AAB", text, textTruncated: false }],
+					truncated: false, textTruncated: false, eof: true,
+				},
+			},
+		};
+		const snapshot = JSON.stringify(result);
+		const collapsed = renderReadAnchorsResult(result, options(), theme, { args: { path: "sample.txt" } });
+		for (const width of [18, 40, 100]) {
+			const output = collapsed.render(width);
+			assert.equal(output.length, 16);
+			assert.ok(output.every((line) => visibleWidth(line) <= width));
+			assert.ok(output.some((line) => line.includes("预览已折叠")));
+			assert.strictEqual(collapsed.render(width), output);
+		}
+		const expanded = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "sample.txt" } }), 100);
+		assert.ok(expanded.length > 16);
+		assert.equal(expanded.slice(2).map((line) => line.slice(line.indexOf(" │ ") + 3)).join(""), text);
+		assert.equal(JSON.stringify(result), snapshot);
+	});
+}
+
 test("renderReadAnchorsResult expands structured continuation details", () => {
     const lines = [
         { line: 8, anchor: "8#AAB", text: "first", textTruncated: false },

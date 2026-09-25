@@ -1,5 +1,5 @@
 import { generateDiffString } from "@earendil-works/pi-coding-agent";
-import { lineFromAnchor } from "./file-changes.ts";
+import { lineFromAnchor } from "./anchor.ts";
 import type { FileChangeParams } from "./schema.ts";
 
 // 提交绑定的局部 change preview：

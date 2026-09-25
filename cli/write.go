@@ -8,17 +8,19 @@ import (
 	"path/filepath"
 )
 
-// postCommitDurabilityError 表示目标文件已经替换成功，但目录元数据未能持久化。
-// 调用方必须把它作为“已写入但持久性降级”处理，不能误报为零修改。
-type postCommitDurabilityError struct {
-	err error
+// writeOutcomeUnknownError 表示替换可能已改变文件位置；相关文件必须留给恢复检查。
+type writeOutcomeUnknownError struct {
+	targetPath string
+	tempPath   string
+	backupPath string
+	err        error
 }
 
-func (e *postCommitDurabilityError) Error() string {
-	return fmt.Sprintf("file was replaced, but directory metadata could not be synchronized: %v", e.err)
+func (e *writeOutcomeUnknownError) Error() string {
+	return fmt.Sprintf("write outcome unknown: %v; inspect target %q, replacement candidate %q, and original recovery file %q before editing; recovery files were retained", e.err, e.targetPath, e.tempPath, e.backupPath)
 }
 
-func (e *postCommitDurabilityError) Unwrap() error {
+func (e *writeOutcomeUnknownError) Unwrap() error {
 	return e.err
 }
 
@@ -64,23 +66,29 @@ func resolveAtomicWriteTarget(path string) (string, error) {
 }
 
 type preparedAtomicReplacement struct {
-	targetPath string
-	tempPath   string
+	targetPath        string
+	tempPath          string
+	targetExists      bool
+	retainForRecovery bool
 }
 
 func (replacement *preparedAtomicReplacement) discard() {
-	_ = os.Remove(replacement.tempPath)
+	if !replacement.retainForRecovery {
+		_ = os.Remove(replacement.tempPath)
+	}
 }
 
 func (replacement *preparedAtomicReplacement) commit() (warning string, err error) {
-	if err := replaceFile(replacement.tempPath, replacement.targetPath); err != nil {
-		var durabilityErr *postCommitDurabilityError
-		if errors.As(err, &durabilityErr) {
-			return durabilityErr.Error(), nil
+	warning, err = replaceFile(replacement.tempPath, replacement.targetPath, replacement.targetExists)
+	if err != nil {
+		var unknownErr *writeOutcomeUnknownError
+		if errors.As(err, &unknownErr) {
+			// [喵喵喵]: 部分 Windows 替换失败会把原数据移入恢复文件，不能按普通临时文件清理。(2026-09-24)
+			replacement.retainForRecovery = true
 		}
 		return "", fmt.Errorf("replace target %q: %w", replacement.targetPath, err)
 	}
-	return "", nil
+	return warning, nil
 }
 
 // prepareAtomicReplacement 在真实目标旁完成临时文件写入与同步，但不替换目标。
@@ -111,7 +119,7 @@ func prepareAtomicReplacement(path string, content []byte) (*preparedAtomicRepla
 		}
 	}
 
-	tempFile, err := os.CreateTemp(filepath.Dir(targetPath), ".hledit-*")
+	tempFile, err := createTemporarySibling(targetPath, targetInfo)
 	if err != nil {
 		return nil, fmt.Errorf("create temporary sibling for %q: %w", targetPath, err)
 	}
@@ -127,11 +135,6 @@ func prepareAtomicReplacement(path string, content []byte) (*preparedAtomicRepla
 	if _, err := tempFile.Write(content); err != nil {
 		return nil, fmt.Errorf("write temporary file for %q: %w", targetPath, err)
 	}
-	if targetExists {
-		if err := tempFile.Chmod(targetInfo.Mode().Perm()); err != nil {
-			return nil, fmt.Errorf("preserve permissions for %q: %w", targetPath, err)
-		}
-	}
 	if err := tempFile.Sync(); err != nil {
 		return nil, fmt.Errorf("synchronize temporary file for %q: %w", targetPath, err)
 	}
@@ -139,17 +142,7 @@ func prepareAtomicReplacement(path string, content []byte) (*preparedAtomicRepla
 		return nil, fmt.Errorf("close temporary file for %q: %w", targetPath, err)
 	}
 	removeTemp = false
-	return &preparedAtomicReplacement{targetPath: targetPath, tempPath: tempPath}, nil
-}
-
-// atomicWrite 在完整临时文件准备后原子替换目标。
-func atomicWrite(path string, content []byte) (warning string, err error) {
-	replacement, err := prepareAtomicReplacement(path, content)
-	if err != nil {
-		return "", err
-	}
-	defer replacement.discard()
-	return replacement.commit()
+	return &preparedAtomicReplacement{targetPath: targetPath, tempPath: tempPath, targetExists: targetExists}, nil
 }
 
 // beforeAtomicRevisionCheck 是 plan/commit 竞争测试 seam；生产环境保持 no-op。

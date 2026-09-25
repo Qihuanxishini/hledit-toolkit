@@ -2,12 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { HLEDIT_INSTALL_HINT } from "../src/cli.ts";
+import { applyFileChangesResult, fileChangeCheckFailure } from "../src/apply-result.ts";
+import { readAnchorsResult } from "../src/read-result.ts";
 import {
-    applyFileChangesResult,
-    fileChangeCheckFailure,
     isFailedHleditResult,
     parseRunObject,
-    readAnchorsResult,
     rejectedToolResult,
     unavailableToolResult,
 } from "../src/result.ts";
@@ -116,7 +115,7 @@ test("readAnchorsResult explains that directory paths are not searchable files",
 test("readAnchorsResult distinguishes source-line truncation from pagination", () => {
     const result = readAnchorsResult(
         {
-            stdout: JSON.stringify({ ok: true, revision: REVISION, totalLines: 2, lines: [{ line: 1, anchor: "1#BHJ", text: "prefix… [truncated]", textTruncated: true }], truncated: true }),
+            stdout: JSON.stringify({ ok: true, revision: REVISION, totalLines: 1, lines: [{ line: 1, anchor: "1#BHJ", text: "prefix… [truncated]", textTruncated: true }], truncated: true }),
             stderr: "",
             exitCode: 0,
         },
@@ -127,6 +126,25 @@ test("readAnchorsResult distinguishes source-line truncation from pagination", (
     assert.equal(result.details.read?.nextOffset, undefined);
     assert.match(result.content[0]?.text ?? "", /rereading line ranges cannot recover the omitted in-line text/);
 });
+
+for (const pattern of [undefined, "prefix|later"]) {
+	test(`readAnchorsResult keeps continuation after a truncated ${pattern ? "search" : "range"} line`, () => {
+		const result = readAnchorsResult({
+			stdout: JSON.stringify({
+				ok: true, revision: REVISION, totalLines: 3,
+				lines: [{ line: 1, anchor: "1#BHJ", text: "prefix…", textTruncated: true }],
+				truncated: true, nextOffset: 2,
+				...(pattern ? { totalMatches: 2 } : {}),
+			}),
+			stderr: "", exitCode: 0,
+		}, { path: "src/a.ts", offset: 1, limit: 3, ...(pattern ? { pattern } : {}) });
+		assert.equal(result.details.disposition, "succeeded");
+		assert.equal(result.details.read?.nextOffset, 2);
+		assert.equal(result.details.read?.textTruncated, true);
+		assert.match(result.content[0]!.text, /Truncated lines cannot establish edit proof/);
+		assert.match(result.content[0]!.text, /To read later lines, continue with offset 2/);
+	});
+}
 
 test("readAnchorsResult rejects non-sequential unfiltered output", () => {
     const result = readAnchorsResult(
@@ -644,4 +662,57 @@ test("failure result constructors preserve disposition and structured errors", (
 	});
 	assert.equal(isFailedHleditResult(rejected.details), true);
 	assert.deepEqual(unavailableToolResult("CLI 不可用").details, { disposition: "unavailable" });
+});
+
+
+test("applyFileChangesResult preserves recovery paths for unknown Windows outcomes", () => {
+	const diagnostic = 'write outcome unknown; inspect target "C:/work/file.txt", replacement candidate "C:/work/.hledit-123", and original recovery file "C:/work/.hledit-backup-456"; recovery files were retained';
+	const result = applyFileChangesResult({ stdout: "", stderr: diagnostic, exitCode: 1, started: true });
+	assert.equal(result.details.disposition, "outcome_unknown");
+	assert.match(result.content[0]?.text ?? "", /Do not retry the original request/);
+	assert.match(result.content[0]?.text ?? "", /Do not recreate or overwrite the target/);
+	assert.doesNotMatch(result.content[0]?.text ?? "", /call hledit_read_anchors/i);
+	assert.ok(result.content[0]?.text.includes(diagnostic));
+});
+
+test("applyFileChangesResult reports a restored partial replacement as a zero-write failure", () => {
+	const result = applyFileChangesResult({
+		stdout: JSON.stringify({
+			ok: false, error: "io",
+			message: 'replace target "C:/work/file.txt": The replacement file could not be moved.; the original file was restored unchanged',
+		}),
+		stderr: "", exitCode: 0,
+	});
+	assert.equal(result.details.disposition, "rejected");
+	assert.match(result.content[0]?.text ?? "", /original file was restored unchanged/);
+});
+
+test("applyFileChangesResult reports a retained recovery file as a successful write warning", () => {
+	const warning = 'file was replaced, but original recovery file "C:/work/.hledit-backup-123" could not be removed: sharing violation';
+	const result = applyFileChangesResult({
+		stdout: JSON.stringify({
+			ok: true, revision: REVISION, editsApplied: 1, contentChanged: true, linesAdded: 1, linesDeleted: 1,
+			warnings: [warning], editDeltas: [{ oldStart: 1, oldEnd: 1, delta: 0 }],
+			updatedAnchorSpans: [{ lines: [{ line: 1, anchor: "1#BHJ", text: "changed" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false }],
+		}),
+		stderr: "", exitCode: 0,
+	});
+	assert.equal(result.details.disposition, "succeeded");
+	assert.ok(result.content[0]?.text.includes(warning));
+	assert.deepEqual(result.details.rawWarnings, [warning]);
+});
+
+test("applyFileChangesResult explains rejected text rather than requesting a fresh read", () => {
+	for (const [rawMessage, expected] of [
+		["edit 1: lines[0] contains NUL; replacement must remain readable text", /Change 2 contains a NUL character/],
+		["edit 1: lines[0] contains LF; each wire array element must be one logical line", /Each element must contain exactly one logical line/],
+		["result would reinterpret leading U+FEFF text as a UTF-8 BOM", /Keep that character out of the first text position/],
+	] as const) {
+		const result = applyFileChangesResult({
+			stdout: JSON.stringify({ ok: false, error: "invalid", message: rawMessage, failed: 1 }), stderr: "", exitCode: 0,
+		});
+		assert.equal(result.details.disposition, "rejected");
+		assert.match(result.content[0]?.text ?? "", expected);
+		assert.doesNotMatch(result.content[0]?.text ?? "", /call hledit_read_anchors/i);
+	}
 });

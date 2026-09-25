@@ -17,18 +17,33 @@ func fileLinkCount(_ string, info os.FileInfo) (uint64, error) {
 	return uint64(stat.Nlink), nil
 }
 
-func replaceFile(tempPath, targetPath string) error {
+func createTemporarySibling(targetPath string, info os.FileInfo) (*os.File, error) {
+	temp, err := os.CreateTemp(filepath.Dir(targetPath), ".hledit-*")
+	if err != nil {
+		return nil, err
+	}
+	if info != nil {
+		if err := temp.Chmod(info.Mode().Perm()); err != nil {
+			_ = temp.Close()
+			_ = os.Remove(temp.Name())
+			return nil, fmt.Errorf("preserve permissions: %w", err)
+		}
+	}
+	return temp, nil
+}
+
+func replaceFile(tempPath, targetPath string, _ bool) (string, error) {
 	if err := os.Rename(tempPath, targetPath); err != nil {
-		return err
+		return "", err
 	}
 
 	parent, err := os.Open(filepath.Dir(targetPath))
 	if err != nil {
-		return &postCommitDurabilityError{err: err}
+		return fmt.Sprintf("file was replaced, but directory metadata could not be synchronized: %v", err), nil
 	}
 	defer parent.Close()
 	if err := parent.Sync(); err != nil {
-		return &postCommitDurabilityError{err: err}
+		return fmt.Sprintf("file was replaced, but directory metadata could not be synchronized: %v", err), nil
 	}
-	return nil
+	return "", nil
 }

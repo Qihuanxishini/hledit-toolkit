@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -109,6 +110,15 @@ func plannedBatchEdit(index int, request BatchEditOp) (PlannedBatchEdit, *BatchP
 		return PlannedBatchEdit{}, invalidBatchPlanFailure(fmt.Sprintf("edit %d: unknown op %q", index, request.OP), index)
 	}
 
+	for lineIndex, line := range request.Lines {
+		if strings.ContainsRune(line, '\x00') {
+			return PlannedBatchEdit{}, invalidBatchPlanFailure(fmt.Sprintf("edit %d: lines[%d] contains NUL; replacement must remain readable text", index, lineIndex), index)
+		}
+		if strings.ContainsRune(line, '\n') {
+			return PlannedBatchEdit{}, invalidBatchPlanFailure(fmt.Sprintf("edit %d: lines[%d] contains LF; each wire array element must be one logical line", index, lineIndex), index)
+		}
+	}
+
 	requestedEnd := request.EndPos
 	if requestedEnd == "" {
 		requestedEnd = request.Pos
@@ -131,7 +141,7 @@ func plannedBatchEdit(index int, request BatchEditOp) (PlannedBatchEdit, *BatchP
 }
 
 func batchAnchorRemap(lines []string, anchor Anchor) (Remap, bool) {
-	requested := intToStr(anchor.Line) + "#" + anchor.Hash
+	requested := strconv.Itoa(anchor.Line) + "#" + anchor.Hash
 	if anchor.Line < 1 || anchor.Line > len(lines) {
 		return Remap{Requested: requested}, true
 	}

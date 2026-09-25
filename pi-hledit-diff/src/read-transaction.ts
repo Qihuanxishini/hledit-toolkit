@@ -4,7 +4,8 @@ import { HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL } from "./active-t
 import type { HleditRun } from "./cli.ts";
 import { ReadEvidenceStore, resolveReadEvidencePath } from "./read-evidence.ts";
 import { buildReadArgs, buildSearchArgs, normalizeReadRequest, normalizeSearchRequest } from "./read-args.ts";
-import { readAnchorsResult, type TextResult } from "./result.ts";
+import { readAnchorsResult } from "./read-result.ts";
+import type { TextResult } from "./result.ts";
 import type { ReadAnchorsParams, SearchAnchorsParams } from "./schema.ts";
 
 export type HleditReadRunner = (

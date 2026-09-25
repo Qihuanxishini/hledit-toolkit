@@ -3,26 +3,24 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
-func loadRequestedBatchPlan(path string) (LoadedTextFile, BatchPlan, bool) {
-	request, err := parseBatchRequest()
-	if err != nil {
-		emitBatchInvalidError(fmt.Sprintf("invalid batch request: %s", err.Error()), -1)
-		return LoadedTextFile{}, BatchPlan{}, false
-	}
-	if len(request.Edits) == 0 {
-		emitBatchInvalidError("batch request contains no edits", -1)
-		return LoadedTextFile{}, BatchPlan{}, false
+// loadRequestedBatchPlan 在 check/apply 共同入口完成请求解析、加载与规划；ok 为 false 时
+// 失败响应已写出，err 只报告写出本身失败。
+func loadRequestedBatchPlan(path string) (file LoadedTextFile, plan BatchPlan, ok bool, err error) {
+	request, parseErr := parseBatchRequest()
+	if parseErr != nil {
+		return file, plan, false, emitBatchInvalidError(fmt.Sprintf("invalid batch request: %s", parseErr.Error()), -1)
 	}
 
-	file, ok := loadCommandTextFile(path)
-	if !ok {
-		return LoadedTextFile{}, BatchPlan{}, false
+	file, loaded := loadCommandTextFile(path)
+	if !loaded {
+		return file, plan, false, nil
 	}
 	plan, failure := planBatchEdits(request, file.Lines, file.Revision)
 	if failure != nil {
-		emitBatchErrorType(
+		return file, plan, false, emitBatchErrorType(
 			failure.Code,
 			failure.Message,
 			failure.Remaps,
@@ -30,9 +28,12 @@ func loadRequestedBatchPlan(path string) (LoadedTextFile, BatchPlan, bool) {
 			failure.CurrentAnchors,
 			failure.CurrentRevision,
 		)
-		return LoadedTextFile{}, BatchPlan{}, false
 	}
-	return file, plan, true
+	if !file.HasUTF8BOM && len(plan.RebuiltLines) > 0 && strings.HasPrefix(plan.RebuiltLines[0], utf8BOM) {
+		// [喵喵喵]: 无 BOM 文件的首字符 FEFF 会被读取器当元数据吞掉；包括删除前行造成的位移。(2026-09-24)
+		return file, plan, false, emitBatchInvalidError("result would reinterpret leading U+FEFF text as a UTF-8 BOM; keep it out of the first text position", -1)
+	}
+	return file, plan, true, nil
 }
 
 func batchEditResultFromPlan(plan BatchPlan, revision string) BatchEditResult {
@@ -50,9 +51,9 @@ func batchEditResultFromPlan(plan BatchPlan, revision string) BatchEditResult {
 }
 
 func runBatchCheck(path string) error {
-	file, plan, ok := loadRequestedBatchPlan(path)
+	file, plan, ok, err := loadRequestedBatchPlan(path)
 	if !ok {
-		return nil
+		return err
 	}
 	result := batchEditResultFromPlan(plan, file.Revision)
 	result.Checked = true
@@ -60,15 +61,15 @@ func runBatchCheck(path string) error {
 }
 
 func runBatchApply(path string) error {
-	file, plan, ok := loadRequestedBatchPlan(path)
+	file, plan, ok, err := loadRequestedBatchPlan(path)
 	if !ok {
-		return nil
+		return err
 	}
 
 	var encoded []byte
 	revision := file.Revision
 	if plan.ContentChanged {
-		encoded = file.EncodeContent(plan.RebuiltLines, rebuiltLineEndings(file, plan.EditDeltas, len(plan.RebuiltLines)))
+		encoded = file.EncodeContent(plan.RebuiltLines, rebuiltLineEndings(file, plan.EditDeltas, plan.RebuiltLines))
 		revision = rawFileRevision(encoded)
 	}
 	result := batchEditResultFromPlan(plan, revision)
@@ -80,11 +81,14 @@ func runBatchApply(path string) error {
 	if err != nil {
 		var changedErr *sourceChangedBeforeCommitError
 		if errors.As(err, &changedErr) {
-			emitBatchErrorType("source_changed_before_commit", changedErr.Error(), nil, -1, nil, changedErr.CurrentRevision)
-			return nil
+			return emitBatchErrorType("source_changed_before_commit", changedErr.Error(), nil, -1, nil, changedErr.CurrentRevision)
 		}
-		emitError("io", err.Error())
-		return nil
+		var unknownErr *writeOutcomeUnknownError
+		if errors.As(err, &unknownErr) {
+			// [喵喵喵]: 非零退出沿用插件的 outcome_unknown 路径，防止被当作确定零写入并继续复用 proof。(2026-09-24)
+			return err
+		}
+		return emitError("io", err.Error())
 	}
 	if writeWarning != "" {
 		result.Warnings = append(result.Warnings, writeWarning)

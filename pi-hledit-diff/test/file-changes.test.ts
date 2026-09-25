@@ -9,8 +9,8 @@ import {
   findSingleLineRangeExpansionIssue,
   formatChangeShapeIssue,
   formatSingleLineRangeExpansionIssue,
-  lineFromAnchor,
 } from "../src/file-changes.ts";
+import { lineFromAnchor } from "../src/anchor.ts";
 import type { FileChangeParams } from "../src/schema.ts";
 
 function verifiedIssue(issue: ReturnType<typeof findSingleLineRangeExpansionIssue>) {

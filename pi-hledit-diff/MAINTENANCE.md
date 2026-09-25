@@ -29,7 +29,7 @@ pi-hledit-diff/
 ```json
 {
   "ok": true,
-  "version": "3.3.0",
+  "version": "3.3.1",
   "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,
@@ -68,6 +68,8 @@ pi-hledit-diff/
 
 当前公开协议按 `JSON.stringify(parameters) + description + promptGuidelines` 计量，回归上限为 4,400 characters；精确值由测试输出和最终验证记录，不在文档中固化。
 
+三个工具的路径在进入 CLI 与 canonical queue 前统一经 `normalizeToolPath` 处理：展开 `~` / `~/`（Windows 也支持 `~\`）、去除 `@` 前缀并转换 Windows MSYS 盘符。
+
 ### `hledit_read_anchors`
 
 ```ts
@@ -81,6 +83,7 @@ pi-hledit-diff/
 - 编辑现有非空可读文本文件前，使用该工具读取会被消费的全部连续原始行；普通 `read` 只用于参考或目标未定的探索。
 - 默认 `limit` 为 160，公开上限 2000；它只执行连续范围读取，不接受 grep、literal、context 或 ignore_case。
 - 固定调用 `read-range`。响应验证 revision、总行数、连续性/递增顺序、锚点格式、分页和 source-line truncation；模型正文和 `details.read` 都由已验证结构生成。
+- 单行超过 50 KiB JSON 页预算时仅返回截断文本；该行不建立 proof，但后续仍有物理行时提供 `nextOffset`。搜索同样在还有匹配/上下文行时提供续读游标。
 - CLI 执行、响应验证和 evidence 更新是同一个 canonical file queue 事务。不得在队列外记录晚到 snapshot。
 
 成功响应示例：
@@ -140,8 +143,9 @@ pi-hledit-diff/
 - apply 不接受数组 `lines`、序列化 `changes`、单 change 自动包装或带源码后缀的 anchor；旧 operation、别名和字段不迁移，object 使用严格额外字段拒绝；
 - 单次 batch 限 1–200 个 changes，replacement 总量限 1 MiB UTF-8，输出总量限 20,000 行；
 - batch stdin request 总大小限 8 MiB；`lines` 与 `proof.anchors` 的每个元素必须是 JSON 字符串，`null` 等类型会被拒绝；
+- CLI 的每个 `lines` 元素必须是一行逻辑文本，拒绝实际 NUL 和内嵌 LF；公开工具仍用换行分隔字符串，由插件拆分成行数组。拒绝携带具体 change 与内容原因，不引导调用方无效重读；
 - 公开 schema 要求 `proof_id`，但不暴露 raw revision 或 CLI `proof`；插件仅接受该 canonical path 当前 revision 内发出过的 id，再从 branch evidence 注入每个消费行或 insert 依附行的完整 hidden proof；
-- proof id 无效或跨路径使用时不启动 CLI；proof 行覆盖不完整时，apply 在同一 canonical file queue 内自动分页执行定向只读，直到完整覆盖目标缺口或触及恢复预算。成功恢复通过 `recoveredReads`、兼容字段 `recoveredRead` 与新的 `proof_id` 返回当前证据，调用方审阅后显式重提 batch。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；插件不自动重放修改；
+- proof id 无效或跨路径使用时不启动 CLI；proof 行覆盖不完整时，apply 在同一 canonical file queue 内自动分页执行定向只读，直到完整覆盖目标缺口或触及恢复预算。成功恢复通过 `recoveredReads` 与新的 `proof_id` 返回当前证据，调用方审阅后显式重提 batch。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；插件不自动重放修改；
 - 定向补读有硬预算（`src/read-recovery.ts`）：缺口跨度 1,200 行、4 页、96 KiB 正文。补读会把读到的每一行原样回灌进模型上下文，所以跨度超限时一个子进程都不启动，直接返回 `proof_recovery_budget_exceeded` 与显式分块读取指令；页数或字节超限时保留已读页（仍是有效 proof）并返回同一 code。三个上限决定单次工具结果最多占多少上下文窗口，不是性能调优值；
 - 补读页面不再逐页输出 `proof_id`。多页恢复只有一个权威 proof id，逐页重复会让调用方抄到已作废的那个；正文在页面之前单独给出 `Use proof_id: <id>`，`details.proofId` 与之一致；
 - 仅对命中 `single_line_range_expansion` 启发式的请求先执行一次 `batch --check`，用于确认当前 revision、hidden proof、全部锚点与操作冲突后再返回字段级指导；普通 apply 直接执行非 check `batch`，CLI 在同一路径完整验证并于原子替换前复检 raw-byte revision。
@@ -167,7 +171,7 @@ Evidence 以 resolved canonical path 为 key，每个文件状态包含当前 `p
 - 任一结构化拒绝携带不同合法 `currentRevision` 时淘汰旧 state；同 revision 的确认零写入拒绝保留。`source_changed_before_commit` 与 `outcome_unknown` 总是失效；
 - 只有完整未截断 `currentAnchors` 可建立新 revision evidence；
 - read 与 apply 都持有 `withFileMutationQueue(canonical path)` 覆盖 CLI、校验和 evidence 更新。同文件串行、不同文件可并行；
-- branch/session 恢复只重放当前 branch 的结构化 tool-result details，包括经过完整 shape、path、proof usability 验证的被拒绝 apply `recoveredReads`（兼容单页 `recoveredRead`），不解析聊天正文。可携带补读结果的拒绝码由 `result.ts` 的 `READ_PROOF_RECOVERY_CODES` 单点定义；恢复新增终止分支时必须同时登记，否则实时 evidence 与重放结果分歧。截断行既不进实时 evidence 也不进 `recoveredReads`，两侧保持逐行一致。
+- branch/session 恢复只重放当前 branch 的结构化 tool-result details，包括经过完整 shape、path、proof usability 验证的被拒绝 apply `recoveredReads`，不解析聊天正文。可携带补读结果的拒绝码由 `read-result.ts` 的 `READ_PROOF_RECOVERY_CODES` 单点定义；恢复新增终止分支时必须同时登记，否则实时 evidence 与重放结果分歧。截断行既不进实时 evidence 也不进 `recoveredReads`，两侧保持逐行一致。
 
 容量限制：
 
@@ -206,9 +210,11 @@ Batch wire v3 是唯一 canonical 形状：`replace` 必须带 `lines`（可为�
 }
 ```
 
-插件验证 revision、统计、warning、每项 `editDeltas` 与 `updatedAnchorSpans`：delta 条数、区间、物理顺序、总和必须与公开 change 一一对应；窗口数量、`offset` 与 `desiredLimit` 必须与由 `editDeltas` 换算出的非空产出区间逐项对应（纯删除无窗口）。窗口不带上下文行，共享 CLI 侧 80 行 / 16 KiB 预算，预算耗尽后的窗口以空 `lines` + `truncated:true` 保持可计数。malformed 或 request-inconsistent success 属于 `outcome_unknown`，不得用于 evidence。`contentChanged:false` 不触碰文件，但仍合并同 revision anchor window。
+插件验证 revision、统计、warning、每项 `editDeltas` 与 `updatedAnchorSpans`：delta 条数、区间、物理顺序、总和必须与公开 change 一一对应；窗口数量、`offset` 与 `desiredLimit` 必须与由 `editDeltas` 换算出的非空产出区间逐项对应（纯删除无窗口）。窗口不带上下文行，共享 CLI 侧 80 行 / 16 KiB 预算；首行超过剩余字节预算时可返回 `textTruncated:true` 的部分行，预算耗尽后的窗口以空 `lines` + `truncated:true` 保持可计数。malformed 或 request-inconsistent success 属于 `outcome_unknown`，不得用于 evidence。`contentChanged:false` 不触碰文件，但仍合并同 revision anchor window。
 
-CLI 写入逐行保留未修改 terminator、非空结果的 BOM 和 trailing-newline 状态；删除全部逻辑行会生成真正空文件。CLI 拒绝 multi-hardlink target，保留 symlink entry，并在 temp sync 后、atomic replace 前复检原始字节 revision。recheck 与 rename 之间仍有极短外部竞态，不宣称线性化 CAS。
+CLI 写入保留非空结果的 BOM 与未修改行尾，真实空末行必要地补 terminator；正文以 CR 结尾的已终止行使用 CRLF，避免丢失正文 CR。会把首字符 U+FEFF 重新解释为 BOM 的修改在 check/apply 共同入口零写入拒绝，删除全部逻辑行则生成真正空文件。CLI 拒绝 multi-hardlink target，保留 symlink entry，并在 temp sync 后、atomic replace 前复检原始字节 revision。recheck 与 rename 之间仍有极短外部竞态，不宣称线性化 CAS。
+
+Windows 使用 `golang.org/x/sys/windows` 处理 DACL，正文写入临时文件前即复制目标权限与继承状态；已有目标由 `ReplaceFileW` 保留附加流，flags 为 0，不忽略权限或元数据合并失败。每次事务预留唯一恢复路径：成功后仅清理本次文件，清理失败以含路径的成功 warning 返回；1177 部分替换失败时以不覆盖方式把原文件移回目标路径，成功即为零写入 `io` 错误。移回失败，或文档外错误后目标缺失时，保留候选与恢复文件，CLI 非零退出并输出路径，使插件走 `outcome_unknown` 失效旧 proof，并指示模型不要重建或覆盖目标、把路径交给用户处理。禁止覆盖式回滚或按名称、时间清理其他文件。
 
 ## 失败与子进程语义
 
@@ -239,7 +245,7 @@ CLI 写入逐行保留未修改 terminator、非空结果的 BOM 和 trailing-ne
 
 - `details.changePreview` 只由同 revision 消费行 evidence、请求 payload 和已验证 delta 构成；不读取全文件 before/after snapshot，也不注入模型正文；
 - preview 上限 2000 行 / 256 KiB，所有计数使用 UTF-8 bytes。超长单行保留首尾及 `textTruncated:true`；
-- TUI 优先结构化 preview，历史 session 只对 `details.diff` 保留 fallback；preview 截断或没有可渲染 change 行时使用 CLI `linesAdded` / `linesDeleted`，不显示局部推导的完整 hunk 数；
+- TUI 从 `details.read`、`details.changePreview` 与 `details.updatedAnchorSpans` 渲染读取、差异和更新锚点；preview 截断或没有可渲染 change 行时使用 CLI `linesAdded` / `linesDeleted`，不显示局部推导的完整 hunk 数；
 - 模型正文列出全部产出窗口中的 updated anchors：窗口里的行都是本次编辑新写入、模型没有旧锚点可用的行；区间外的行已由 evidence 平移与 verified rename 覆盖，CLI 不再返回。纯删除没有窗口，不输出 anchor 块；不完整提示只在窗口被 CLI 预算截断或产出行自身文本被截断时追加；
 - expanded updated-anchor rows 只来自 `details.updatedAnchorSpans`，不解析模型正文；
 - diff 在 120 列切换 split/unified，主题色、布局和高亮缓存必须在 `invalidate()` 正确清理；
@@ -255,9 +261,13 @@ CLI 写入逐行保留未修改 terminator、非空结果的 BOM 和 trailing-ne
 | `src/read-transaction.ts` | read/search CLI、结果校验和 evidence 更新的 canonical queue 事务。 |
 | `src/read-recovery.ts` | proof 缺口的定向分页补读、恢复预算与三条终止分支。 |
 | `src/read-evidence.ts` | revision proof、rename/ambiguity、容量、重映射、失效与 branch replay。 |
-| `src/file-changes.ts` | 四种公开 change → CLI batch，以及单行范围护栏。 |
+| `src/file-changes.ts` | 四种公开 change → CLI batch、请求护栏及其拒绝信息。 |
 | `src/cli.ts` | CLI 3.x capability 门禁、bounded output 和 exit-confirmed 进程终止。 |
-| `src/result.ts` | 结构化响应验证、disposition、模型正文和恢复 metadata。 |
+| `src/result.ts` | 共享结果类型、disposition、edit delta 校验与结果构造器。 |
+| `src/read-result.ts` | 读取响应校验、补读 metadata 校验及读取正文和错误提示。 |
+| `src/apply-result.ts` | 写入响应校验、stale 诊断与写入结果正文。 |
+| `src/anchor.ts` / `src/anchor-hash.ts` | 规范锚点语法、行号提取与 hash 算法。 |
+| `src/read-args.ts` | 工具路径归一化、读取/搜索参数与补读窗口。 |
 | `src/change-preview.ts` | 提交绑定 preview、UTF-8 cap、结构重验和 diff 文本桥。 |
 | `src/post-edit-context.ts` | `updatedAnchorSpans` 验证与模型正文格式化。 |
 | `src/render.ts` / `src/diff-renderer.ts` | 结构化锚点与自适应 diff TUI。 |
@@ -297,7 +307,7 @@ npm run check
 pi --no-extensions -e ./pi-hledit-diff/index.ts
 ```
 
-用 `/hledit-status` 确认 CLI 3.3.0 与 capability 健康，并覆盖：
+用 `/hledit-status` 确认 CLI 3.3.1 与 capability 健康，并覆盖：
 
 1. 连续 range read、正则/字面量 search/context 和四种 anchored operation；
 2. proof 缺失、stale、token 复用零写入、显式重读后成功；

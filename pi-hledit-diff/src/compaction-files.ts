@@ -3,7 +3,7 @@ import {
 	HLEDIT_READ_ANCHORS_TOOL,
 	HLEDIT_SEARCH_ANCHORS_TOOL,
 } from "./active-tools.ts";
-import { parseRecoveredReads } from "./result.ts";
+import { parseRecoveredReads } from "./read-result.ts";
 
 // 与宿主 compaction FileOperations 的结构子集对齐（written 由内置 write 工具独占）。
 type AnchoredCompactionFileOps = {

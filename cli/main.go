@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-const version = "3.3.0"
+const version = "3.3.1"
 
 // splitArgs lets the small command parsers accept flags before or after
 // positional arguments. A standard -- separator protects flag-like paths and

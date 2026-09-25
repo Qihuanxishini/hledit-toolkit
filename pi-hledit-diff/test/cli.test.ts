@@ -7,11 +7,11 @@ import test from "node:test";
 
 import { HLEDIT_MAX_OUTPUT_BYTES, parseHleditCapabilities, resolveHleditBin, runHledit } from "../src/cli.ts";
 import { parseUpdatedAnchorSpans } from "../src/post-edit-context.ts";
-import { applyFileChangesResult } from "../src/result.ts";
+import { applyFileChangesResult } from "../src/apply-result.ts";
 
 // CLI 声明的完整能力集；解析结果只保留 version，其余字段仅用于构造被校验的输入。
 const DECLARED_CAPABILITIES = {
-	version: "3.3.0",
+	version: "3.3.1",
 	anchorProtocolV2: true,
 	readRangeMetadata: true,
 	batchInsertAfter: true,

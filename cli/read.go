@@ -142,19 +142,6 @@ func regexpCanBeSkipped(expression *syntax.Regexp) bool {
 	return false
 }
 
-// filterLinesWithMode retains the small internal helper used by protocol tests.
-// Production search uses searchMatcher so it can also enforce broad-pattern policy.
-func filterLinesWithMode(lines []string, pattern string, literal, ignoreCase bool) ([]int, error) {
-	if pattern == "" {
-		return nil, nil
-	}
-	matcher, err := compileSearchMatcher(pattern, literal, ignoreCase)
-	if err != nil {
-		return nil, err
-	}
-	return filterLines(lines, matcher.regexp), nil
-}
-
 // filterLines returns 1-indexed line numbers of lines matching the compiled pattern.
 func filterLines(lines []string, matcher *regexp.Regexp) []int {
 	matches := make([]int, 0)
@@ -306,17 +293,17 @@ func collectAnnotatedLines(lines []string, startIdx, maxLines, maxBytes int) ([]
 	byteCount := 0
 	for i := startIdx; i < len(lines) && len(result) < maxLines && byteCount < maxBytes; i++ {
 		lineNum := i + 1
-		previousCount := len(result)
 		var appended bool
 		result, byteCount, appended = appendJSONReadLine(result, byteCount, lineNum, lines[i], maxBytes)
 		if !appended {
 			return result, false, lineNum, byteCount
 		}
 		if result[len(result)-1].TextTruncated {
+			// [喵喵喵]: 超长行独占一页后仍要给出续读游标，否则其后内容只能靠猜 offset 访问。(2026-09-24)
+			if i < len(lines)-1 {
+				return result, true, i + 2, byteCount
+			}
 			return result, true, 0, byteCount
-		}
-		if len(result) == previousCount {
-			return result, false, lineNum, byteCount
 		}
 		if byteCount >= maxBytes || len(result) >= maxLines {
 			if i < len(lines)-1 {
@@ -351,6 +338,9 @@ func collectMatchLines(lines []string, matchIdxs []int, offset, maxLines, maxByt
 			return result, false, ln
 		}
 		if result[len(result)-1].TextTruncated {
+			if i+1 < len(matchIdxs) {
+				return result, true, ln + 1
+			}
 			return result, true, 0
 		}
 		if byteCount >= maxBytes {

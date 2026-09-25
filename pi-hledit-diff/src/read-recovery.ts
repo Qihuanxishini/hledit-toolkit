@@ -1,14 +1,14 @@
 import { buildReadArgs, MAX_READ_LIMIT, normalizeReadRequest, suggestedReadWindow } from "./read-args.ts";
-import { formatReadProofDiagnosis, lineRangeDescription, type ReadEvidenceStore, type ReadProofFailure } from "./read-evidence.ts";
-import type { HleditReadRunner } from "./read-transaction.ts";
 import {
-	attachEvidencePath,
-	formatReadMetadata,
-	readAnchorsResult,
-	rejectedToolResult,
-	type HleditReadMetadata,
-	type TextResult,
-} from "./result.ts";
+	formatReadProofDiagnosis,
+	lineRangeDescription,
+	readProofFailureContext,
+	type ReadEvidenceStore,
+	type ReadProofFailure,
+} from "./read-evidence.ts";
+import type { HleditReadRunner } from "./read-transaction.ts";
+import { formatReadMetadata, readAnchorsResult } from "./read-result.ts";
+import { attachEvidencePath, rejectedToolResult, type HleditReadMetadata, type TextResult } from "./result.ts";
 
 // 编辑证明缺口的定向补读：在调用方已持有的 file mutation queue 事务内，用 read-range 把
 // selectProof 指出的缺失行读回来、记进 evidence，再把源码原样返回给调用方复核后显式重提
@@ -41,19 +41,14 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 	if (!range) return undefined;
 
 	const diagnosis = formatReadProofDiagnosis(failure);
-	const failureContext = {
-		...(failure.renamedAnchors ? { renamedAnchors: failure.renamedAnchors } : {}),
-		...(failure.proofGap
-			? { changeNumber: failure.proofGap.changeNumber, operation: failure.proofGap.operation }
-			: {}),
-	};
+	const failureContext = readProofFailureContext(failure);
 	const reads: HleditReadMetadata[] = [];
 	const renderedPages: string[] = [];
 	let renderedBytes = 0;
 	let proofId: string | undefined;
 
 	// 所有返回路径共用：诊断段 + 本路径指令 + 已渲染页面，并始终带上已完成补读的结构化
-	// 结果。details 里的 recoveredReads 是 branch replay 的唯一依据（result.ts 的
+	// 结果。details 里的 recoveredReads 是 branch replay 的唯一依据（read-result.ts 的
 	// READ_PROOF_RECOVERY_CODES），漏带就会让实时 evidence 与重放结果分歧。
 	const recoveryResult = (
 		code: string,
@@ -73,8 +68,7 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 			details: {
 				...rejected.details,
 				...(proofId ? { proofId } : {}),
-				// recoveredRead 是 recoveredReads 之前的单页字段，保留给历史 session 的 details。
-				...(reads.length > 0 ? { recoveredReads: [...reads], recoveredRead: reads.at(-1) } : {}),
+				...(reads.length > 0 ? { recoveredReads: [...reads] } : {}),
 				...extraDetails,
 			},
 		}, path, evidencePath);

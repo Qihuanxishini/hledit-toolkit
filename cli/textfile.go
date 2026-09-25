@@ -170,19 +170,20 @@ func localLineEnding(endings []LineEnding, index int) LineEnding {
 	return LFLineEnding
 }
 
-// rebuiltLineEndings 按 Phase 3 规则为重建后的行分配 terminator：
+// rebuiltLineEndings 为重建后的行分配可无损解析的 terminator：
 //
 //   - 未被任何 delta 消费的原始行保留自己的 terminator；
 //   - 每个 delta 的新行使用消费区间附近的局部行尾，最后一行继承被替换区间
 //     末行的 terminator（纯插入无消费区间，全部使用锚点附近的局部行尾）；
 //   - 原 EOF 无 terminator 的行被平移到中间时补局部行尾；
-//   - 原文件 trailing newline 的存在性保持。
+//   - 原文件 trailing newline 的存在性保持，真实空末行除外；
+//   - 正文以 CR 结尾的已终止行使用 CRLF，防止正文 CR 被解析成行尾。
 //
 // deltas 必须与 CLI editDeltas 相同：原始 1-based 行坐标、按物理输出顺序排列、
 // 消费区间互不重叠（纯插入是 OldEnd == OldStart-1 的空区间）。
-func rebuiltLineEndings(source LoadedTextFile, deltas []EditDelta, rebuiltCount int) []LineEnding {
+func rebuiltLineEndings(source LoadedTextFile, deltas []EditDelta, lines []string) []LineEnding {
 	endings := source.LineEndings
-	rebuilt := make([]LineEnding, 0, rebuiltCount)
+	rebuilt := make([]LineEnding, 0, len(lines))
 	cursor := 1
 	for _, delta := range deltas {
 		rebuilt = append(rebuilt, endings[cursor-1:delta.OldStart-1]...)
@@ -214,12 +215,18 @@ func rebuiltLineEndings(source LoadedTextFile, deltas []EditDelta, rebuiltCount 
 	}
 	hadTrailingNewline := len(endings) > 0 && endings[len(endings)-1] != NoLineEnding
 	last := len(rebuilt) - 1
-	if hadTrailingNewline {
+	// [喵喵喵]: 无 terminator 的空末行没有物理字节，必须补行尾才能与计划行数和新锚点一致。(2026-09-24)
+	if hadTrailingNewline || lines[last] == "" {
 		if rebuilt[last] == NoLineEnding {
 			rebuilt[last] = localLineEnding(rebuilt, last)
 		}
 	} else {
 		rebuilt[last] = NoLineEnding
+	}
+	for i, line := range lines {
+		if rebuilt[i] == LFLineEnding && strings.HasSuffix(line, "\r") {
+			rebuilt[i] = CRLFLineEnding
+		}
 	}
 	return rebuilt
 }

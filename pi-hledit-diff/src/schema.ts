@@ -1,6 +1,6 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
-import { ANCHOR_PATTERN } from "./file-changes.ts";
+import { ANCHOR_PATTERN } from "./anchor.ts";
 import { MAX_READ_LIMIT, MAX_SEARCH_LIMIT } from "./read-args.ts";
 
 const STRICT_OBJECT = { additionalProperties: false };

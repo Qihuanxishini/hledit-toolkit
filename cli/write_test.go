@@ -9,6 +9,16 @@ import (
 	"time"
 )
 
+// atomicWrite 是无 revision 复检的测试入口，只用于隔离验证替换本身。
+func atomicWrite(path string, content []byte) (warning string, err error) {
+	replacement, err := prepareAtomicReplacement(path, content)
+	if err != nil {
+		return "", err
+	}
+	defer replacement.discard()
+	return replacement.commit()
+}
+
 func atomicWriteMustSucceed(t *testing.T, path string, content []byte) {
 	t.Helper()
 	warning, err := atomicWrite(path, content)

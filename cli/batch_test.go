@@ -70,6 +70,29 @@ func batchTestRunPayload(t *testing.T, target string, payload []byte, checkOnly 
 	return strings.TrimSpace(out.String())
 }
 
+// MarshalJSON 只供测试把 BatchEditOp 序列化成规范 wire v3 请求；CLI 本身只解码请求。
+func (edit BatchEditOp) MarshalJSON() ([]byte, error) {
+	type batchEditOpJSON struct {
+		OP     string    `json:"op"`
+		Pos    string    `json:"pos"`
+		EndPos string    `json:"end_pos,omitempty"`
+		After  bool      `json:"after,omitempty"`
+		Lines  *[]string `json:"lines,omitempty"`
+	}
+	encoded := batchEditOpJSON{OP: edit.OP, Pos: edit.Pos, EndPos: edit.EndPos}
+	if edit.OP != "delete" {
+		lines := edit.Lines
+		if lines == nil {
+			lines = []string{}
+		}
+		encoded.Lines = &lines
+	}
+	if edit.OP == "insert" && edit.After {
+		encoded.After = true
+	}
+	return json.Marshal(encoded)
+}
+
 func batchTestMustUnmarshal[T any](t *testing.T, out string, target *T) {
 	t.Helper()
 	if err := json.Unmarshal([]byte(out), target); err != nil {
@@ -130,6 +153,30 @@ func TestCmdBatchRejectsUnknownJSONFields(t *testing.T) {
 	}
 	if got := batchTestReadLines(t, target); len(got) != 1 || got[0] != "alpha" {
 		t.Fatalf("file changed to %#v; want unchanged", got)
+	}
+}
+
+func TestCmdBatchRejectsNonCanonicalFieldSpelling(t *testing.T) {
+	dir := t.TempDir()
+	target := editTestWriteLinesFile(t, dir, "target.txt", "alpha")
+	anchor := formatTag(1, "alpha")
+	for _, tc := range []struct{ name, payload, want string }{
+		{"case-folded top-level key", `{"EDITS":[{"op":"replace","pos":"` + anchor + `","lines":["beta"]}]}`, `unknown field "EDITS"`},
+		{"case-folded edit key", `{"edits":[{"OP":"replace","pos":"` + anchor + `","lines":["beta"]}]}`, `unknown field "OP"`},
+		{"duplicate edit key", `{"edits":[{"op":"delete","op":"replace","pos":"` + anchor + `","lines":["beta"]}]}`, `duplicate field "op"`},
+		{"duplicate proof key", `{"edits":[{"op":"replace","pos":"` + anchor + `","lines":["beta"]}],"proof":{"revision":"a","revision":"b","anchors":[]}}`, `duplicate field "revision"`},
+		{"null edit", `{"edits":[null]}`, "batch edit must be a JSON object"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var result BatchEditError
+			batchTestMustUnmarshal(t, batchTestRunPayload(t, target, []byte(tc.payload), false), &result)
+			if result.OK || result.Error != "invalid" || !strings.Contains(result.Message, tc.want) {
+				t.Fatalf("result = %+v; want invalid error containing %q", result, tc.want)
+			}
+			if got := batchTestReadLines(t, target); !equalLines(got, []string{"alpha"}) {
+				t.Fatalf("file changed to %#v; want unchanged", got)
+			}
+		})
 	}
 }
 

@@ -1,7 +1,6 @@
+import { ANCHOR_LINE_PREFIX, lineFromAnchor } from "./anchor.ts";
+import { rejectedToolResult, type TextResult } from "./result.ts";
 import type { FileChangeParams } from "./schema.ts";
-
-export const ANCHOR_HASH_PATTERN = "[A-Za-z0-9_-]{3}";
-export const ANCHOR_PATTERN = `^\\d+#${ANCHOR_HASH_PATTERN}$`;
 
 type CliBatchEdit = {
 	op: "replace" | "delete" | "insert";
@@ -69,22 +68,10 @@ export function buildFileChangeCheckRequest(params: FileChangeParams, proof?: Hl
 	return { args: ["batch", "--check", "--", params.path], stdin: serializeCliBatchRequest(params, proof) };
 }
 
-
-export function lineFromAnchor(anchor: unknown): number | undefined {
-	if (typeof anchor !== "string") {
-		return undefined;
-	}
-	const match = anchor.match(/^(\d+)#/);
-	if (!match) return undefined;
-	const line = Number(match[1]);
-	return Number.isSafeInteger(line) && line > 0 ? line : undefined;
-}
-
 // 请求层自洽性校验。schema 只保证字段类型合法，read proof 只校验与文件快照的一致
 // 性；这里检查一个类型合法的 change 是否自相矛盾。这类问题重读文件永远无法修复，
 // 必须由模型改自己的参数，所以要在 selectProof 之前拦下——否则会给出"去重读再重发"
 // 的指令，而重发必然复现同一错误，形成恢复死循环。
-const ANCHOR_LINE_PREFIX_PATTERN = new RegExp(`^(\\d+#${ANCHOR_HASH_PATTERN}):`);
 
 export type ChangeShapeIssue =
 	| {
@@ -139,7 +126,7 @@ export function findChangeShapeIssue(params: FileChangeParams, knownAnchors?: Re
 		for (const [lineIndex, text] of change.lines.entries()) {
 			// 只有当行首 token 是本次提交过或当前证据中的 anchor 时才判定为误贴 read 输出：
 			// 真实源码里出现恰好等于现存 anchor 的行首 token 需要 hash 自碰撞，可忽略。
-			const anchorToken = ANCHOR_LINE_PREFIX_PATTERN.exec(text)?.[1];
+			const anchorToken = ANCHOR_LINE_PREFIX.exec(text)?.[1];
 			if (anchorToken !== undefined && submittedAnchors.has(anchorToken)) {
 				return { code: "anchor_token_in_lines", changeNumber, replacementLineNumber: lineIndex + 1, anchorToken };
 			}
@@ -165,6 +152,16 @@ export function formatChangeShapeIssue(issue: ChangeShapeIssue): string {
 		`Remove the leading ${issue.anchorToken}: from that line; lines carries file content only, and anchors belong in the anchor fields.`,
 		"Rereading the file cannot resolve this; fix lines and resubmit.",
 	].join("\n");
+}
+
+export function changeShapeIssueResult(issue: ChangeShapeIssue): TextResult {
+	return rejectedToolResult(`The atomic batch was rejected; no content was written.\n${formatChangeShapeIssue(issue)}`, {
+		code: issue.code,
+		message: issue.code === "reversed_anchor_range"
+			? `Change ${issue.changeNumber} submitted start_anchor ${issue.startAnchor} below end_anchor ${issue.endAnchor}; swap them instead of rereading.`
+			: `Change ${issue.changeNumber} pasted the anchor token ${issue.anchorToken} into lines; strip the prefix instead of rereading.`,
+		changeNumber: issue.changeNumber,
+	});
 }
 export type NearbyDeleteRangeHint = {
 	changeNumber: number;
@@ -287,6 +284,25 @@ export function formatSingleLineRangeExpansionIssue(issue: VerifiedSingleLineRan
 		`- remove the first line from lines; keep the remaining ${remainingLineCount} ${remainingLineLabel} unchanged`,
 	);
 	return lines.join("\n");
+}
+
+export function singleLineRangeExpansionResult(issue: VerifiedSingleLineRangeExpansionIssue): TextResult {
+	const nearbyDeleteRange = issue.nearbyDeleteRange;
+	return rejectedToolResult(
+		`The atomic batch was rejected; no content was written.\n${formatSingleLineRangeExpansionIssue(issue)}`,
+		{
+			code: issue.code,
+			message: `Change ${issue.changeNumber} uses replace_range for one source line while repeating that source line. Expand end_anchor or use insert_after; do not retry the same request.`,
+			hint: "replace_range must cover the complete old code block. For an append-only change, use insert_after and omit the repeated anchor line.",
+			changeNumber: issue.changeNumber,
+			operation: "replace_range",
+			anchor: issue.anchor,
+			outputLineCount: issue.outputLineCount,
+			...(nearbyDeleteRange
+				? { relatedChangeNumber: nearbyDeleteRange.changeNumber, candidateEndAnchor: nearbyDeleteRange.endAnchor }
+				: {}),
+		},
+	);
 }
 
 export function fileChangeLineRanges(changes: unknown): string | undefined {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -127,8 +128,8 @@ func TestReadRangeMarksOnlyAnOversizedSourceLineTruncated(t *testing.T) {
 	}
 	var result ReadResult
 	commandTestDecode(t, output, &result)
-	if !result.Truncated || result.NextOffset != 0 || len(result.Lines) != 1 || !result.Lines[0].TextTruncated {
-		t.Fatalf("long-line result = %#v", result)
+	if !result.Truncated || result.NextOffset != 2 || len(result.Lines) != 1 || !result.Lines[0].TextTruncated {
+		t.Fatalf("long-line result = %#v; want truncated line 1 with cursor 2", result)
 	}
 	if !strings.HasSuffix(result.Lines[0].Text, jsonTextTruncationSuffix) {
 		t.Fatalf("truncated text = %q; want suffix %q", result.Lines[0].Text, jsonTextTruncationSuffix)
@@ -156,12 +157,12 @@ func TestReadRangeJSONBudgetAccountsForEscaping(t *testing.T) {
 
 func TestSearchRegexLiteralCaseContextAndPagination(t *testing.T) {
 	lines := []string{"Alpha", "context", "beta", "ALPINE", "tail", "a.*b"}
-	regex, err := filterLinesWithMode(lines, "^al", false, true)
-	if err != nil || !equalLines(intsToStrings(regex), []string{"1", "4"}) {
+	regexMatcher, err := compileSearchMatcher("^al", false, true)
+	if regex := filterLines(lines, regexMatcher.regexp); err != nil || !equalLines(intsToStrings(regex), []string{"1", "4"}) {
 		t.Fatalf("case-insensitive regex = %#v, err=%v", regex, err)
 	}
-	literal, err := filterLinesWithMode(lines, "a.*b", true, false)
-	if err != nil || !equalLines(intsToStrings(literal), []string{"6"}) {
+	literalMatcher, err := compileSearchMatcher("a.*b", true, false)
+	if literal := filterLines(lines, literalMatcher.regexp); err != nil || !equalLines(intsToStrings(literal), []string{"6"}) {
 		t.Fatalf("literal matches = %#v, err=%v", literal, err)
 	}
 	if got := applyContext(lines, []int{1, 4}, 1); !equalLines(intsToStrings(got), []string{"1", "2", "3", "4", "5"}) {
@@ -180,10 +181,31 @@ func TestSearchRegexLiteralCaseContextAndPagination(t *testing.T) {
 	}
 }
 
+func TestOversizedLinePageKeepsContinuationCursor(t *testing.T) {
+	lines := []string{"head", strings.Repeat("x", 4096) + "foo", "foo tail", "end"}
+	budget := 512
+	page, textTruncated, nextOffset := collectMatchLines(lines, []int{2, 3}, 2, 100, budget)
+	if !textTruncated || len(page) != 1 || page[0].Line != 2 || nextOffset != 3 {
+		t.Fatalf("search page = %#v, textTruncated=%v, nextOffset=%d; want truncated line 2 with cursor 3", page, textTruncated, nextOffset)
+	}
+	page, textTruncated, nextOffset = collectMatchLines(lines, []int{2}, 2, 100, budget)
+	if !textTruncated || len(page) != 1 || nextOffset != 0 {
+		t.Fatalf("last-match page = %#v, textTruncated=%v, nextOffset=%d; want no cursor", page, textTruncated, nextOffset)
+	}
+	readPage, textTruncated, nextOffset, _ := collectAnnotatedLines(lines, 1, 100, budget)
+	if !textTruncated || len(readPage) != 1 || readPage[0].Line != 2 || nextOffset != 3 {
+		t.Fatalf("read page = %#v, textTruncated=%v, nextOffset=%d; want truncated line 2 with cursor 3", readPage, textTruncated, nextOffset)
+	}
+	readPage, textTruncated, nextOffset, _ = collectAnnotatedLines(lines[:2], 1, 100, budget)
+	if !textTruncated || len(readPage) != 1 || nextOffset != 0 {
+		t.Fatalf("EOF read page = %#v, textTruncated=%v, nextOffset=%d; want no cursor", readPage, textTruncated, nextOffset)
+	}
+}
+
 func intsToStrings(values []int) []string {
 	result := make([]string, len(values))
 	for i, value := range values {
-		result[i] = intToStr(value)
+		result[i] = strconv.Itoa(value)
 	}
 	return result
 }

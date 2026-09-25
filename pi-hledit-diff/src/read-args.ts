@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 export const DEFAULT_READ_LIMIT = 160;
 export const DEFAULT_SEARCH_LIMIT = 100;
 export const MAX_READ_LIMIT = 2000;
@@ -37,6 +39,10 @@ export type NormalizedSearchRequest = {
 
 export function normalizeToolPath(path: string): string {
 	const cleaned = path.replace(/^@/, "");
+	if (cleaned === "~") return homedir();
+	if (cleaned.startsWith("~/") || (process.platform === "win32" && cleaned.startsWith("~\\"))) {
+		return join(homedir(), cleaned.slice(2));
+	}
 	const msysDrive = cleaned.match(/^\/([A-Za-z])\/(.*)$/);
 	if (process.platform === "win32" && msysDrive) {
 		return `${msysDrive[1]}:/${msysDrive[2]}`;

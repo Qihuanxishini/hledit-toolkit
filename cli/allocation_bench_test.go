@@ -124,7 +124,7 @@ func BenchmarkBatchOutputMaterialization10MiB(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		encoded := file.EncodeContent(plan.RebuiltLines, rebuiltLineEndings(file, plan.EditDeltas, len(plan.RebuiltLines)))
+		encoded := file.EncodeContent(plan.RebuiltLines, rebuiltLineEndings(file, plan.EditDeltas, plan.RebuiltLines))
 		benchSinkRevision = rawFileRevision(encoded)
 		benchSinkBytes = encoded
 	}

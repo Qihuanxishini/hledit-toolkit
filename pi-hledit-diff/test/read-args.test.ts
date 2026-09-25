@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -55,4 +57,16 @@ test("normalizeToolPath converts msys drive paths on Windows", () => {
 	const normalized = normalizeToolPath("/c/Users/example/file.ts");
 	const expected = process.platform === "win32" ? "c:/Users/example/file.ts" : "/c/Users/example/file.ts";
 	assert.equal(normalized, expected);
+});
+
+test("normalizeToolPath expands home paths without expanding named users", () => {
+	assert.equal(normalizeToolPath("~"), homedir());
+	assert.equal(normalizeToolPath("~/"), join(homedir(), ""));
+	assert.equal(normalizeToolPath("~/.pi/settings.json"), join(homedir(), ".pi/settings.json"));
+	assert.equal(normalizeToolPath("@~/.pi/settings.json"), join(homedir(), ".pi/settings.json"));
+	assert.equal(normalizeReadRequest({ path: "~/read.txt" }).path, join(homedir(), "read.txt"));
+	assert.equal(normalizeSearchRequest({ path: "~/search.txt", pattern: "token" }).path, join(homedir(), "search.txt"));
+	assert.equal(normalizeToolPath("~other/file.txt"), "~other/file.txt");
+	assert.equal(normalizeToolPath("src/~/file.txt"), "src/~/file.txt");
+	assert.equal(normalizeToolPath("~\\file.txt"), process.platform === "win32" ? join(homedir(), "file.txt") : "~\\file.txt");
 });

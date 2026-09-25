@@ -623,7 +623,7 @@ test("branch restoration replays targeted proof recovered by a rejected apply", 
 					details: applyDetails("rejected", {
 						path: "target.txt",
 						error: { code: "insufficient_read_proof", message: "read recovered" },
-						recoveredRead,
+						recoveredReads: [recoveredRead],
 					}),
 				},
 			}],
@@ -649,7 +649,7 @@ test("malformed recovered reads do not restore proof", () => {
 					details: applyDetails("rejected", {
 						path: "target.txt",
 						error: { code: "insufficient_read_proof", message: "malformed" },
-						recoveredRead: { ...recoveredRead, lines: [{}] },
+						recoveredReads: [{ ...recoveredRead, lines: [{}] }],
 					}),
 				},
 			}],
@@ -663,7 +663,7 @@ test("path-mismatched recovered reads do not restore proof", () => {
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("rejected", {
 		path: "other.txt",
 		error: { code: "insufficient_read_proof", message: "mismatched" },
-		recoveredRead: readMetadata(REVISION_A, [{ line: 2, anchor: "2#BBB" }], { truncated: true }),
+		recoveredReads: [readMetadata(REVISION_A, [{ line: 2, anchor: "2#BBB" }], { truncated: true })],
 	}), "/workspace");
 	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: "2#BBB", lines: ["next"] }]));
 });

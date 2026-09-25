@@ -12,6 +12,7 @@
 
 编辑语义：
 
+- 三个工具统一展开 `~`、`~/` 主目录路径（Windows 同时支持 `~\`），并处理 `@` 前缀和 Windows MSYS 盘符路径。
 - 编辑现有非空文本文件前，使用 `hledit_read_anchors` 读取会被消费的连续原始行，或使用 `hledit_search_anchors` 定位并读取匹配/上下文行；普通 `read` 只用于参考文件或尚未确定修改目标的探索。`write` 只用于新文件、空文件或读取工具报告 source-line truncation 的例外场景。
 - 规范锚点是 `LN#[A-Za-z0-9_-]{3}` token。公开 change 只复制范围首尾或 insert 依附行；区间内部 proof 由插件从 evidence 注入。apply 使用严格输入，不剥离带源码后缀的 anchor，也不迁移旧字段或包装形状。
 - 公开修改协议只有 `replace_range`、`delete_range`、`insert_before` 和 `insert_after`。范围操作同时提供 `start_anchor` 与 `end_anchor`；单行范围使用同一锚点。旧 operation 与内容匹配替换不迁移。
@@ -20,12 +21,14 @@
 - `insufficient_read_proof` 会在同一 canonical file queue 内自动分页执行定向只读，直到目标缺口完整覆盖或触及恢复预算。结果返回全部 `recoveredReads`、最新 evidence 和一个权威 `proof_id`，但不会自动重放修改；审阅当前源码与端点锚点后再显式重提 apply。
 - 定向补读有硬预算：缺口跨度 1,200 行、4 页、96 KiB 正文。补读会把读到的每一行回灌进上下文，因此跨度超限时一个子进程都不启动，直接返回 `proof_recovery_budget_exceeded` 与显式分块读取指令；页数或字节超限时保留已读页并返回同一 code。source-line truncation 返回终止性指导，读取失败通过 `recoveryReadError` 暴露。
 - 读取错误一律给出可操作正文：`pattern` 转发 RE2 编译原文并说明 RE2 不支持 lookahead/lookbehind/backreference（可改用 `literal:true`），`broad_pattern` 指向 `hledit_read_anchors`。
+- 超过单页预算的源行会标记 `textTruncated`，不能作为编辑 proof；若后面还有待读行或匹配，结果仍提供 `nextOffset` 和续读提示。
 - 单行 `replace_range` 输出多行且首行重复原行时，插件先用 `batch --check` 验证整个请求，再返回字段级范围修复指引，不自动扩大或执行范围。
 - CLI 在临时文件同步后、原子替换前复检原始字节 revision。`source_changed_before_commit` 是确认零写入；已启动进程的取消、超时、输出超限或异常响应属于 `outcome_unknown`，必须重新读取。
 - 成功 apply 使用 `editDeltas` 重映射未消费 evidence，再合并新 revision 的 `updatedAnchorSpans`（每个产出了行的编辑各一个精确覆盖产出区间的 span）。唯一、非歧义、同 revision 且替换后完整 proof 仍成立的 verified rename 会被内部规范化并报告在 `details.resolvedAnchors`；旧 token 被当前行重新占用，或其源行/alias 最终目标被消费失联时，身份会保持 ambiguous 直到覆盖当前行的显式读取。
 - 读取、proof 选择、CLI mutation 与 evidence 更新按 canonical real path 使用同一 file mutation queue。同文件状态事务串行，不同文件仍可并行。
-- evidence 有界：单文件最多 10,000 records / 4 MiB logical UTF-8 payload，session 最多 50,000 records / 16 MiB；超限按完整文件淘汰并安全降级为补读。branch replay 使用相同顺序与容量规则，只恢复经过严格验证的 apply `recoveredRead`。
-- 仅接受有效 UTF-8 文本；revision 基于原始字节，BOM、CRLF/LF 与末尾换行差异都会改变 revision。写入逐行保留未修改 terminator、UTF-8 BOM 与末尾换行状态。
+- evidence 有界：单文件最多 10,000 records / 4 MiB logical UTF-8 payload，session 最多 50,000 records / 16 MiB；超限按完整文件淘汰并安全降级为补读。branch replay 使用相同顺序与容量规则，只恢复经过严格验证的 apply `recoveredReads`。
+- 仅接受有效 UTF-8 且不含 NUL 的文本；revision 基于原始字节。非空结果保留既有 BOM，拒绝会把首字符 U+FEFF 重新解释为 BOM 的修改。孤立 CR 作为正文保留；空末行必要地补行尾，其余按局部规则保留行尾与末尾换行状态。
+- Windows 写入保留目标 DACL、继承状态和 NTFS 附加流。替换中途失败时先以不覆盖方式移回原文件，成功即为零写入失败；无法移回时返回 `outcome_unknown` 并保留、报告恢复文件，须先检查文件状态；已成功写入但恢复副本清理失败则返回成功及含路径的 warning。
 
 CLI 3.x capability 健康时，插件始终启用这三个专用工具并替换 Pi 内置 `edit`。`session_tree` 重建当前 branch evidence，但不隐藏工具。若 bundled CLI 缺失、版本不在 3.x、缺少正 capability、残留已删除的 `contentReplaceOnce` 字段或响应 malformed，则恢复内置 `edit`。
 
@@ -36,7 +39,7 @@ CLI 3.x capability 健康时，插件始终启用这三个专用工具并替换 
 - 连续锚点读取和搜索都使用 `LN#HASH` gutter、语法高亮和紧凑预览；摘要显示实际范围、总行数、EOF、匹配统计或下一 offset。
 - 文件修改在 120 列及以上显示 old/new 双栏，更窄时显示统一 diff；多项修改在标题中分别显示范围。
 - `details.changePreview` 是提交绑定的结构化局部 diff；上限为 2,000 行 / 256 KiB UTF-8，超长单行保留首尾并标记截断。截断统计使用 CLI 验证的 `linesAdded` / `linesDeleted`，不把局部 hunk 数冒充完整统计。
-- expanded 结果直接消费 `details.updatedAnchorSpans`，不从模型正文反向解析；历史结果只保留 `details.diff` 的渲染回退。
+- 读取、差异预览和 expanded 更新锚点分别消费 `details.read`、`details.changePreview`、`details.updatedAnchorSpans`；展示与证据恢复共用结构化结果。
 - 组件缓存同宽布局与语法高亮，并从当前 Pi theme 派生颜色。
 
 ## CLI 要求
@@ -52,7 +55,7 @@ bin/hledit.exe
 ```json
 {
   "ok": true,
-  "version": "3.3.0",
+  "version": "3.3.1",
   "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,

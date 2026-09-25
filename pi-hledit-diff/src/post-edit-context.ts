@@ -1,7 +1,4 @@
-import { ANCHOR_HASH_PATTERN } from "./file-changes.ts";
-
-// 锚点 token 形状在每个 anchor span 的逐行校验热路径上使用，只编译一次。
-const ANCHOR_TOKEN_PATTERN = new RegExp(`^(\\d+)#${ANCHOR_HASH_PATTERN}$`);
+import { anchorTokenLine } from "./anchor.ts";
 
 export type BatchAnchorLine = {
 	line: number;
@@ -54,18 +51,16 @@ export function parseAnchorContext(value: unknown): BatchAnchorContext | undefin
 		}
 		const line = positiveInteger(item.line);
 		const textTruncated = item.textTruncated ?? false;
-		const anchorMatch = typeof item.anchor === "string" ? ANCHOR_TOKEN_PATTERN.exec(item.anchor) : null;
 		if (
 			line !== offset + index ||
-			anchorMatch === null ||
-			// 不能只比数值：前导零形式（"007#abc"）不是合法锚点，必须拒绝。
-			anchorMatch[1] !== String(line) ||
+			// anchor 语法已拒绝前导零，因此行号数值相等即字面一致。
+			anchorTokenLine(item.anchor) !== line ||
 			typeof item.text !== "string" ||
 			typeof textTruncated !== "boolean"
 		) {
 			return undefined;
 		}
-		lines.push({ line, anchor: anchorMatch[0], text: item.text, textTruncated });
+		lines.push({ line, anchor: item.anchor as string, text: item.text, textTruncated });
 	}
 
 	return { lines, offset, limit, desiredLimit, truncated: value.truncated };

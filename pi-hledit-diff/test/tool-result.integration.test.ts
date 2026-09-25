@@ -6,7 +6,8 @@ import test from "node:test";
 
 import piHleditDiffExtension from "../index.ts";
 import { HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL } from "../src/active-tools.ts";
-import { formatReadMetadata, type TextResult } from "../src/result.ts";
+import { formatReadMetadata } from "../src/read-result.ts";
+import type { TextResult } from "../src/result.ts";
 import { MAX_RECOVERY_TEXT_BYTES } from "../src/read-recovery.ts";
 
 type ToolResultListener = (event: { toolName: string; details: unknown }, context: { cwd: string }) => unknown;
@@ -172,6 +173,27 @@ test("read and search tools return structured ranges and actionable EOF errors",
 	assert.equal(rangeError.details.disposition, "rejected");
 	assert.equal(rangeError.details.error?.message, "Starting line 4 is outside the file range (3 total lines).");
 	assert.equal(rangeError.content[0]?.text.split("\n", 1)[0], "Starting line 4 is outside the file range (3 total lines).");
+});
+
+test("read and search continue after an oversized source line", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-long-line-page-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	await writeFile(join(directory, "target.txt"), `${"x".repeat(70_000)}\nother\nlater\n`);
+	for (const name of [HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL]) {
+		const tool = registeredTools.get(name)!;
+		const params = { path: "target.txt", offset: 1, limit: 10, ...(name === HLEDIT_SEARCH_ANCHORS_TOOL ? { pattern: "x|later" } : {}) };
+		const first = await tool.execute("first", params as never, undefined, undefined, { cwd: directory });
+		assert.equal(first.details.disposition, "succeeded");
+		assert.equal(first.details.read?.textTruncated, true);
+		assert.equal(first.details.read?.nextOffset, 2);
+		assert.match(first.content[0]!.text, /continue with offset 2/);
+		const next = await tool.execute("next", { ...params, offset: first.details.read!.nextOffset } as never, undefined, undefined, { cwd: directory });
+		assert.equal(next.details.disposition, "succeeded");
+		assert.equal(next.details.read?.textTruncated, false);
+		assert.equal(next.details.read?.lines.at(-1)?.text, "later");
+		assert.equal(next.details.read?.nextOffset, undefined);
+	}
 });
 
 test("search tool accepts a near-limit result at EOF", async (t) => {
@@ -687,8 +709,8 @@ test("apply tool rejects an anchor that does not match its read proof before sta
 
 	assert.equal(applyResult.details.disposition, "rejected");
 	assert.equal(applyResult.details.error?.code, "insufficient_read_proof");
-	assert.equal(applyResult.details.recoveredRead?.lines.find((line) => line.line === 2)?.anchor, currentAnchor);
-	assert.equal((applyResult.details.error as Record<string, unknown> | undefined)?.recoveredRead, undefined);
+	assert.equal(applyResult.details.recoveredReads?.[0]?.lines.find((line) => line.line === 2)?.anchor, currentAnchor);
+	assert.equal((applyResult.details.error as Record<string, unknown> | undefined)?.recoveredReads, undefined);
 	assert.match(applyResult.content[0]?.text ?? "", /submitted anchor for line 2 does not match/);
 	assert.match(applyResult.content[0]?.text ?? "", /targeted missing range was read and recorded/);
 	assert.match(applyResult.content[0]?.text ?? "", new RegExp(`${currentAnchor}:two`));
@@ -721,7 +743,7 @@ test("proof recovery stops on source-line truncation", async (t) => {
 	);
 	assert.equal(apply.details.disposition, "rejected");
 	assert.equal(apply.details.error?.code, "source_line_truncated");
-	assert.equal(apply.details.recoveredRead, undefined);
+	assert.equal(apply.details.recoveredReads, undefined);
 	assert.match(apply.content[0]?.text ?? "", /Do not resubmit this hledit_apply_file_changes call/);
 	assert.doesNotMatch(apply.content[0]?.text ?? "", /Review the current source.*resubmit the batch/);
 	assert.equal(await readFile(target, "utf8"), original);
@@ -745,7 +767,7 @@ test("truncated recovery preserves its source budget and proof across session re
 	} as never, undefined, undefined, context);
 	assert.equal(apply.details.error?.code, "source_line_truncated");
 	assert.equal(apply.details.recoveredReads?.length, 1);
-	assert.deepEqual(apply.details.recoveredRead?.lines.map((line) => line.line), [1, 2]);
+	assert.deepEqual(apply.details.recoveredReads?.[0]?.lines.map((line) => line.line), [1, 2]);
 	const text = apply.content[0]!.text;
 	const proofId = /^proof_id: (\S+)$/m.exec(text)?.[1];
 	assert.ok(proofId);
@@ -763,7 +785,7 @@ test("truncated recovery preserves its source budget and proof across session re
 	const restoredApply = restored.registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
 	const emptyContext = { ...context, hasUI: false, sessionManager: { getBranch: () => [] } };
 	await restored.eventListeners.get("session_start")!({ reason: "startup" } as never, emptyContext as never);
-	const retained = apply.details.recoveredRead!.lines.find((line) => line.line === 2)!;
+	const retained = apply.details.recoveredReads![0]!.lines.find((line) => line.line === 2)!;
 	const continuationParams = {
 		path: "target.txt", proof_id: proofId,
 		changes: [{ operation: "replace_range", start_anchor: retained.anchor, end_anchor: retained.anchor, lines: "short" }],
@@ -851,7 +873,7 @@ test("multi-page proof recovery completes internally before apply is retried", a
 	assert.equal(apply.details.disposition, "rejected");
 	assert.equal(apply.details.error?.code, "insufficient_read_proof");
 	assert.ok((apply.details.recoveredReads?.length ?? 0) > 1);
-	assert.equal(apply.details.recoveredRead?.nextOffset, 1_100);
+	assert.equal(apply.details.recoveredReads?.at(-1)?.nextOffset, 1_100);
 	const recoveryText = apply.content[0]?.text ?? "";
 	assert.match(recoveryText, /read and recorded in \d+ page\(s\)/);
 	assert.match(recoveryText, /Review the current source.*resubmit the batch/);
@@ -890,7 +912,6 @@ test("an oversized proof gap is refused without reading anything back", async (t
 	assert.equal(apply.details.disposition, "rejected");
 	assert.equal(apply.details.error?.code, "proof_recovery_budget_exceeded");
 	assert.equal(apply.details.recoveredReads, undefined);
-	assert.equal(apply.details.recoveredRead, undefined);
 	const text = apply.content[0]?.text ?? "";
 	assert.match(text, /spans 2998 lines, above the 1200-line automatic recovery budget/);
 	assert.match(text, /No recovery read was started/);
@@ -1320,7 +1341,7 @@ test("session_before_compact records anchored file operations from structured re
 						disposition: "rejected",
 						path: "src/recovered-read.ts",
 						error: { code: "insufficient_read_proof", message: "read recovered" },
-						recoveredRead: {
+						recoveredReads: [{
 							path: "src/recovered-read.ts",
 							revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 							requested: { offset: 1, limit: 1 },
@@ -1330,13 +1351,13 @@ test("session_before_compact records anchored file operations from structured re
 							nextOffset: 2,
 							textTruncated: false,
 							eof: false,
-						},
+						}],
 					}),
 					toolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, {
 						disposition: "rejected",
 						path: "src/malformed-recovery.ts",
 						error: { code: "insufficient_read_proof", message: "malformed" },
-						recoveredRead: {},
+						recoveredReads: [{}],
 					}),
 					{ role: "assistant", content: [] },
 				],
@@ -1436,4 +1457,75 @@ test("no-op apply carries an empty commit-bound preview", async (t) => {
 	assert.equal(noop.details.disposition, "succeeded");
 	assert.equal(noop.details.contentChanged, false);
 	assert.deepEqual(noop.details.changePreview, { lines: [], truncated: false });
+});
+
+
+test("text boundary edits return anchors usable without an intervening read", async (t) => {
+	for (const fixture of [
+		{ name: "blank replacement", source: "old", text: "", insert: false, expected: "\n" },
+		{ name: "blank append", source: "old", text: "", insert: true, expected: "old\n\n" },
+		{ name: "trailing CR", source: "old\nkeep\n", text: "new\r", insert: false, expected: "new\r\r\nkeep\n" },
+		{ name: "BOM and literal FEFF", source: "\uFEFFold", text: "\uFEFFnew", insert: false, expected: "\uFEFF\uFEFFnew" },
+	]) {
+		await t.test(fixture.name, async (t) => {
+			const { registeredTools } = registerExtensionForTest();
+			const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL)!;
+			const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
+			const directory = await mkdtemp(join(tmpdir(), "pi-hledit-text-boundary-"));
+			t.after(() => rm(directory, { recursive: true, force: true }));
+			const target = join(directory, "target.txt");
+			await writeFile(target, fixture.source, "utf8");
+			const context = { cwd: directory };
+			const read = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+			const anchor = read.details.read!.lines[0]!.anchor;
+			const change = fixture.insert
+				? { operation: "insert_after", anchor, lines: fixture.text }
+				: { operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: fixture.text };
+			const applied = await applyTool.execute("apply", {
+				path: "target.txt", proof_id: read.details.proofId, changes: [change],
+			} as never, undefined, undefined, context);
+			assert.equal(applied.details.disposition, "succeeded", applied.content[0]?.text);
+			assert.equal(await readFile(target, "utf8"), fixture.expected);
+			const updated = applied.details.updatedAnchorSpans![0]!.lines[0]!;
+			assert.equal(updated.text, fixture.text);
+			assert.ok(applied.details.proofId);
+			const next = await applyTool.execute("continue", {
+				path: "target.txt", proof_id: applied.details.proofId,
+				changes: [{ operation: "replace_range", start_anchor: updated.anchor, end_anchor: updated.anchor, lines: "verified" }],
+			} as never, undefined, undefined, context);
+			assert.equal(next.details.disposition, "succeeded", next.content[0]?.text);
+			const reread = await readTool.execute("verify", { path: "target.txt" } as never, undefined, undefined, context);
+			assert.equal(reread.details.read!.lines[updated.line - 1]!.text, "verified");
+		});
+	}
+});
+
+test("text boundary rejections preserve the file and provide input-specific guidance", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL)!;
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-text-rejection-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "old\nkeep\n", "utf8");
+	const context = { cwd: directory };
+	const read = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const first = read.details.read!.lines[0]!.anchor;
+	const second = read.details.read!.lines[1]!.anchor;
+	const nul = await applyTool.execute("nul", {
+		path: "target.txt", proof_id: read.details.proofId, changes: [
+			{ operation: "replace_range", start_anchor: first, end_anchor: first, lines: "changed" },
+			{ operation: "replace_range", start_anchor: second, end_anchor: second, lines: "new\u0000text" },
+		],
+	} as never, undefined, undefined, context);
+	assert.equal(nul.details.disposition, "rejected");
+	assert.match(nul.content[0]?.text ?? "", /Change 2 contains a NUL character/);
+	assert.equal(await readFile(target, "utf8"), "old\nkeep\n");
+	const bom = await applyTool.execute("bom", {
+		path: "target.txt", proof_id: read.details.proofId,
+		changes: [{ operation: "replace_range", start_anchor: first, end_anchor: first, lines: "\uFEFFnew" }],
+	} as never, undefined, undefined, context);
+	assert.equal(bom.details.disposition, "rejected");
+	assert.match(bom.content[0]?.text ?? "", /reinterpret leading U\+FEFF text as a UTF-8 BOM/);
+	assert.equal(await readFile(target, "utf8"), "old\nkeep\n");
 });

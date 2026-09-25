@@ -12,7 +12,7 @@ go install github.com/Qihuanxishini/hledit-toolkit/cli@latest
 make build
 ```
 
-Requirements: Go 1.21+.
+Requirements: Go 1.25+. The Windows security implementation uses `golang.org/x/sys/windows`; the bundled Windows binary is built with Go 1.26.3.
 
 ```bash
 go test ./...
@@ -93,7 +93,7 @@ The optional proof is required by the Pi extension. Its revision and strictly in
 
 A successful batch includes `revision`, `contentChanged`, edit counts, `editDeltas`, and `updatedAnchorSpans`: one bounded span per edit that produced lines, covering exactly its produced range. `--check` adds `checked:true` and never writes. A no-op reports `contentChanged:false` without changing the target.
 
-Logical failures return JSON on stdout with exit code `0`; malformed command-line usage exits `2`. Read paths reject binary or invalid UTF-8 files. Revisions hash original bytes, including BOM, line endings, and trailing newline. Writes preserve untouched terminators and BOM state, use a temporary sibling plus atomic replacement, and recheck the original revision immediately before commit.
+Confirmed zero-write failures return JSON on stdout with exit code `0`; malformed command-line usage exits `2`. Unknown write outcomes exit `1` with recovery diagnostics on stderr and must not be retried without inspection. Read paths reject binary or invalid UTF-8 files, and replacement line-array elements reject NUL and embedded LF. Revisions hash original bytes, including BOM, line endings, and trailing newline. Writes preserve logical text, existing BOM metadata, and local terminators; a final blank line gains a terminator when needed to exist physically. Windows replacements preserve DACLs and alternate streams, restore the original without overwriting after a partial failure, and retain recovery files when that is impossible. See [SPEC.md](./SPEC.md#5-hashes-revisions-and-writes) for the full encoding and failure contract.
 
 ## Pi extension
 

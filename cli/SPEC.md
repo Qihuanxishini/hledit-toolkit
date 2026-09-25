@@ -17,11 +17,11 @@ hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N
 hledit batch [--check] <file>
 ```
 
-`read-range`, `search`, and `batch` always write one structured JSON response to stdout. They have no text, ANSI, or compatibility output mode.
+`read-range`, `search`, and `batch` emit structured JSON for normal outcomes. They have no text, ANSI, or compatibility output mode. An uncertain write outcome instead exits nonzero with a diagnostic on stderr.
 
-- Logical command outcomes, including `stale`, `invalid`, `binary`, `encoding`, `directory`, `range`, and I/O errors, exit `0` and return `{ "ok": false, ... }` on stdout. A `directory` error means the supplied path is a directory; read and search verbs require one concrete text file.
+- Logical command failures confirmed to have made no write, including `stale`, `invalid`, `binary`, `encoding`, `directory`, `range`, and pre-commit I/O errors, exit `0` and return `{ "ok": false, ... }` on stdout. A `directory` error means the supplied path is a directory; read and search verbs require one concrete text file.
 - Invalid command-line shape exits `2` with usage on stderr.
-- Failures that prevent emitting a normal response exit `1`.
+- Failures that prevent emitting a normal response, including a partially completed Windows replacement whose original file could not be restored, exit `1`. The caller must treat the write outcome as unknown, inspect the reported target and recovery files, and must not retry the original request.
 
 ## 2. Capabilities
 
@@ -34,7 +34,7 @@ The response is the compatibility gate for the Pi extension:
 ```json
 {
   "ok": true,
-  "version": "3.3.0",
+  "version": "3.3.1",
   "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,
@@ -75,7 +75,7 @@ hledit read-range <file> [--offset N] [--limit M]
 }
 ```
 
-`revision` hashes the original bytes before BOM removal or newline parsing. `lines` are ordered physical source lines, and every `anchor` is an exact `LN#HHH` token. `nextOffset`, when present, is the physical source-line cursor for the next page. A source line that cannot fit in an otherwise empty 50 KiB JSON page is returned with `textTruncated:true`; that line is not usable as edit proof. When a complete line does not fit in the remaining page, it is left for the next page instead of being truncated.
+`revision` hashes the original bytes before BOM removal or newline parsing. `lines` are ordered physical source lines, and every `anchor` is an exact `LN#HHH` token. `nextOffset`, when present, is the physical source-line cursor for the next page. A source line that cannot fit in an otherwise empty 50 KiB JSON page is returned alone with `textTruncated:true`; that line is not usable as edit proof, and `nextOffset` still points at the following line when one remains. When a complete line does not fit in the remaining page, it is left for the next page instead of being truncated.
 
 Offset past a non-empty file returns:
 
@@ -136,14 +136,15 @@ Batch wire v3 has one canonical shape:
 - `delete` omits `lines`.
 - `insert` requires non-empty `lines`; `after` is permitted only on `insert`, where only `true` has meaning.
 - `replace` and `delete` accept optional inclusive `end_pos`; without it they consume only `pos`.
-- Each anchor is exactly `LN#HHH`; annotations, whitespace, aliases, and older hash forms are rejected.
-- The decoder rejects unknown fields, trailing JSON values, non-string `lines`/proof anchors, requests larger than 8 MiB, batches above 200 edits, more than 1 MiB of canonical replacement UTF-8, and more than 20,000 replacement output lines.
+- Each anchor is exactly `LN#HHH` with a positive line number and no leading zero; annotations, whitespace, aliases, and older hash forms are rejected.
+- Each `lines` element is one logical line and must contain neither NUL nor LF; separate lines use separate array elements. An empty string represents one blank line.
+- Field names are case-sensitive and must not repeat within an object. The decoder rejects unknown or duplicate fields, `null` objects, trailing JSON values, non-string `lines`/proof anchors, requests larger than 8 MiB, batches above 200 edits, more than 1 MiB of canonical replacement UTF-8, and more than 20,000 replacement output lines.
 
 `proof` is optional for standalone use. When supplied, its raw-byte revision must match the loaded file and its unique, strictly ascending anchors must cover each consumed `replace`/`delete` line and every insert attachment anchor. Missing coverage returns `insufficient_read_proof`; a mismatch returns `stale`.
 
 All edits are validated against one original snapshot before writing. Conflicting ranges, duplicate insertion boundaries, inserts inside a consumed range, invalid anchors, and stale anchors reject the entire request with zero writes. The planner orders non-conflicting edits by physical boundary and rebuilds the file once.
 
-Success includes the resulting revision, `contentChanged`, aggregate edit statistics, one `editDeltas` entry per request edit, and—except for `--check`, where it is `null`—`updatedAnchorSpans`: one context-free span per edit that produced lines, in physical order, covering exactly that edit's produced range in the new file. Pure deletions produce no span. The spans share one budget (80 lines / 16 KiB); once it is exhausted, later spans are still emitted with empty `lines` and `truncated:true` so callers can match spans to `editDeltas` one-to-one.
+Success includes `revision`, `contentChanged`, aggregate edit statistics, one `editDeltas` entry per request edit, and—except for `--check`, where it is `null`—`updatedAnchorSpans`. An applied batch reports the resulting revision; `--check` writes nothing and reports the current source revision. Each span is context-free and covers exactly one producing edit's range in the new file, in physical order. Pure deletions produce no span. The spans share one budget (80 lines / 16 KiB): a span whose first line exceeds the remaining budget carries that line with `textTruncated:true`, and once the budget is exhausted later spans are still emitted with empty `lines` and `truncated:true` so callers can match spans to `editDeltas` one-to-one.
 
 ```json
 {
@@ -164,7 +165,7 @@ Success includes the resulting revision, `contentChanged`, aggregate edit statis
 }
 ```
 
-A stale response may include `remaps`, `currentRevision`, and a bounded same-snapshot `currentAnchors` window. These are diagnostic data only: the caller must explicitly re-read and submit a new batch.
+A stale response may include `remaps`, `currentRevision`, and a bounded same-snapshot `currentAnchors` window (the requested lines plus two lines of context on each side, capped at 20 lines / 4 KiB). Its `truncated` flag is true only when that budget shortened the window, not merely because the file continues after it. These are diagnostic data only: the caller must explicitly re-read and submit a new batch.
 
 ## 5. Hashes, revisions, and writes
 
@@ -178,7 +179,11 @@ The hash is the low 18 bits of FNV-1a-32 encoded with URL-safe Base64. Its input
 
 Raw-byte revisions use `sha256:<64 lowercase hex digits>` over the unchanged source bytes, including BOM, line-ending style, and trailing newline. Revisions are concurrency preconditions; they do not replace per-line anchor validation.
 
-A content-changing batch resolves symlink targets, rejects non-regular and multi-hard-link files, writes a synced temporary sibling, rechecks the raw-byte revision immediately before replacement, then atomically replaces the target. A detectable external change returns `source_changed_before_commit` without overwriting it. Untouched terminators, BOM state for non-empty results, and trailing-newline state are retained; deleting all logical lines produces a truly empty file, and mixed line endings are not globally normalized. A validated no-op reports `contentChanged:false` without touching the file.
+A content-changing batch resolves symlink targets, rejects non-regular and multi-hard-link files, writes a synced temporary sibling, rechecks the raw-byte revision immediately before replacement, then atomically replaces the target. A detectable external change returns `source_changed_before_commit` without overwriting it. The recheck and replacement are not a linearizable compare-and-swap against other processes. A validated no-op reports `contentChanged:false` without touching the file.
+
+Untouched terminators and BOM state for non-empty results are retained. Trailing-newline state is retained except when a final blank logical line needs a terminator to exist physically. A terminated line whose text ends in CR uses CRLF so that the text CR survives parsing. A batch that would reinterpret a leading U+FEFF text character as a BOM is rejected before writing, including when deleting preceding lines exposes that character. Deleting all logical lines produces a truly empty file; mixed line endings are not globally normalized.
+
+On Windows, the temporary file receives the target DACL before any replacement text is written. Existing files use `ReplaceFileW` with metadata-merge errors enforced and a unique reserved recovery path, preserving DACL inheritance state and NTFS alternate data streams. When a replacement stops after moving the original to the recovery path, the original is moved back without overwriting; success reports a zero-write `io` failure. If the original cannot be restored, or an undocumented failure leaves the target missing, both candidate and recovery files are retained and the command exits `1`; a successful replacement whose recovery-file cleanup fails remains a success with a path-bearing warning. Only files reserved by the current transaction are candidates for cleanup.
 
 ## 6. Source layout
 

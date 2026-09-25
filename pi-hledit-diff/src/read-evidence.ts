@@ -7,16 +7,18 @@ import {
 	HLEDIT_SEARCH_ANCHORS_TOOL,
 } from "./active-tools.ts";
 import { computeAnchorTag } from "./anchor-hash.ts";
-import { lineFromAnchor, type HleditBatchReadProof } from "./file-changes.ts";
+import { lineFromAnchor } from "./anchor.ts";
+import type { HleditBatchReadProof } from "./file-changes.ts";
 import { parseAnchorContext, parseUpdatedAnchorSpans, type BatchAnchorContext } from "./post-edit-context.ts";
 import { nextProofId } from "./proof-id.ts";
+import { parseHleditReadMetadata, parseRecoveredReads } from "./read-result.ts";
 import {
 	isRawRevision,
+	isRecord,
 	parseEditDeltas,
-	parseHleditReadMetadata,
-	parseRecoveredReads,
 	type HleditDetails,
 	type HleditEditDelta,
+	type HleditErrorMetadata,
 	type HleditReadMetadata,
 } from "./result.ts";
 import { suggestedReadWindow } from "./read-args.ts";
@@ -125,10 +127,6 @@ export type ReadProofSelection =
 		renamedAnchors?: RenamedAnchor[];
 	}
 	| { failure: ReadProofFailure };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function evidencePathFromDetails(details: Record<string, unknown>, cwd: string): string | undefined {
 	if (typeof details.evidencePath === "string" && details.evidencePath.length > 0) {
@@ -322,9 +320,29 @@ function replaceRenamedAnchors(
 	};
 }
 
+type EvidenceProofFailure = {
+	message: string;
+	reportedMissingLines: number[];
+	suggestedReadRange?: ReadProofLineRange;
+	proofGap?: ReadProofGap;
+};
+
 type EvidenceProofEvaluation =
 	| { anchors: string[]; coveredLines: number[] }
-	| { failure: { message: string; reportedMissingLines: number[]; suggestedReadRange?: ReadProofLineRange; proofGap?: ReadProofGap } };
+	| { failure: EvidenceProofFailure };
+
+function insufficientReadProof(failure: EvidenceProofFailure, renamedAnchors?: RenamedAnchor[]): ReadProofFailure {
+	return { code: "insufficient_read_proof", ...failure, ...(renamedAnchors ? { renamedAnchors } : {}) };
+}
+
+function consumedEvidenceLines(coveredLines: number[], evidenceLines: Map<number, EvidenceLine>): Map<number, ConsumedEvidenceLine> {
+	const consumed = new Map<number, ConsumedEvidenceLine>();
+	for (const line of coveredLines) {
+		const info = evidenceLines.get(line)!;
+		consumed.set(line, { line, anchor: info.anchor, text: info.text });
+	}
+	return consumed;
+}
 
 // 对同一份证据评估一次请求的逐行 coverage 与每个提交端点；selectProof 用它分别
 // 评估原始请求与"更名替换后"的 what-if 请求。
@@ -387,6 +405,14 @@ export function formatReadProofDiagnosis(failure: ReadProofFailure): string {
 		);
 	}
 	return lines.join("\n");
+}
+
+// 失败结果 error 元数据中与 proof 缺口相关的结构化字段；直接拒绝与补读后拒绝共用。
+export function readProofFailureContext(failure: ReadProofFailure): Pick<HleditErrorMetadata, "renamedAnchors" | "changeNumber" | "operation"> {
+	return {
+		...(failure.renamedAnchors ? { renamedAnchors: failure.renamedAnchors } : {}),
+		...(failure.proofGap ? { changeNumber: failure.proofGap.changeNumber, operation: failure.proofGap.operation } : {}),
+	};
 }
 
 export function formatReadProofFailure(path: string, failure: ReadProofFailure): string {
@@ -772,23 +798,14 @@ export class ReadEvidenceStore {
 
 		const direct = evaluateProofAgainstEvidence(requested, evidence.lines, evidence.renames);
 		if ("anchors" in direct) {
-			const consumedLines = new Map<number, ConsumedEvidenceLine>();
-			for (const line of direct.coveredLines) {
-				const info = evidence.lines.get(line)!;
-				consumedLines.set(line, { line, anchor: info.anchor, text: info.text });
-			}
-			return { proof: { revision: evidence.revision, anchors: direct.anchors }, consumedLines };
+			return {
+				proof: { revision: evidence.revision, anchors: direct.anchors },
+				consumedLines: consumedEvidenceLines(direct.coveredLines, evidence.lines),
+			};
 		}
 
 		const renamedAnchors = renamedEndpointAnchors(evidence.renames, requested.endpointAnchors);
-		const failure: ReadProofFailure = {
-			code: "insufficient_read_proof",
-			message: direct.failure.message,
-			reportedMissingLines: direct.failure.reportedMissingLines,
-			...(direct.failure.suggestedReadRange ? { suggestedReadRange: direct.failure.suggestedReadRange } : {}),
-			...(direct.failure.proofGap ? { proofGap: direct.failure.proofGap } : {}),
-		};
-		if (renamedAnchors.length === 0) return { failure };
+		if (renamedAnchors.length === 0) return { failure: insufficientReadProof(direct.failure) };
 
 		const renamed = replaceRenamedAnchors(changes, evidence.renames);
 		const substituted = requestedChangeEvidence(renamed.changes);
@@ -796,33 +813,14 @@ export class ReadEvidenceStore {
 			? evaluateProofAgainstEvidence(substituted, evidence.lines, evidence.renames)
 			: undefined;
 		if (substitutedEvaluation && "anchors" in substitutedEvaluation) {
-			const consumedLines = new Map<number, ConsumedEvidenceLine>();
-			for (const line of substitutedEvaluation.coveredLines) {
-				const info = evidence.lines.get(line)!;
-				consumedLines.set(line, { line, anchor: info.anchor, text: info.text });
-			}
 			return {
 				proof: { revision: evidence.revision, anchors: substitutedEvaluation.anchors },
-				consumedLines,
+				consumedLines: consumedEvidenceLines(substitutedEvaluation.coveredLines, evidence.lines),
 				normalizedChanges: renamed.changes,
 				renamedAnchors: renamed.renamedAnchors,
 			};
 		}
-		if (substitutedEvaluation) {
-			return {
-				failure: {
-					code: "insufficient_read_proof",
-					message: substitutedEvaluation.failure.message,
-					reportedMissingLines: substitutedEvaluation.failure.reportedMissingLines,
-					...(substitutedEvaluation.failure.suggestedReadRange
-						? { suggestedReadRange: substitutedEvaluation.failure.suggestedReadRange }
-						: {}),
-					...(substitutedEvaluation.failure.proofGap ? { proofGap: substitutedEvaluation.failure.proofGap } : {}),
-					renamedAnchors,
-				},
-			};
-		}
-		return { failure: { ...failure, renamedAnchors } };
+		return { failure: insufficientReadProof((substitutedEvaluation ?? direct).failure, renamedAnchors) };
 	}
 
 	restoreFromBranch(ctx: ExtensionContext): void {

@@ -4,13 +4,20 @@
 
 ### Changed
 
-- Bump the CLI version to 3.3.0. Successful `batch` responses now return `updatedAnchorSpans`: one context-free span per edit that produced lines, covering exactly that edit's produced range in the new file, sharing an 80-line / 16 KiB budget. Pure deletions produce no span; `--check` returns `null`. The single `updatedAnchors` window (with context lines) and the `batchUpdatedAnchors` capability are removed in favour of `batchUpdatedAnchorSpans`.
+- Bump the CLI version to 3.3.1. Successful `batch` responses return `updatedAnchorSpans`: one context-free span per edit that produced lines, covering exactly that edit's produced range in the new file, sharing an 80-line / 16 KiB budget. Pure deletions produce no span; `--check` returns `null`. The single `updatedAnchors` window (with context lines) and the `batchUpdatedAnchors` capability are removed in favour of `batchUpdatedAnchorSpans`.
+- Use `golang.org/x/sys/windows` for Windows security descriptor operations; source builds require Go 1.25 or later. The reproducible bundled binary toolchain remains Go 1.26.3.
 - Reduce the public CLI surface to JSON-only `read-range`, `search`, and `batch`; remove legacy `read`, `anchors`, `replace`, `replace-range`, `insert`, `--grep`, `--json`, and `--pretty` command paths.
 - Add the dedicated `search` verb and `search:true` capability for RE2/literal anchored lookup with context, case folding, `totalMatches`, and physical-line pagination. Broad whole-file regexes are rejected so integrations use contiguous range reads instead.
 - Rename search capabilities to `searchIgnoreCase`, `searchRegex`, and `searchLiteral` to reflect their exclusive ownership by the `search` verb.
 
 ### Fixed
 
+- Preserve Windows DACLs, inheritance state, and NTFS alternate data streams with `ReplaceFileW`; apply the target DACL before writing temporary contents. Move the original back without overwriting when a replacement stops midway; if that is impossible, retain recovery files and report an unknown write outcome. Report cleanup failures after a successful replacement as warnings.
+- Keep final blank logical lines and trailing CR text representable on disk so returned anchors match subsequent reads. Reject edits that would reinterpret leading U+FEFF text as BOM metadata.
+- Reject NUL and embedded LF in CLI replacement line-array elements before writing, with an edit-specific error shared by check and apply.
+- Continue pagination after a source line that alone exceeds the 50 KiB page: `read-range` and `search` now return `nextOffset` for the following line instead of ending the listing.
+- Mark a stale `currentAnchors` window truncated only when its own budget shortened it; complete windows in the middle of a file are no longer reported as truncated.
+- Enforce the canonical batch wire shape: field names are case-sensitive, duplicate fields and `null` objects are rejected, and anchors with leading-zero line numbers are invalid.
 - Keep JSON read/search proof lines complete across the 50 KiB page boundary: a line that does not fit the remaining page now moves to `nextOffset`, while only a source line that cannot fit an otherwise empty page is marked `textTruncated`.
 - Return `nextOffset: 0` when a `search` page ends because the last matching line exactly exhausts the JSON byte budget. The previous code read one past the final match and emitted an offset beyond the last line, which strict clients reject as an incompatible response.
 

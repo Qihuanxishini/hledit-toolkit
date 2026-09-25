@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 )
 
 const (
@@ -28,25 +29,58 @@ type BatchEditOp struct {
 	linesPresent  bool
 }
 
-type batchEditOpWire struct {
-	OP     string          `json:"op"`
-	Pos    string          `json:"pos"`
-	EndPos json.RawMessage `json:"end_pos"`
-	After  json.RawMessage `json:"after"`
-	Lines  json.RawMessage `json:"lines"`
+// decodeObjectFields 把一个 JSON 对象拆成原始字段值：字段名区分大小写，
+// 不允许重复或 allowed 之外的字段。encoding/json 默认的大小写折叠与“后者覆盖”
+// 会让同一请求出现多种拼写，与 wire v3 的唯一规范形状冲突。
+func decodeObjectFields(data []byte, object string, allowed ...string) (map[string]json.RawMessage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if token, err := decoder.Token(); err != nil {
+		return nil, err
+	} else if token != json.Delim('{') {
+		return nil, fmt.Errorf("%s must be a JSON object", object)
+	}
+	fields := make(map[string]json.RawMessage, len(allowed))
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		key := token.(string)
+		if !slices.Contains(allowed, key) {
+			return nil, fmt.Errorf("json: unknown field %q", key)
+		}
+		if _, duplicate := fields[key]; duplicate {
+			return nil, fmt.Errorf("%s contains duplicate field %q", object, key)
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		fields[key] = value
+	}
+	return fields, nil
+}
+
+func isJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+func decodeString(raw json.RawMessage, field string) (string, error) {
+	var value string
+	if isJSONNull(raw) || json.Unmarshal(raw, &value) != nil {
+		return "", fmt.Errorf("%s must be a string", field)
+	}
+	return value, nil
 }
 
 func decodeStringArray(raw json.RawMessage, field string) ([]string, error) {
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return nil, fmt.Errorf("%s must be an array of strings", field)
-	}
 	var elements []json.RawMessage
-	if err := json.Unmarshal(raw, &elements); err != nil {
+	if isJSONNull(raw) || json.Unmarshal(raw, &elements) != nil {
 		return nil, fmt.Errorf("%s must be an array of strings", field)
 	}
 	values := make([]string, len(elements))
 	for i, element := range elements {
-		if bytes.Equal(bytes.TrimSpace(element), []byte("null")) || json.Unmarshal(element, &values[i]) != nil {
+		if isJSONNull(element) || json.Unmarshal(element, &values[i]) != nil {
 			return nil, fmt.Errorf("%s[%d] must be a string", field, i)
 		}
 	}
@@ -54,68 +88,40 @@ func decodeStringArray(raw json.RawMessage, field string) ([]string, error) {
 }
 
 func (edit *BatchEditOp) UnmarshalJSON(data []byte) error {
-	var wire batchEditOpWire
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&wire); err != nil {
+	fields, err := decodeObjectFields(data, "batch edit", "op", "pos", "end_pos", "after", "lines")
+	if err != nil {
 		return err
 	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("batch edit must contain exactly one JSON object")
-		}
-		return err
-	}
-
-	edit.OP = wire.OP
-	edit.Pos = wire.Pos
-	edit.EndPos = ""
-	edit.After = false
-	edit.Lines = nil
-	edit.endPosPresent = len(wire.EndPos) > 0
-	edit.afterPresent = len(wire.After) > 0
-	edit.linesPresent = len(wire.Lines) > 0
-	if edit.endPosPresent {
-		if bytes.Equal(bytes.TrimSpace(wire.EndPos), []byte("null")) || json.Unmarshal(wire.EndPos, &edit.EndPos) != nil {
-			return errors.New("end_pos must be a string")
+	*edit = BatchEditOp{}
+	if raw, ok := fields["op"]; ok {
+		if edit.OP, err = decodeString(raw, "op"); err != nil {
+			return err
 		}
 	}
-	if edit.afterPresent {
-		if bytes.Equal(bytes.TrimSpace(wire.After), []byte("null")) || json.Unmarshal(wire.After, &edit.After) != nil {
+	if raw, ok := fields["pos"]; ok {
+		if edit.Pos, err = decodeString(raw, "pos"); err != nil {
+			return err
+		}
+	}
+	if raw, ok := fields["end_pos"]; ok {
+		edit.endPosPresent = true
+		if edit.EndPos, err = decodeString(raw, "end_pos"); err != nil {
+			return err
+		}
+	}
+	if raw, ok := fields["after"]; ok {
+		edit.afterPresent = true
+		if isJSONNull(raw) || json.Unmarshal(raw, &edit.After) != nil {
 			return errors.New("after must be a boolean")
 		}
 	}
-	if edit.linesPresent {
-		lines, err := decodeStringArray(wire.Lines, "lines")
-		if err != nil {
+	if raw, ok := fields["lines"]; ok {
+		edit.linesPresent = true
+		if edit.Lines, err = decodeStringArray(raw, "lines"); err != nil {
 			return err
 		}
-		edit.Lines = lines
 	}
 	return nil
-}
-
-func (edit BatchEditOp) MarshalJSON() ([]byte, error) {
-	type batchEditOpJSON struct {
-		OP     string    `json:"op"`
-		Pos    string    `json:"pos"`
-		EndPos string    `json:"end_pos,omitempty"`
-		After  bool      `json:"after,omitempty"`
-		Lines  *[]string `json:"lines,omitempty"`
-	}
-	encoded := batchEditOpJSON{OP: edit.OP, Pos: edit.Pos, EndPos: edit.EndPos}
-	if edit.OP != "delete" {
-		lines := edit.Lines
-		if lines == nil {
-			lines = []string{}
-		}
-		encoded.Lines = &lines
-	}
-	if edit.OP == "insert" && edit.After {
-		encoded.After = true
-	}
-	return json.Marshal(encoded)
 }
 
 // BatchReadProof identifies the exact raw-byte revision and anchors observed by a prior read.
@@ -124,41 +130,24 @@ type BatchReadProof struct {
 	Anchors  []string `json:"anchors"`
 }
 
-type batchReadProofWire struct {
-	Revision json.RawMessage `json:"revision"`
-	Anchors  json.RawMessage `json:"anchors"`
-}
-
 func (proof *BatchReadProof) UnmarshalJSON(data []byte) error {
-	var wire batchReadProofWire
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&wire); err != nil {
-		return err
-	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("proof must contain exactly one JSON object")
-		}
-		return err
-	}
-
-	if len(wire.Revision) == 0 {
-		return errors.New("proof revision is required")
-	}
-	if bytes.Equal(bytes.TrimSpace(wire.Revision), []byte("null")) || json.Unmarshal(wire.Revision, &proof.Revision) != nil {
-		return errors.New("proof revision must be a string")
-	}
-	if len(wire.Anchors) == 0 {
-		return errors.New("proof anchors are required")
-	}
-	anchors, err := decodeStringArray(wire.Anchors, "proof anchors")
+	fields, err := decodeObjectFields(data, "proof", "revision", "anchors")
 	if err != nil {
 		return err
 	}
-	proof.Anchors = anchors
-	return nil
+	rawRevision, ok := fields["revision"]
+	if !ok {
+		return errors.New("proof revision is required")
+	}
+	if proof.Revision, err = decodeString(rawRevision, "proof revision"); err != nil {
+		return err
+	}
+	rawAnchors, ok := fields["anchors"]
+	if !ok {
+		return errors.New("proof anchors are required")
+	}
+	proof.Anchors, err = decodeStringArray(rawAnchors, "proof anchors")
+	return err
 }
 
 // BatchEditRequest 是 hledit batch 从 stdin 接受的唯一顶层文档。
@@ -168,42 +157,24 @@ type BatchEditRequest struct {
 }
 
 func (request *BatchEditRequest) UnmarshalJSON(data []byte) error {
-	type batchEditRequestWire struct {
-		Edits []BatchEditOp   `json:"edits"`
-		Proof json.RawMessage `json:"proof"`
-	}
-	var wire batchEditRequestWire
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&wire); err != nil {
+	fields, err := decodeObjectFields(data, "batch request", "edits", "proof")
+	if err != nil {
 		return err
 	}
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("batch request must contain exactly one JSON object")
+	*request = BatchEditRequest{}
+	if raw, ok := fields["edits"]; ok {
+		if err := json.Unmarshal(raw, &request.Edits); err != nil {
+			return err
 		}
-		return err
 	}
-	request.Edits = wire.Edits
-	request.Proof = nil
-	if len(wire.Proof) > 0 {
-		if bytes.Equal(bytes.TrimSpace(wire.Proof), []byte("null")) {
+	if raw, ok := fields["proof"]; ok {
+		if isJSONNull(raw) {
 			return errors.New("proof must be an object")
 		}
-		var proof BatchReadProof
-		proofDecoder := json.NewDecoder(bytes.NewReader(wire.Proof))
-		proofDecoder.DisallowUnknownFields()
-		if err := proofDecoder.Decode(&proof); err != nil {
+		request.Proof = &BatchReadProof{}
+		if err := json.Unmarshal(raw, request.Proof); err != nil {
 			return err
 		}
-		if err := proofDecoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-			if err == nil {
-				return errors.New("proof must contain exactly one JSON object")
-			}
-			return err
-		}
-		request.Proof = &proof
 	}
 	return nil
 }
@@ -247,7 +218,6 @@ func parseBatchRequest() (BatchEditRequest, error) {
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
 		return request, err
 	}

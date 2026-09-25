@@ -1,9 +1,9 @@
 package main
 
-// 单窗口参数只服务 stale 拒绝时的 currentAnchors 快照。
-const updatedAnchorContextRadius = 2
-const updatedAnchorMaxLines = 20
-const updatedAnchorMaxBytes = 4096
+// stale 拒绝时 currentAnchors 快照的上下文半径与预算。
+const currentAnchorContextRadius = 2
+const currentAnchorMaxLines = 20
+const currentAnchorMaxBytes = 4096
 
 // 成功 batch 的产出 span共享一份预算。这里的行是模型刚写入、没有任何旧锚点可用的行，
 // 因此不带上下文；预算决定单次 apply 结果最多回灌多少行到模型上下文。
@@ -48,83 +48,14 @@ func buildUpdatedAnchorSpans(lines []string, deltas []EditDelta) []AnchorContext
 	return spans
 }
 
-func buildUpdatedAnchorContext(lines []string, firstChanged, lastChanged, linesAdded int) *AnchorContext {
-	if firstChanged <= 0 {
-		return nil
-	}
-	if len(lines) == 0 {
-		return &AnchorContext{
-			Lines:        []ReadLine{},
-			Offset:       1,
-			Limit:        0,
-			DesiredLimit: 0,
-			Truncated:    false,
-		}
-	}
-
-	start := firstChanged
-	end := lastChanged
-	if end <= 0 {
-		end = start
-	}
-	if start > end {
-		start, end = end, start
-	}
-	changedSpan := end - start + 1
-	if linesAdded > changedSpan {
-		changedSpan = linesAdded
-	}
-	if changedSpan < 1 {
-		changedSpan = 1
-	}
-
-	offset := start - updatedAnchorContextRadius
-	if offset < 1 {
-		offset = 1
-	}
-	if offset > len(lines) {
-		offset = len(lines)
-	}
-	leadingContextLines := start - offset
-	if leadingContextLines < 0 {
-		leadingContextLines = 0
-	}
-	desiredLimit := leadingContextLines + changedSpan + updatedAnchorContextRadius
-	limit := desiredLimit
-	if limit > updatedAnchorMaxLines {
-		limit = updatedAnchorMaxLines
-	}
-	available := len(lines) - offset + 1
-	if limit > available {
-		limit = available
-	}
-	if limit < 0 {
-		limit = 0
-	}
-
-	readLines, truncatedSourceLine, nextOffset, _ := collectAnnotatedLines(
-		lines,
-		offset-1,
-		limit,
-		updatedAnchorMaxBytes,
-	)
-
-	return &AnchorContext{
-		Lines:        readLines,
-		Offset:       offset,
-		Limit:        len(readLines),
-		DesiredLimit: desiredLimit,
-		Truncated:    desiredLimit > updatedAnchorMaxLines || truncatedSourceLine || nextOffset > 0,
-	}
-}
-
-// buildCurrentAnchorContext returns a bounded span from the same snapshot that rejected a stale edit.
+// buildCurrentAnchorContext 从拒绝 stale 编辑的同一快照返回请求区间及前后
+// currentAnchorContextRadius 行上下文，受行数与字节预算约束。
 func buildCurrentAnchorContext(lines []string, requestedStart, requestedEnd int) *AnchorContext {
 	if requestedStart <= 0 {
 		return nil
 	}
 	if len(lines) == 0 {
-		return buildUpdatedAnchorContext(lines, 1, 1, 0)
+		return &AnchorContext{Lines: []ReadLine{}, Offset: 1}
 	}
 	if requestedEnd <= 0 {
 		requestedEnd = requestedStart
@@ -132,17 +63,20 @@ func buildCurrentAnchorContext(lines []string, requestedStart, requestedEnd int)
 	if requestedStart > requestedEnd {
 		requestedStart, requestedEnd = requestedEnd, requestedStart
 	}
-	if requestedStart > len(lines) {
-		requestedStart = len(lines)
+	start := min(requestedStart, len(lines))
+	end := min(requestedEnd, len(lines))
+
+	offset := max(start-currentAnchorContextRadius, 1)
+	desiredLimit := (start - offset) + (end - start + 1) + currentAnchorContextRadius
+	limit := min(desiredLimit, currentAnchorMaxLines, len(lines)-offset+1)
+	readLines, truncatedSourceLine, _, _ := collectAnnotatedLines(lines, offset-1, limit, currentAnchorMaxBytes)
+	return &AnchorContext{
+		Lines:        readLines,
+		Offset:       offset,
+		Limit:        len(readLines),
+		DesiredLimit: desiredLimit,
+		// [喵喵喵]: 只有窗口本身被行数/字节预算截短才算不完整；文件在窗口后还有内容不算，
+		// 否则文件中部的 stale 快照永远标记 truncated，插件无法把它记为 proof。(2026-09-24)
+		Truncated: desiredLimit > currentAnchorMaxLines || truncatedSourceLine || len(readLines) < limit,
 	}
-	if requestedEnd > len(lines) {
-		requestedEnd = len(lines)
-	}
-	if requestedStart < 1 {
-		requestedStart = 1
-	}
-	if requestedEnd < requestedStart {
-		requestedEnd = requestedStart
-	}
-	return buildUpdatedAnchorContext(lines, requestedStart, requestedEnd, requestedEnd-requestedStart+1)
 }

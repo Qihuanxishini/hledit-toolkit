@@ -38,7 +38,9 @@
 
 - revision 基于原始字节，BOM、CRLF/LF 与末尾换行差异都会改变 revision。
 - 写入时逐行保留 terminator：未修改行的行尾字节保持原样，混合行尾文件不再被整体规范化，也不再产生 mixed line ending warning。编辑产生的新行使用编辑位置附近的局部行尾，replacement 最后一行继承被替换范围末行的 terminator。
-- 孤立 `\r`（无 `\n`）属于行文本，不是行分隔符；UTF-8 BOM 与末尾换行的有无在写入时保持原状；删除全部逻辑行会生成真正的空文件。
+- 孤立 `\r` 属于行文本；正文以 CR 结尾且需要终止行时使用 CRLF，防止正文 CR 被吞掉。非空结果保留既有 UTF-8 BOM；会把首字符 U+FEFF 重新解释为 BOM 的请求在写入前拒绝。
+- 空字符串表示真实的一行空白文本；生成空末行时必要地补行尾，其他情况保持末尾换行状态。删除全部逻辑行会生成真正的空文件；实际 NUL 字符不能写入。
+- Windows 写入保留目标 DACL、继承状态与 NTFS 附加流，临时正文写入前即复制 DACL。部分替换失败时以不覆盖方式移回原文件；无法移回时按结果未知处理，保留并报告本次恢复文件。
 
 ## 开发验证
 
@@ -64,7 +66,7 @@ npm run check
 
 ```json
 {
-  "version": "3.3.0",
+  "version": "3.3.1",
   "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,

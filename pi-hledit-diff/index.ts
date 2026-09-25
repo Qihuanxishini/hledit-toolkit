@@ -22,28 +22,28 @@ import { recordAnchoredFileOperations } from "./src/compaction-files.ts";
 import {
 	buildFileChangeCheckRequest,
 	buildFileChangeRequest,
+	changeShapeIssueResult,
 	findChangeShapeIssue,
 	findSingleLineRangeExpansionIssue,
-	formatChangeShapeIssue,
-	formatSingleLineRangeExpansionIssue,
+	singleLineRangeExpansionResult,
 } from "./src/file-changes.ts";
 import { formatUpdatedAnchorSpans, parseUpdatedAnchorSpans } from "./src/post-edit-context.ts";
 import { decodeFileChangeInput, prepareReadAnchorsArguments, prepareSearchAnchorsArguments } from "./src/prepare-arguments.ts";
 import {
 	formatReadProofFailure,
 	ReadEvidenceStore,
+	readProofFailureContext,
 	resolveReadEvidencePath,
 } from "./src/read-evidence.ts";
 import { recoverMissingReadProof } from "./src/read-recovery.ts";
 import { normalizeToolPath } from "./src/read-args.ts";
 import { runReadAnchorsTransaction, runSearchAnchorsTransaction } from "./src/read-transaction.ts";
+import { applyFileChangesResult, fileChangeCheckFailure } from "./src/apply-result.ts";
 import {
-	applyFileChangesResult,
 	attachEvidencePath,
-	fileChangeCheckFailure,
-	shouldMarkHleditResultAsError,
 	parseRunObject,
 	rejectedToolResult,
+	shouldMarkHleditResultAsError,
 	type TextResult,
 } from "./src/result.ts";
 import {
@@ -150,26 +150,14 @@ async function runFileChangesWithDiff(
 		// 对照当前证据里的全部 token，因此放在队列内读取。
 		const shapeIssue = findChangeShapeIssue(normalizedParams, evidence.anchorTokens(evidencePath));
 		if (shapeIssue) {
-			return attachEvidencePath(
-				rejectedToolResult(
-					`The atomic batch was rejected; no content was written.\n${formatChangeShapeIssue(shapeIssue)}`,
-					{
-						code: shapeIssue.code,
-						message: shapeIssue.code === "reversed_anchor_range"
-							? `Change ${shapeIssue.changeNumber} submitted start_anchor ${shapeIssue.startAnchor} below end_anchor ${shapeIssue.endAnchor}; swap them instead of rereading.`
-							: `Change ${shapeIssue.changeNumber} pasted the anchor token ${shapeIssue.anchorToken} into lines; strip the prefix instead of rereading.`,
-						changeNumber: shapeIssue.changeNumber,
-					},
-				),
-				normalizedPath,
-				evidencePath,
-			);
+			return attachEvidencePath(changeShapeIssueResult(shapeIssue), normalizedPath, evidencePath);
 		}
 		const proofSelection = evidence.selectProof(evidencePath, normalizedParams.changes, normalizedParams.proof_id);
 		if ("failure" in proofSelection) {
-			if (proofSelection.failure.code !== "invalid_proof_id") {
+			const { failure } = proofSelection;
+			if (failure.code !== "invalid_proof_id") {
 				const recovered = await recoverMissingReadProof({
-					failure: proofSelection.failure,
+					failure,
 					path: normalizedPath,
 					evidencePath,
 					cwd: ctx.cwd,
@@ -180,16 +168,10 @@ async function runFileChangesWithDiff(
 				if (recovered) return recovered;
 			}
 			return attachEvidencePath(
-				rejectedToolResult(formatReadProofFailure(normalizedPath, proofSelection.failure), {
-					code: proofSelection.failure.code,
-					message: proofSelection.failure.message,
-					...(proofSelection.failure.renamedAnchors ? { renamedAnchors: proofSelection.failure.renamedAnchors } : {}),
-					...(proofSelection.failure.proofGap
-						? {
-							changeNumber: proofSelection.failure.proofGap.changeNumber,
-							operation: proofSelection.failure.proofGap.operation,
-						}
-						: {}),
+				rejectedToolResult(formatReadProofFailure(normalizedPath, failure), {
+					code: failure.code,
+					message: failure.message,
+					...readProofFailureContext(failure),
 				}),
 				normalizedPath,
 				evidencePath,
@@ -212,27 +194,8 @@ async function runFileChangesWithDiff(
 			if (checkFailure) {
 				return attachEvidencePath(checkFailure, normalizedPath, evidencePath);
 			}
-			const verifiedIssue = { ...singleLineRangeExpansionIssue, anchorsVerified: true as const };
-			const nearbyDeleteRange = verifiedIssue.nearbyDeleteRange;
 			return attachEvidencePath(
-				rejectedToolResult(
-					`The atomic batch was rejected; no content was written.\n${formatSingleLineRangeExpansionIssue(verifiedIssue)}`,
-					{
-						code: verifiedIssue.code,
-						message: `Change ${verifiedIssue.changeNumber} uses replace_range for one source line while repeating that source line. Expand end_anchor or use insert_after; do not retry the same request.`,
-						hint: "replace_range must cover the complete old code block. For an append-only change, use insert_after and omit the repeated anchor line.",
-						changeNumber: verifiedIssue.changeNumber,
-						operation: "replace_range",
-						anchor: verifiedIssue.anchor,
-						outputLineCount: verifiedIssue.outputLineCount,
-						...(nearbyDeleteRange
-							? {
-								relatedChangeNumber: nearbyDeleteRange.changeNumber,
-								candidateEndAnchor: nearbyDeleteRange.endAnchor,
-							}
-							: {}),
-					},
-				),
+				singleLineRangeExpansionResult({ ...singleLineRangeExpansionIssue, anchorsVerified: true }),
 				normalizedPath,
 				evidencePath,
 			);
@@ -266,7 +229,6 @@ async function runFileChangesWithDiff(
 	});
 }
 
-
 export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 	let warnedHleditUnavailable = false;
 	let hleditCapabilitiesAvailable = false;
@@ -297,7 +259,6 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			return renderReadAnchorsResult(result, options, theme, context);
 		},
 		async execute(_toolCallId, params, signal, _onUpdate, ctx): Promise<TextResult> {
-
 			const result = await runReadAnchorsTransaction(params, ctx.cwd, signal, readEvidence, runHledit);
 			synchronizeAnchoredTools();
 			return result;

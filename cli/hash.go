@@ -2,6 +2,7 @@ package main
 
 import (
 	"hash/fnv"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -40,42 +41,7 @@ func computeLineHash(lineNum int, line string) string {
 	return string(anchorHashAlphabet[(sum>>12)&0x3f]) + string(anchorHashAlphabet[(sum>>6)&0x3f]) + string(anchorHashAlphabet[sum&0x3f])
 }
 
-// formatTag returns intToStr(lineNum) + "#" + computeLineHash(lineNum, line).
+// formatTag returns the canonical LN#HHH anchor for one line.
 func formatTag(lineNum int, line string) string {
-	return intToStr(lineNum) + "#" + computeLineHash(lineNum, line)
-}
-
-// intToStr converts an integer to a decimal string WITHOUT fmt (avoid allocations).
-// It handles 0 and negatives using a fixed [20]byte buffer, building digits right-to-left.
-func intToStr(n int) string {
-	if n == 0 {
-		return "0"
-	}
-
-	// Using a 22-byte buffer to safely handle sign and digits for 64-bit int.
-	var buf [22]byte
-	i := 22
-
-	neg := false
-	var un uint64
-	if n < 0 {
-		neg = true
-		// Using unsigned conversion to handle MinInt correctly.
-		un = uint64(-n)
-	} else {
-		un = uint64(n)
-	}
-
-	for un > 0 {
-		i--
-		buf[i] = byte('0' + (un % 10))
-		un /= 10
-	}
-
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-
-	return string(buf[i:])
+	return strconv.Itoa(lineNum) + "#" + computeLineHash(lineNum, line)
 }

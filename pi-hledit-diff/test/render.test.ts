@@ -27,6 +27,14 @@ function render(component: { render(width: number): string[] }, width = 120): st
 	return component.render(width);
 }
 
+const replacementPreview = {
+	truncated: false,
+	lines: [
+		{ kind: "remove", oldLine: 2, text: "beta" },
+		{ kind: "add", newLine: 2, text: "BETA" },
+	],
+};
+
 test("renderHleditCall includes search range and pattern", () => {
 	assert.deepEqual(render(renderHleditCall("search_anchors", { path: "src/a.ts", offset: 3, limit: 5, pattern: "token", context: 2 }, theme)), [
 		'search anchors src/a.ts 匹配 "token"（正则匹配；上下文 ±2 行；从第 3 行开始；最多 5 行）',
@@ -199,7 +207,14 @@ test("renderFileChangesResult renders an adaptive unified diff", () => {
 		content: [{ type: "text", text: "Changes applied." }],
 		details: {
 			disposition: "succeeded",
-			diff: " 1 alpha\n-2 beta\n+2 BETA\n+3 gamma",
+			changePreview: {
+				truncated: false,
+				lines: [
+					{ kind: "context", oldLine: 1, newLine: 1, text: "alpha" },
+					...replacementPreview.lines,
+					{ kind: "add", newLine: 3, text: "gamma" },
+				],
+			},
 			editsApplied: 1,
 		},
 	};
@@ -209,32 +224,6 @@ test("renderFileChangesResult renders an adaptive unified diff", () => {
 	assert.ok(output.some((line) => /^-\s+2\s+│/.test(line) && line.includes("beta")));
 	assert.ok(output.some((line) => /^\+\s+2\s+│/.test(line) && line.includes("BETA")));
 	assert.ok(output.every((line) => visibleWidth(line) <= 72));
-});
-
-// [喵喵喵]: Phase 4.5——新结果优先渲染结构化 changePreview；上面的存量 details.diff
-// 测试同时锁定历史结果的回退渲染 (2026-07-25)
-test("renderFileChangesResult prefers the structured change preview over legacy diff", () => {
-	const result: TextResult = {
-		content: [{ type: "text", text: "Changes applied." }],
-		details: {
-			disposition: "succeeded",
-			changePreview: {
-				truncated: false,
-				lines: [
-					{ kind: "remove", oldLine: 2, text: "beta" },
-					{ kind: "add", newLine: 2, text: "BETA" },
-				],
-			},
-			diff: "-9 legacy\n+9 LEGACY",
-			editsApplied: 1,
-		},
-	};
-	const output = render(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }), 72);
-
-	assert.equal(output[0], "↳ 差异 +1 -1 • 1 个变更块 • 统一");
-	assert.ok(output.some((line) => line.includes("beta")));
-	assert.ok(output.some((line) => line.includes("BETA")));
-	assert.ok(output.every((line) => !line.includes("legacy") && !line.includes("LEGACY")));
 });
 
 // [喵喵喵]: 相同文本的删除/新增仍是普通编辑；旧、新行号必须在单双栏中清晰可见。
@@ -315,7 +304,7 @@ test("renderFileChangesResult separates unrelated mixed changes while aligning i
 test("renderFileChangesResult switches to split layout on wide terminals", () => {
 	const result: TextResult = {
 		content: [{ type: "text", text: "Changes applied." }],
-		details: { disposition: "succeeded", diff: "-2 beta\n+2 BETA", editsApplied: 1 },
+		details: { disposition: "succeeded", changePreview: replacementPreview, editsApplied: 1 },
 	};
 	const output = render(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }), 120);
 
@@ -328,7 +317,7 @@ test("renderFileChangesResult switches to split layout on wide terminals", () =>
 test("renderFileChangesResult reflows the same component when width crosses the breakpoint", () => {
 	const result: TextResult = {
 		content: [{ type: "text", text: "Changes applied." }],
-		details: { disposition: "succeeded", diff: "-2 beta\n+2 BETA", editsApplied: 1 },
+		details: { disposition: "succeeded", changePreview: replacementPreview, editsApplied: 1 },
 	};
 	const component = renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } });
 
@@ -351,7 +340,7 @@ test("standalone diff caches an unchanged width and invalidates theme-dependent 
 test("default Pi tool box preserves responsive reflow", () => {
 	const result: TextResult = {
 		content: [{ type: "text", text: "Changes applied." }],
-		details: { disposition: "succeeded", diff: "-2 beta\n+2 BETA", editsApplied: 1 },
+		details: { disposition: "succeeded", changePreview: replacementPreview, editsApplied: 1 },
 	};
 	const box = new Box(1, 1);
 	box.addChild(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }));
@@ -363,7 +352,7 @@ test("default Pi tool box preserves responsive reflow", () => {
 test("renderFileChangesResult gives added and removed code rows distinct tinted backgrounds", () => {
 	const result: TextResult = {
 		content: [{ type: "text", text: "Changes applied." }],
-		details: { disposition: "succeeded", diff: "-2 beta\n+2 BETA", editsApplied: 1 },
+		details: { disposition: "succeeded", changePreview: replacementPreview, editsApplied: 1 },
 	};
 	const output = render(renderFileChangesResult(result, options(), coloredTheme, { args: { path: "notes.txt" } }), 72);
 	const removedLine = output.find((line) => line.includes("beta"));
@@ -381,7 +370,7 @@ test("renderFileChangesResult caches expanded anchors without mutating the diff 
 		content: [{ type: "text", text: "正文格式与锚点窗口无关。" }],
 		details: {
 			disposition: "succeeded",
-			diff: "-2 beta\n+2 BETA",
+			changePreview: replacementPreview,
 			editsApplied: 1,
 			updatedAnchorSpans: [{ lines: [{ line: 2, anchor: "2#ZZZ", text: "BETA", textTruncated: false }], offset: 2, limit: 1, desiredLimit: 1, truncated: false }],
 		},
@@ -405,7 +394,7 @@ test("renderFileChangesResult keeps updated anchors whose hash contains URL-safe
 		content: [{ type: "text", text: "Changes applied." }],
 		details: {
 			disposition: "succeeded",
-			diff: "-7 old\n+7 gamma",
+			changePreview: { truncated: false, lines: [{ kind: "remove", oldLine: 7, text: "old" }, { kind: "add", newLine: 7, text: "gamma" }] },
 			editsApplied: 1,
 			updatedAnchorSpans: [{
 				lines: [
@@ -520,12 +509,12 @@ test("renderFileChangesResult identifies a no-op", () => {
 test("renderFileChangesResult shows a diff warning without a diff", () => {
 	const result: TextResult = {
 		content: [{ type: "text", text: "修改已应用，但无法生成差异。" }],
-		details: { disposition: "succeeded", editsApplied: 1, diffError: "修改已应用，但无法重新读取 target.txt 以生成差异。" },
+		details: { disposition: "succeeded", editsApplied: 1, previewError: "修改已应用，但无法生成提交绑定的预览。" },
 	};
 
 	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {})), [
 		"✓ 已应用 1 项修改",
-		"差异警告：修改已应用，但无法重新读取 target.txt 以生成差异。",
+		"差异警告：修改已应用，但无法生成提交绑定的预览。",
 	]);
 });
 
@@ -591,6 +580,16 @@ test("source controls are visibly escaped in reads, diffs and updated anchors wi
 		content: [{ type: "text", text: `1#AAA:${payload}` }],
 		details: {
 			disposition: "succeeded",
+			read: {
+				path: "sample.ts",
+				revision: `sha256:${"0".repeat(64)}`,
+				requested: { offset: 1, limit: 1 },
+				actual: { firstLine: 1, lastLine: 1, lineCount: 1, totalLines: 1 },
+				lines: [{ line: 1, anchor: "1#AAA", text: payload, textTruncated: false }],
+				truncated: false,
+				textTruncated: false,
+				eof: true,
+			},
 			changePreview: { truncated: false, lines: [{ kind: "add", newLine: 1, text: payload, changeIndex: 0 }] },
 			updatedAnchorSpans: [{ lines: [{ line: 1, anchor: "1#AAA", text: payload, textTruncated: false }], offset: 1, limit: 1, desiredLimit: 1, truncated: false }],
 		},

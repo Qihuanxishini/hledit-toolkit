@@ -1,11 +1,14 @@
 package main
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
-func TestBuildUpdatedAnchorContext(t *testing.T) {
+func TestBuildCurrentAnchorContext(t *testing.T) {
 	t.Run("returns bounded anchors around the changed range", func(t *testing.T) {
 		lines := []string{"alpha", "BRAVO", "charlie"}
-		got := buildUpdatedAnchorContext(lines, 2, 2, 1)
+		got := buildCurrentAnchorContext(lines, 2, 2)
 		if got == nil {
 			t.Fatal("context is nil")
 		}
@@ -23,37 +26,48 @@ func TestBuildUpdatedAnchorContext(t *testing.T) {
 	t.Run("returns source lines from the local offset", func(t *testing.T) {
 		lines := make([]string, 12)
 		for i := range lines {
-			lines[i] = intToStr(i + 1)
+			lines[i] = strconv.Itoa(i + 1)
 		}
-		got := buildUpdatedAnchorContext(lines, 10, 10, 1)
+		got := buildCurrentAnchorContext(lines, 10, 10)
 		if got == nil || got.Offset != 8 || got.Limit != 5 || got.DesiredLimit != 5 || got.Truncated {
 			t.Fatalf("context metadata = %#v", got)
 		}
 		for index, line := range got.Lines {
 			lineNumber := index + got.Offset
-			text := intToStr(lineNumber)
+			text := strconv.Itoa(lineNumber)
 			if line.Anchor != formatTag(lineNumber, text) || line.Text != text {
 				t.Fatalf("line %d = %#v, want %s", lineNumber, line, text)
 			}
 		}
 	})
 
+	t.Run("a complete window in the middle of a file is not truncated", func(t *testing.T) {
+		lines := make([]string, 50)
+		for i := range lines {
+			lines[i] = strconv.Itoa(i + 1)
+		}
+		got := buildCurrentAnchorContext(lines, 10, 10)
+		if got == nil || got.Offset != 8 || got.Limit != 5 || got.DesiredLimit != 5 || got.Truncated {
+			t.Fatalf("context metadata = %#v; want complete lines 8-12", got)
+		}
+	})
+
 	t.Run("caps large changed spans", func(t *testing.T) {
 		lines := make([]string, 100)
 		for i := range lines {
-			lines[i] = intToStr(i + 1)
+			lines[i] = strconv.Itoa(i + 1)
 		}
-		got := buildUpdatedAnchorContext(lines, 20, 60, 41)
-		if got == nil || got.Limit != updatedAnchorMaxLines || !got.Truncated {
+		got := buildCurrentAnchorContext(lines, 20, 60)
+		if got == nil || got.Limit != currentAnchorMaxLines || !got.Truncated {
 			t.Fatalf("context = %#v", got)
 		}
-		if len(got.Lines) != updatedAnchorMaxLines {
-			t.Fatalf("lines = %d, want %d", len(got.Lines), updatedAnchorMaxLines)
+		if len(got.Lines) != currentAnchorMaxLines {
+			t.Fatalf("lines = %d, want %d", len(got.Lines), currentAnchorMaxLines)
 		}
 	})
 
 	t.Run("caps oversized line text by bytes", func(t *testing.T) {
-		got := buildUpdatedAnchorContext([]string{string(make([]byte, updatedAnchorMaxBytes*2))}, 1, 1, 1)
+		got := buildCurrentAnchorContext([]string{string(make([]byte, currentAnchorMaxBytes*2))}, 1, 1)
 		if got == nil || !got.Truncated || len(got.Lines) != 1 || !got.Lines[0].TextTruncated {
 			t.Fatalf("context = %#v", got)
 		}
@@ -64,14 +78,14 @@ func TestBuildUpdatedAnchorContext(t *testing.T) {
 		for i := range lines {
 			lines[i] = string(make([]byte, 1500))
 		}
-		got := buildUpdatedAnchorContext(lines, 3, 3, 1)
+		got := buildCurrentAnchorContext(lines, 3, 3)
 		if got == nil || !got.Truncated || got.DesiredLimit != 5 || got.Limit != len(got.Lines) || len(got.Lines) >= 5 {
 			t.Fatalf("context metadata = %#v; want actual limit equal to returned lines after byte truncation", got)
 		}
 	})
 
 	t.Run("represents an empty file", func(t *testing.T) {
-		got := buildUpdatedAnchorContext([]string{}, 1, 1, 0)
+		got := buildCurrentAnchorContext([]string{}, 1, 1)
 		if got == nil || got.Offset != 1 || got.Limit != 0 || len(got.Lines) != 0 || got.Truncated {
 			t.Fatalf("context = %#v", got)
 		}
@@ -82,7 +96,7 @@ func TestBuildUpdatedAnchorSpans(t *testing.T) {
 	numbered := func(count int) []string {
 		lines := make([]string, count)
 		for i := range lines {
-			lines[i] = intToStr(i + 1)
+			lines[i] = strconv.Itoa(i + 1)
 		}
 		return lines
 	}

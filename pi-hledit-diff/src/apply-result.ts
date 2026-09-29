@@ -156,34 +156,30 @@ function appendCurrentAnchorContext(lines: string[], context: BatchAnchorContext
 		: `Current anchor snapshot at submission time (local span: lines ${context.offset}-${lastLine}):`);
 	lines.push(context.lines.map((line) => `${line.anchor}:${line.text}`).join("\n") || "(file is empty)");
 	if (context.truncated || context.lines.some((line) => line.textTruncated)) {
-		lines.push(`The current snapshot is truncated. Call hledit_read_anchors with offset:${context.offset} and limit:${context.desiredLimit} to obtain the complete range.`);
+		lines.push("The current snapshot is truncated and cannot establish complete read proof.");
 	}
 }
 
-function staleReadInstruction(result: Record<string, unknown>, path: string | undefined): string {
+function staleReadInstruction(result: Record<string, unknown>, context: ApplyResultContext): string {
 	const genericInstruction = "Before retrying, call hledit_read_anchors to reread the affected range. Do not reuse anchors from before the change.";
-	if (!path || !Array.isArray(result.remaps)) {
-		return genericInstruction;
-	}
-	const remappedLineNumbers = result.remaps.flatMap((remap) => {
-		if (!isRecord(remap)) {
-			return [];
-		}
-		let anchor: string | undefined;
-		if (typeof remap.current === "string") {
-			anchor = remap.current;
-		} else if (typeof remap.requested === "string") {
-			anchor = remap.requested;
-		}
-		const line = anchorTokenLine(anchor);
+	if (!context.path) return genericInstruction;
+	const failed = isIntegerAtLeast(result.failed, 0) ? result.failed : 0;
+	const change = context.changes?.[failed];
+	const targetLines = change ? changeAnchorFields(change).flatMap(([, anchor]) => {
+		const line = lineFromAnchor(anchor);
 		return line === undefined ? [] : [line];
-	});
-	if (remappedLineNumbers.length === 0) {
-		return genericInstruction;
+	}) : [];
+	if (targetLines.length === 0 && Array.isArray(result.remaps)) {
+		for (const remap of result.remaps) {
+			if (!isRecord(remap)) continue;
+			const line = anchorTokenLine(remap.current ?? remap.requested);
+			if (line !== undefined) targetLines.push(line);
+		}
 	}
-	const firstRemappedLine = Math.min(...remappedLineNumbers);
-	const { offset, limit } = suggestedReadWindow(firstRemappedLine, firstRemappedLine);
-	return `Before retrying, call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: ${limit} }). Do not reuse anchors from before the change.`;
+	if (targetLines.length === 0) return genericInstruction;
+	const end = Math.max(...targetLines);
+	const { offset, limit, lastLine } = suggestedReadWindow(Math.min(...targetLines), end);
+	return `Before retrying, call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, offset: ${offset}, limit: ${limit} })${lastLine < end ? `, then continue with nextOffset through line ${end}` : ""}. Reconfirm the intended target; prior line numbers may have shifted. Do not reuse anchors from before the change.`;
 }
 
 function localizeInvalidApplyMessage(rawMessage: string, failedChange: number | undefined): string {
@@ -236,7 +232,9 @@ function parseApplyErrorMetadata(result: Record<string, unknown>, context: Apply
 	let message: string;
 	switch (result.error) {
 		case "stale":
-			message = failedChange === undefined ? "One or more anchors are stale." : `Change ${failedChange} uses a stale anchor.`;
+			message = result.message === "read proof revision does not match the current file"
+				? "The file revision changed since the read; the whole batch needs verification, even if its endpoint anchors still match."
+				: failedChange === undefined ? "One or more anchors are stale." : `Change ${failedChange} uses a stale anchor.`;
 			break;
 		case "insufficient_read_proof":
 			message = "Read proof does not cover every original source line required by this change.";
@@ -338,16 +336,14 @@ function formatApplyFailureResult(
 	appendRemaps(lines, result, error.staleAnchors);
 	if (error.code === "stale") {
 		appendCurrentAnchorContext(lines, error.currentAnchors);
-		if (error.currentAnchors) {
-			lines.push("Only reuse these anchors after confirming that the span still covers the intended target and complete range; otherwise call hledit_read_anchors again.");
+		if (error.currentRevision && error.currentAnchors && !error.currentAnchors.truncated && !error.currentAnchors.lines.some((line) => line.textTruncated)) {
+			lines.push("Review this current snapshot before submitting a new batch. It covers only the displayed span; reread any other required ranges and use the returned proof_id and current anchors. The tool does not retry automatically.");
 		} else {
-			lines.push(staleReadInstruction(result, context.path));
+			lines.push(staleReadInstruction(result, context));
 		}
 	}
 	if (error.code === "source_changed_before_commit") {
-		lines.push(context.path
-			? `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)} }) before retrying; do not reuse the prior request.`
-			: "Call hledit_read_anchors before retrying; do not reuse the prior request.");
+		lines.push(staleReadInstruction(result, context));
 	}
 	appendInsufficientReadProofRecovery(lines, result, context, error);
 	return lines.join("\n");

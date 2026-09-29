@@ -226,7 +226,10 @@ test("every proof id issued for the current revision stays valid until the revis
 	const expired = store.selectProof(PATH, replaceRange("1#AAA", "1#AAA"), "page1");
 	assert.ok("failure" in expired);
 	assert.equal(expired.failure.code, "invalid_proof_id");
-	assert.match(expired.failure.message, /current proof_id is fresh/);
+	assert.equal(expired.failure.retryProofId, "fresh");
+	const guidance = formatReadProofFailure("target.txt", expired.failure);
+	assert.match(guidance, /Use proof_id: fresh/);
+	assert.doesNotMatch(guidance, /hledit_read_anchors|offset:/);
 	assertProofSelection(store.selectProof(PATH, replaceRange("1#AAA", "1#AAA"), "fresh"), {
 		proof: { revision: REVISION_B, anchors: ["1#AAA"] },
 	});
@@ -238,20 +241,52 @@ test("oversized ranges fail without enumerating every requested line", () => {
 
 	const selection = store.selectProof(PATH, replaceRange("1#AAA", "9007199254740991#BBB"));
 	assert.ok("failure" in selection);
-	assert.deepEqual(selection.failure.reportedMissingLines, Array.from({ length: 20 }, (_, index) => index + 2));
-	assert.deepEqual(selection.failure.proofGap, {
-		start: 2,
-		end: 9007199254740991,
-		changeNumber: 1,
-		operation: "replace_range",
-		requiredStart: 1,
-		requiredEnd: 9007199254740991,
-	});
-	assert.match(selection.failure.message, /missing lines 2-9007199254740991/);
-	assert.doesNotMatch(selection.failure.message, /first 20/);
+	assert.equal(selection.failure.code, "evidence_capacity_exceeded");
+	assert.deepEqual(selection.failure.reportedMissingLines, []);
+	assert.equal(selection.failure.proofGap, undefined);
 	const guidance = formatReadProofFailure("target.txt", selection.failure);
-	assert.match(guidance, /offset: 1, limit: 2000/);
-	assert.match(guidance, /then continue with nextOffset until line 9007199254740991 is covered/);
+	assert.match(guidance, /Reading more pages cannot make this batch fit/);
+	assert.match(guidance, /splitting forfeits whole-batch atomicity/);
+	assert.doesNotMatch(guidance, /hledit_read_anchors|offset:|nextOffset/);
+});
+
+
+test("an invalid proof id points to its distant missing target instead of the file start", () => {
+	const store = new ReadEvidenceStore();
+	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }]), "current");
+	const selection = store.selectProof(PATH, replaceRange("11000#BBB", "11000#BBB"), "expired");
+	assert.ok("failure" in selection);
+	assert.equal(selection.failure.code, "invalid_proof_id");
+	assert.equal(selection.failure.retryProofId, undefined);
+	const guidance = formatReadProofFailure("target.txt", selection.failure);
+	assert.match(guidance, /offset: 10998, limit: 12/);
+	assert.doesNotMatch(guidance, /offset: 1,|no additional read is required/);
+});
+
+test("capacity preflight counts merged consumed ranges, not distance between separate edits", () => {
+	const store = new ReadEvidenceStore();
+	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }, { line: 12000, anchor: "12000#BBB" }], { pattern: "target" }));
+	assert.ok("proof" in store.selectProof(PATH, [...replaceRange("1#AAA", "1#AAA"), ...replaceRange("12000#BBB", "12000#BBB")]));
+	const selection = store.selectProof(PATH, [...replaceRange("1#AAA", "6000#BBB"), ...replaceRange("1#AAA", "6000#BBB")]);
+	assert.ok("failure" in selection);
+	assert.equal(selection.failure.code, "insufficient_read_proof");
+});
+
+test("evidence eviction is distinguished from an ordinary unread gap and survives more reads", () => {
+	const store = new ReadEvidenceStore();
+	const largeText = "x".repeat(Math.floor(MAX_EVIDENCE_BYTES_PER_FILE / 2));
+	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA", text: largeText }]));
+	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 2, anchor: "2#BBB", text: largeText }]));
+	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 3, anchor: "3#CCC" }]));
+	const selection = store.selectProof(PATH, replaceRange("1#AAA", "3#CCC"));
+	assert.ok("failure" in selection);
+	assert.equal(selection.failure.code, "read_evidence_evicted");
+	assert.match(formatReadProofFailure("target.txt", selection.failure), /rather than paging the whole file again/);
+	assert.ok("proof" in store.selectProof(PATH, replaceRange("2#BBB", "3#CCC")));
+	store.recordRead(PATH, readMetadata(REVISION_B, [{ line: 3, anchor: "3#CCC" }]));
+	const nextRevision = store.selectProof(PATH, replaceRange("1#AAA", "3#CCC"));
+	assert.ok("failure" in nextRevision);
+	assert.equal(nextRevision.failure.code, "insufficient_read_proof");
 });
 
 test("proof failure guidance covers the complete first missing range", () => {
@@ -483,6 +518,7 @@ test("complete stale context becomes evidence for its current revision", () => {
 	const store = new ReadEvidenceStore();
 	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 2, anchor: "2#AAA" }]));
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("rejected", {
+		proofId: "stale-proof",
 		error: {
 			code: "stale",
 			message: "stale",
@@ -500,6 +536,7 @@ test("complete stale context becomes evidence for its current revision", () => {
 		},
 	}), "/workspace");
 
+	assert.equal(store.getProofId(PATH), "stale-proof");
 	assertProofSelection(store.selectProof(PATH, replaceRange("2#BBB", "3#BBC")), {
 		proof: { revision: REVISION_B, anchors: ["2#BBB", "3#BBC"] },
 	});

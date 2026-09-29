@@ -648,8 +648,53 @@ test("apply tool accepts any proof_id issued for the current revision and names 
 		context,
 	);
 	assert.equal(expired.details.error?.code, "invalid_proof_id");
-	assert.match(expired.content[0]?.text ?? "", new RegExp(`current proof_id is ${fresh.details.proofId}`));
+	assert.match(expired.content[0]?.text ?? "", new RegExp(`Use proof_id: ${fresh.details.proofId}`));
+	assert.doesNotMatch(expired.content[0]?.text ?? "", /hledit_read_anchors|offset:/);
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nTHREE\nfour\n");
+});
+
+
+test("revision snapshots support explicit continuation both live and after branch replay", async (t) => {
+	for (const replay of [false, true]) {
+		await t.test(replay ? "branch replay" : "live evidence", async (t) => {
+			let extension = registerExtensionForTest();
+			const readTool = extension.registeredTools.get(HLEDIT_READ_ANCHORS_TOOL)!;
+			let applyTool = extension.registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
+			const directory = await mkdtemp(join(tmpdir(), "pi-hledit-revision-"));
+			t.after(() => rm(directory, { recursive: true, force: true }));
+			const target = join(directory, "target.txt");
+			const lines = Array.from({ length: 11002 }, (_, index) => `line-${index + 1}`);
+			await writeFile(target, lines.join("\n") + "\n");
+			const context = { cwd: directory };
+			const read = await readTool.execute("read", { path: "target.txt", offset: 11000, limit: 1 } as never, undefined, undefined, context);
+			const anchor = read.details.read!.lines[0]!.anchor;
+			lines[0] = "external change";
+			const changed = lines.join("\n") + "\n";
+			await writeFile(target, changed);
+			const changes = [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: "updated target" }];
+			const stale = await applyTool.execute("stale", { path: "target.txt", proof_id: read.details.proofId, changes } as never, undefined, undefined, context);
+			assert.equal(stale.details.error?.code, "stale");
+			assert.match(stale.content[0]!.text, /file revision changed/);
+			assert.doesNotMatch(stale.content[0]!.text, /Change 1 uses a stale anchor|Before retrying, call hledit_read_anchors/);
+			assert.ok(stale.details.error!.currentAnchors!.offset >= 10998);
+			assert.equal(stale.details.error!.currentAnchors!.truncated, false);
+			assert.equal(stale.details.recoveredReads, undefined);
+			assert.ok(stale.details.proofId);
+			assert.notEqual(stale.details.proofId, read.details.proofId);
+			assert.match(stale.content[0]!.text, new RegExp(`proof_id: ${stale.details.proofId}$`));
+			assert.equal(await readFile(target, "utf8"), changed);
+			if (replay) {
+				extension = registerExtensionForTest();
+				applyTool = extension.registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
+				const branch = JSON.parse(JSON.stringify([{ type: "message", message: { role: "toolResult", toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL, details: stale.details } }]));
+				await extension.eventListeners.get("session_start")!({ reason: "startup" } as never, { ...context, hasUI: false, sessionManager: { getBranch: () => branch } } as never);
+			}
+			const continuation = await applyTool.execute("continue", { path: "target.txt", proof_id: stale.details.proofId, changes } as never, undefined, undefined, context);
+			assert.equal(continuation.details.disposition, "succeeded", JSON.stringify(continuation.details.error));
+			lines[10999] = "updated target";
+			assert.equal(await readFile(target, "utf8"), lines.join("\n") + "\n");
+		});
+	}
 });
 
 test("apply tool rejects a reversed anchor range with a swap instruction instead of a reread loop", async (t) => {

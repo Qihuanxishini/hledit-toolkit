@@ -70,7 +70,10 @@ function appendResultText(result: TextResult, text: string | undefined): TextRes
 }
 
 function appendCurrentProofId(result: TextResult, proofId: string | undefined): TextResult {
-	if (result.details.disposition !== "succeeded" || !proofId) return result;
+	const hasCurrentSnapshot = result.details.disposition === "rejected" && result.details.error?.code === "stale"
+		&& result.details.error.currentAnchors && !result.details.error.currentAnchors.truncated
+		&& result.details.error.currentAnchors.lines.every((line) => !line.textTruncated);
+	if (!proofId || (result.details.disposition !== "succeeded" && !hasCurrentSnapshot)) return result;
 	return {
 		...result,
 		content: appendResultText(result, `proof_id: ${proofId}`),
@@ -141,7 +144,7 @@ async function runFileChangesWithDiff(
 		const proofSelection = evidence.selectProof(evidencePath, normalizedParams.changes, normalizedParams.proof_id);
 		if ("failure" in proofSelection) {
 			const { failure } = proofSelection;
-			if (failure.code !== "invalid_proof_id") {
+			if (failure.code === "insufficient_read_proof") {
 				const recovered = await recoverMissingReadProof({
 					failure,
 					path: normalizedPath,

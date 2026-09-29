@@ -166,12 +166,12 @@ pi-hledit-diff/
 Evidence 以 resolved canonical path 为 key，每个文件状态包含当前 `proofId` generation、raw-byte revision、完整观察行、verified rename alias 和 ambiguous token：
 
 - 普通范围和搜索结果同 revision 按行合并；新 revision 替换旧 state。`textTruncated` 行不建立 proof；
-- 零命中搜索同 revision 时保留旧 proof，revision 变化时清除；非零显式 read/search 发出新 proof id，同 revision 下继续合并已验证窗口，该 revision 内所有已发 id 均可提交。`invalid_proof_id` 在证据仍存在时直接报出当前 id。成功 apply 产生的新 revision 延续同一 generation 与 id 集合，使受控更新锚点可继续使用；
+- 零命中搜索同 revision 时保留旧 proof，revision 变化时清除；非零显式 read/search 发出新 proof id，同 revision 下继续合并已验证窗口，该 revision 内所有已发 id 均可提交。`invalid_proof_id` 先校验目标证据：完整时只给当前 id 与重提指令，不要求重读；缺口或身份不明时只给对应的定向读取。成功 apply 产生的新 revision 延续同一 generation 与 id 集合，使受控更新锚点可继续使用；
 - apply 成功后，消费区间 evidence 被删除，区间外行按已验证 `editDeltas` 平移并用 `anchor-hash.ts` 自校验重算，再合并 `updatedAnchorSpans`；
 - verified rename 仅在目标唯一、非歧义、同 revision，且替换后完整 proof 再次成立时内部规范化；CLI 仍复验 raw revision、proof 和全部 anchors，成功结果通过 `details.resolvedAnchors` 报告映射；
 - 持续存活且可验证平移的目标保留 verified rename；旧 token 被当前行重新占用，或其源行/alias 最终目标被消费失联时进入 ambiguous set 并持续到显式重读，以防立即或延迟复用。`selectProof` 在 CLI 启动前拒绝 ambiguous token；只有直接读取覆盖当前行时才删除同 token 的旧身份并建立当前语义。`updatedAnchorSpans` 不自动消歧；
 - 任一结构化拒绝携带不同合法 `currentRevision` 时淘汰旧 state；同 revision 的确认零写入拒绝保留。`source_changed_before_commit` 与 `outcome_unknown` 总是失效；
-- 只有完整未截断 `currentAnchors` 可建立新 revision evidence；
+- 只有带合法 `currentRevision` 的完整未截断 `currentAnchors` 可建立新 revision evidence；stale 返回对应 `proof_id`，实时登记与 branch replay 保留同一 id；
 - read 与 apply 都持有 `withFileMutationQueue(canonical path)` 覆盖 CLI、校验和 evidence 更新。同文件串行、不同文件可并行；
 - branch/session 恢复只重放当前 branch 的结构化 tool-result details，包括经过完整 shape、path、proof usability 验证的被拒绝 apply `recoveredReads`，不解析聊天正文。可携带补读结果的拒绝码由 `read-result.ts` 的 `READ_PROOF_RECOVERY_CODES` 单点定义；恢复新增终止分支时必须同时登记，否则实时 evidence 与重放结果分歧。截断行既不进实时 evidence 也不进 `recoveredReads`，两侧保持逐行一致。
 
@@ -182,6 +182,8 @@ Evidence 以 resolved canonical path 为 key，每个文件状态包含当前 `p
 - records 包括行、rename alias、ambiguous token 和当前 revision 的 proof id，payload 计入 path/token/text/id UTF-8 bytes；
 - 单文件溢出先清空全部 state；只有触发更新的显式 read 窗口可作为 fresh evidence 重建，updated-anchor 溢出必须保持无 evidence，避免在丢失历史 ambiguity 后重新接受复用 token；fresh read 窗口本身过大时也保持无 evidence；
 - session 溢出按 tool-result 顺序的 deterministic file-level touch 淘汰完整文件；实时执行与 branch replay 使用同一规则。
+- apply 先合并本次消费/依附区间；源码行数加最少一个 proof id 已超过单文件 record 上限时，返回 `evidence_capacity_exceeded`，不启动 CLI，也不提示继续分页。拆分 batch 会失去整批原子性，必须在语义与授权允许时采用；
+- 显式 read 超限后保留 fresh window，同时记录当前 revision 曾发生容量淘汰；后续 proof 仍有缺口时返回 `read_evidence_evicted`，提供定向读取并提醒停止反复全文件分页。它不表示所有缺口都由淘汰造成，也不扩大缓存或放宽校验。
 
 ## CLI batch 与结果契约
 
@@ -229,7 +231,7 @@ Windows 使用 `golang.org/x/sys/windows` 处理 DACL，正文写入临时文件
 - `findChangeShapeIssue` 在 `selectProof` 之前拦截仅凭请求即可判定的自相矛盾：区间锚点倒置（`reversed_anchor_range`）、`lines` 行首粘贴了本次提交过或当前证据中存在的锚点 token（`anchor_token_in_lines`，在 file queue 内对照 `anchorTokens(path)`）。这类问题重读文件无法修复，必须让模型改参数，因此不得落到 `insufficient_read_proof` 的补读指令上；正文明确声明重读无效并给出交换/删前缀的具体动作。检测即拒绝，不自动修正——与 `prepareArguments` 只服务 read 的约定一致；
 - 三个工具在 `execute()` 返回边界直接设置 Pi `isError`：插件侧 `insufficient_read_proof` 是可恢复补读结果，设为 `false`；其他非成功结果设为 `true`，包括三条恢复终止分支 `source_line_truncated`、`proof_recovery_read_failed` 与 `proof_recovery_budget_exceeded`——它们原样重发必然复现，必须由调用方改动作；
 - 读取错误码全集为 `range` / `binary` / `encoding` / `directory` / `io` / `pattern` / `broad_pattern`，每个码都必须有本地化 message，落到兜底分支等于只把错误码丢给模型；message 本身说不清下一步动作时再补 hint（`range` / `directory` / `pattern` / `broad_pattern`）。`pattern` 转发 CLI 的 RE2 编译原文（出错位置本身就是要改的东西）并点名 RE2 不支持 lookahead/lookbehind/backreference；`broad_pattern` 指向 `hledit_read_anchors`；
-- stale remap 和同 snapshot anchors 只用于显式确认，不自动修正或重试；正文只保留一份确认/重读要求；
+- revision mismatch 仍为 `stale`，但 `failed:-1` 表示整批版本失效；CLI 从同一当前 snapshot 返回首项请求附近的有界 `currentAnchors`，不把版本变化说成端点锚点错误。完整 snapshot 供显式复核与续编，缺失或截断时按请求范围定向重读；stale remap 与 snapshot 均不触发自动修正或重试；
 - `source_changed_before_commit` 是确认零写入；CLI 从未启动使用 `unavailable`；
 - 已启动进程的取消、超时、输出超限、stdin 错误、非零退出或响应不完整按 `outcome_unknown`，先重读，禁止原样重试。
 
@@ -248,6 +250,7 @@ Windows 使用 `golang.org/x/sys/windows` 处理 DACL，正文写入临时文件
 - `details.changePreview` 只由同 revision 消费行 evidence、请求 payload 和已验证 delta 构成；不读取全文件 before/after snapshot，也不注入模型正文；
 - preview 上限 2000 行 / 256 KiB，所有计数使用 UTF-8 bytes。超长单行保留首尾及 `textTruncated:true`；
 - TUI 从 `details.read`、`details.changePreview` 与 `details.updatedAnchorSpans` 渲染读取、差异和更新锚点；preview 截断或没有可渲染 change 行时使用 CLI `linesAdded` / `linesDeleted`，不显示局部推导的完整 hunk 数；
+- 失败 TUI 区分待复核（未写入）、未写入、未执行与结果未知；只有已返回可用 proof 的恢复结果标为待复核。展开错误正文使用终端换行，保留完整路径与指令；折叠摘要仍有单行宽度限制，模型正文不受影响；
 - 模型正文列出全部产出窗口中的 updated anchors：窗口里的行都是本次编辑新写入、模型没有旧锚点可用的行；区间外的行已由 evidence 平移与 verified rename 覆盖，CLI 不再返回。纯删除没有窗口，不输出 anchor 块；不完整提示只在窗口被 CLI 预算截断或产出行自身文本被截断时追加；
 - expanded updated-anchor rows 只来自 `details.updatedAnchorSpans`，不解析模型正文；
 - diff 在 120 列切换 split/unified，主题色、布局和高亮缓存必须在 `invalidate()` 正确清理；

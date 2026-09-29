@@ -142,9 +142,21 @@ function renderFailure(result: RenderResult, expanded: boolean, theme: RenderThe
 	const reasonLine = rawLines.find((line) => line.startsWith("Reason:") || line.startsWith("Message:"));
 	const fallbackReason = reasonLine?.replace(/^(?:Reason:|Message:\s*)/, "") ?? rawLines[1];
 	const summary = escapeTerminalControls(structuredMessage ?? (fallbackReason ? `${first} ${fallbackReason}` : first));
+	const { disposition, error, recoveredReads, proofId } = result.details;
+	const reviewReady = disposition === "rejected" && proofId && (
+		(error?.code === "insufficient_read_proof" && recoveredReads?.length) ||
+		(error?.code === "stale" && error.currentAnchors && !error.currentAnchors.truncated && error.currentAnchors.lines.every((line) => !line.textTruncated))
+	);
+	const label = disposition === "outcome_unknown" ? "! 结果未知"
+		: reviewReady ? "↳ 待复核（未写入）"
+		: disposition === "unavailable" ? "× 未执行" : "× 未写入";
+	const color = disposition === "outcome_unknown" || reviewReady ? "warning" : "error";
 	return component((width) => {
-		if (!expanded) return [truncateToWidth(theme.fg("error", `× ${summary}`), width, "")];
-		return rawLines.map((line, index) => truncateToWidth(theme.fg(index === 0 ? "error" : "muted", `${index === 0 ? "×" : " "} ${escapeTerminalControls(line)}`), width, ""));
+		if (width <= 0) return [];
+		if (!expanded) return [truncateToWidth(theme.fg(color, `${label} · ${summary}`), width, "")];
+		return rawLines.flatMap((line, index) => wrapTextWithAnsi(
+			theme.fg(index === 0 ? color : "muted", `${index === 0 ? label + " ·" : " "} ${escapeTerminalControls(line)}`), width,
+		));
 	});
 }
 

@@ -22,6 +22,7 @@
 - 公开修改协议只有 `replace_range`、`delete_range`、`insert_before` 和 `insert_after`。范围操作同时提供 `start_anchor` 与 `end_anchor`；单行范围使用同一锚点。旧 operation 与内容匹配替换不迁移。
 - `replace_range`、`insert_before` 和 `insert_after` 的 `lines` 只接受换行分隔字符串；一个末尾换行仅终止末行，空字符串表示一行空文本。`delete_range` 不接受 `lines`。
 - 单次 batch 限 1–200 个 changes、1 MiB replacement UTF-8 bytes 和 20,000 个输出行。batch 是原子的：任一 change 非法、冲突、proof 不完整或 stale 时均不写入。
+- 无效 `proof_id` 按目标证据给出单一恢复动作：证据完整时换用当前 id；有缺口或身份不明时定向读取。revision 过期返回目标附近的当前快照，完整快照附带可续编的 `proof_id`；审阅后显式提交，插件不会自动重试。
 - `insufficient_read_proof` 会在同一 canonical file queue 内自动分页执行定向只读，直到目标缺口完整覆盖或触及恢复预算。结果返回全部 `recoveredReads`、最新 evidence 和一个权威 `proof_id`，但不会自动重放修改；审阅当前源码与端点锚点后再显式重提 apply。
 - 定向补读有硬预算：缺口跨度 1,200 行、4 页、96 KiB 正文。补读会把读到的每一行回灌进上下文，因此跨度超限时一个子进程都不启动，直接返回 `proof_recovery_budget_exceeded` 与显式分块读取指令；页数或字节超限时保留已读页并返回同一 code。source-line truncation 返回终止性指导，读取失败通过 `recoveryReadError` 暴露。
 - 读取错误一律给出可操作正文：`pattern` 转发 RE2 编译原文并说明 RE2 不支持 lookahead/lookbehind/backreference（可改用 `literal:true`），`broad_pattern` 指向 `hledit_read_anchors`。
@@ -30,7 +31,7 @@
 - CLI 在临时文件同步后、原子替换前复检原始字节 revision。`source_changed_before_commit` 是确认零写入；已启动进程的取消、超时、输出超限或异常响应属于 `outcome_unknown`，必须重新读取。
 - 成功 apply 使用 `editDeltas` 重映射未消费 evidence，再合并新 revision 的 `updatedAnchorSpans`（每个产出了行的编辑各一个精确覆盖产出区间的 span）。唯一、非歧义、同 revision 且替换后完整 proof 仍成立的 verified rename 会被内部规范化并报告在 `details.resolvedAnchors`；旧 token 被当前行重新占用，或其源行/alias 最终目标被消费失联时，身份会保持 ambiguous 直到覆盖当前行的显式读取。
 - 读取、proof 选择、CLI mutation 与 evidence 更新按 canonical real path 使用同一 file mutation queue。同文件状态事务串行，不同文件仍可并行。
-- evidence 有界：单文件最多 10,000 records / 4 MiB logical UTF-8 payload，session 最多 50,000 records / 16 MiB；超限按完整文件淘汰并安全降级为补读。branch replay 使用相同顺序与容量规则，只恢复经过严格验证的 apply `recoveredReads`。
+- evidence 有界：单文件最多 10,000 records / 4 MiB logical UTF-8 payload，session 最多 50,000 records / 16 MiB。单批最少所需 records 已超上限时提前返回 `evidence_capacity_exceeded`；当前 revision 曾发生单文件容量淘汰且 proof 仍不完整时返回 `read_evidence_evicted`，避免反复分页。缩小目标范围优先；拆分 batch 须接受失去整批原子性的代价。branch replay 使用相同顺序与容量规则。
 - 仅接受有效 UTF-8 且不含 NUL 的文本；revision 基于原始字节。非空结果保留既有 BOM，拒绝会把首字符 U+FEFF 重新解释为 BOM 的修改。孤立 CR 作为正文保留；空末行必要地补行尾，其余按局部规则保留行尾与末尾换行状态。
 - Windows 写入保留目标 DACL、继承状态和 NTFS 附加流。替换中途失败时先以不覆盖方式移回原文件，成功即为零写入失败；无法移回时返回 `outcome_unknown` 并保留、报告恢复文件，须先检查文件状态；已成功写入但恢复副本清理失败则返回成功及含路径的 warning。
 
@@ -45,6 +46,7 @@ CLI 3.x capability 健康时，插件始终启用这三个专用工具并替换 
 - `details.changePreview` 是提交绑定的结构化局部 diff；上限为 2,000 行 / 256 KiB UTF-8，超长单行保留首尾并标记截断。截断统计使用 CLI 验证的 `linesAdded` / `linesDeleted`，不把局部 hunk 数冒充完整统计。
 - 读取、差异预览和 expanded 更新锚点分别消费 `details.read`、`details.changePreview`、`details.updatedAnchorSpans`；展示与证据恢复共用结构化结果。
 - 组件缓存同宽布局与语法高亮，并从当前 Pi theme 派生颜色。
+- 错误摘要区分待复核（未写入）、未写入、未执行与结果未知；展开后按终端宽度换行，完整显示恢复路径和操作指令。
 
 ## CLI 要求
 

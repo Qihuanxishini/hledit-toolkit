@@ -244,7 +244,7 @@ test("renderReadAnchorsResult folds structured errors to the actionable message"
         },
     };
 
-    assert.deepEqual(render(renderReadAnchorsResult(result, options(), theme, { isError: true })), ["× 起始行 600 超出文件范围（文件共 599 行）。"]);
+    assert.deepEqual(render(renderReadAnchorsResult(result, options(), theme, { isError: true })), ["× 未写入 · 起始行 600 超出文件范围（文件共 599 行）。"]);
     assert.ok(render(renderReadAnchorsResult(result, options(true), theme, { isError: true })).some((line) => line.includes("请将 offset 设为 1 到 599")));
 });
 
@@ -543,8 +543,38 @@ test("renderFileChangesResult folds failures unless expanded", () => {
 		},
 	};
 
-	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {})), ["× 目标文件存在 2 个 hardlink。为同时保证原子性和链接身份，本次写入已拒绝。"]);
+	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {}), 180), ["× 未写入 · 目标文件存在 2 个 hardlink。为同时保证原子性和链接身份，本次写入已拒绝。"]);
 	assert.ok(render(renderFileChangesResult(result, options(true), theme, {})).some((line) => line.includes("错误代码：io")));
+});
+
+test("failure rendering distinguishes review-ready, zero-write and unknown outcomes", () => {
+	const cases: Array<[TextResult["details"], string]> = [
+		[{ disposition: "rejected", error: { code: "invalid", message: "bad request" } }, "× 未写入"],
+		[{ disposition: "unavailable" }, "× 未执行"],
+		[{ disposition: "outcome_unknown" }, "! 结果未知"],
+		[{ disposition: "rejected", proofId: "current", recoveredReads: [{} as never], error: { code: "insufficient_read_proof", message: "review source" } }, "↳ 待复核（未写入）"],
+		[{ disposition: "rejected", proofId: "current", recoveredReads: [{} as never], error: { code: "proof_recovery_budget_exceeded", message: "incomplete" } }, "× 未写入"],
+		[{ disposition: "rejected", proofId: "current", error: { code: "stale", message: "review source", currentAnchors: { offset: 1, limit: 1, desiredLimit: 1, truncated: false, lines: [{ line: 1, anchor: "1#AAA", text: "current", textTruncated: false }] } } }, "↳ 待复核（未写入）"],
+	];
+	for (const [details, label] of cases) {
+		const result: TextResult = { content: [{ type: "text", text: "Diagnostic" }], details };
+		assert.ok(render(renderFileChangesResult(result, options(), theme, {}))[0]!.startsWith(label));
+	}
+});
+
+test("expanded failure details wrap long recovery paths and retain every character", () => {
+	const path = "C:/Users/example/" + "long-directory/".repeat(8) + "recovery-file.txt";
+	const result: TextResult = {
+		content: [{ type: "text", text: `Do not retry.\nRecovery file: ${path}` }],
+		details: { disposition: "outcome_unknown" },
+	};
+	for (const width of [16, 40, 80]) {
+		const output = render(renderFileChangesResult(result, options(true), coloredTheme, {}), width);
+		assert.ok(output.every((line) => visibleWidth(line) <= width));
+		const plain = output.join("").replace(/\x1b\[[0-9;]*m/g, "").replace(/\s/g, "");
+		assert.ok(plain.includes(path), plain);
+	}
+	assert.deepEqual(render(renderFileChangesResult(result, options(true), theme, {}), 0), []);
 });
 
 test("renderFileChangesResult folds single-line range failures to the corrective action", () => {
@@ -560,8 +590,8 @@ test("renderFileChangesResult folds single-line range failures to the corrective
 		},
 	};
 
-	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {})), [
-		"× 第 1 项 replace_range 仅覆盖一行且重复原行；请扩大 end_anchor 或改用 insert_after，禁止原样重试。",
+	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {}), 180), [
+		"× 未写入 · 第 1 项 replace_range 仅覆盖一行且重复原行；请扩大 end_anchor 或改用 insert_after，禁止原样重试。",
 	]);
 	assert.ok(render(renderFileChangesResult(result, options(true), theme, {})).some((line) => line.includes("禁止使用相同参数重试")));
 });

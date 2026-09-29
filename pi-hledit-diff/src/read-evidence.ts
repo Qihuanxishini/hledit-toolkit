@@ -46,6 +46,8 @@ type EvidenceState = {
 	renames: Map<string, string>;
 	// 旧 rename token 被当前行重新占用后身份不可判定；只有明确的新 read 可以解除。
 	ambiguousTokens: Set<string>;
+	// [喵喵喵]: 仅记录当前 revision 曾发生容量淘汰，不保留被淘汰源码或放宽 proof。
+	capacityEvicted?: true;
 };
 
 type EvidenceUsage = {
@@ -103,12 +105,13 @@ export type RenamedAnchor = {
 };
 
 export type ReadProofFailure = {
-	code: "insufficient_read_proof" | "invalid_proof_id";
+	code: "insufficient_read_proof" | "invalid_proof_id" | "evidence_capacity_exceeded" | "read_evidence_evicted";
 	message: string;
 	reportedMissingLines: number[];
 	suggestedReadRange?: ReadProofLineRange;
 	proofGap?: ReadProofGap;
 	renamedAnchors?: RenamedAnchor[];
+	retryProofId?: string;
 };
 
 // 本次修改实际消费或依附的、同 revision 完整读取行；只用于插件内部的护栏与
@@ -387,6 +390,9 @@ function evaluateProofAgainstEvidence(
 // 诊断段：失败原因与已验证的锚点更名。补读成功与未补读两条路径共用同一段诊断，
 // 各自追加自己的后续指令；调用方不得再从完整正文里切割这一段。
 export function formatReadProofDiagnosis(failure: ReadProofFailure): string {
+	if (failure.code === "evidence_capacity_exceeded" || failure.code === "read_evidence_evicted") {
+		return `Read evidence capacity prevents this batch from proceeding. Batch was not started and no content was written.\nReason: ${failure.message}`;
+	}
 	if (failure.code === "invalid_proof_id") {
 		return [
 			"The submitted proof_id is not valid for the current editable evidence. Batch was not started and no content was written.",
@@ -417,6 +423,18 @@ export function readProofFailureContext(failure: ReadProofFailure): Pick<HleditE
 
 export function formatReadProofFailure(path: string, failure: ReadProofFailure): string {
 	const lines = [formatReadProofDiagnosis(failure)];
+	if (failure.retryProofId) {
+		lines.push(`Current evidence covers the target. Use proof_id: ${failure.retryProofId} and resubmit the batch; no additional read is required.`);
+		return lines.join("\n");
+	}
+	if (failure.code === "evidence_capacity_exceeded") {
+		lines.push("Do not keep paging or resubmit this unchanged batch. Narrow the consumed ranges to the intended changes. If separate batches are semantically safe, read and apply each separately; splitting forfeits whole-batch atomicity. Otherwise stop and ask the user to choose a larger-edit workflow.");
+		return lines.join("\n");
+	}
+	if (!failure.suggestedReadRange && failure.reportedMissingLines.length === 0) {
+		lines.push("Correct the request anchors and range before retrying; a targeted read cannot be determined from this request.");
+		return lines.join("\n");
+	}
 	const renames = failure.renamedAnchors ?? [];
 	if (renames.length > 0) {
 		lines.push("Replacing the renamed anchors is required but not sufficient; the remaining lines below also need the targeted read before resubmitting.");
@@ -434,6 +452,9 @@ export function formatReadProofFailure(path: string, failure: ReadProofFailure):
 	const resubmitInstruction = "After the read succeeds, use proof_id from the latest successful read page and current anchors"
 		+ (renames.length > 0 ? ", apply every listed anchor rename" : "")
 		+ ", then resubmit the hledit_apply_file_changes batch.";
+	if (failure.code === "read_evidence_evicted") {
+		lines.push("Earlier evidence exceeded the per-file cache limit. Use the targeted read below rather than paging the whole file again. If it evicts another required range, stop: narrow the batch or ask whether separate, non-atomic batches are acceptable.");
+	}
 	lines.push(readInstruction, resubmitInstruction);
 	return lines.join("\n");
 }
@@ -550,6 +571,7 @@ export class ReadEvidenceStore {
 			lines,
 			renames,
 			ambiguousTokens: this.addTokenReuseAmbiguities(lines, renames, ambiguousTokens),
+			...(sameRevision && existing.capacityEvicted ? { capacityEvicted: true as const } : {}),
 		};
 		// [喵喵喵]: 文本被截断时保留 proof generation 的空状态，让 apply 进入
 		// source_line_truncated 终止分支，而不是把一次合法 read 误报为 proof_id 不存在。
@@ -563,6 +585,7 @@ export class ReadEvidenceStore {
 			lines: freshLines,
 			renames: new Map(),
 			ambiguousTokens: new Set(),
+			capacityEvicted: true,
 		});
 	}
 
@@ -572,6 +595,7 @@ export class ReadEvidenceStore {
 		revision: string,
 		contexts: readonly BatchAnchorContext[],
 		tokensNeedingDisambiguation?: ReadonlySet<string>,
+		restoredProofId?: string,
 	): void {
 		if (!isRawRevision(revision)) {
 			this.deleteFile(path);
@@ -600,7 +624,7 @@ export class ReadEvidenceStore {
 		}
 		// [喵喵喵]: 受控 apply 产生的新 revision 延续同一 proof generation；
 		// 只有显式 read 才轮换 proofId，避免 updatedAnchors 无法继续用于后续编辑。
-		const proofId = existing?.proofId ?? nextProofId();
+		const proofId = existing?.proofId ?? restoredProofId ?? nextProofId();
 		const next: EvidenceState = {
 			revision,
 			proofId,
@@ -609,6 +633,7 @@ export class ReadEvidenceStore {
 			renames,
 			// updatedAnchors 不能消歧；模型仍可能持有编辑前或已消费行的同 token。
 			ambiguousTokens: nextAmbiguousTokens,
+			...(sameRevision && existing.capacityEvicted ? { capacityEvicted: true as const } : {}),
 		};
 		// updatedAnchors 不是显式重读；容量超限时 storeEvidence 已清空该文件，
 		// 不能丢弃 ambiguity 后把局部窗口重新解释成 fresh evidence。
@@ -722,7 +747,7 @@ export class ReadEvidenceStore {
 			this.touch(path);
 			return;
 		}
-		this.recordUpdatedAnchors(path, currentRevision, [currentAnchors]);
+		this.recordUpdatedAnchors(path, currentRevision, [currentAnchors], undefined, details.proofId);
 	}
 
 	getProofId(path: string): string | undefined {
@@ -739,14 +764,18 @@ export class ReadEvidenceStore {
 	selectProof(path: string, changes: FileChangeParams["changes"], proofId?: string): ReadProofSelection {
 		const evidence = this.files.get(path);
 		if (proofId !== undefined && !evidence?.proofIds.has(proofId)) {
-			// 证据仍在时直接给出当前 id：模型若已审阅过目标行，换 id 重提即可，
-			// 逐行覆盖与 CLI 复检不会因此放松；没有证据才需要重读。
+			// [喵喵喵]: 先评估目标证据再选择唯一恢复动作；只换 id 仍须通过全部逐行与身份校验。
+			const current = this.selectProof(path, changes);
+			if ("failure" in current) {
+				return current.failure.code === "insufficient_read_proof"
+					? { failure: { ...current.failure, code: "invalid_proof_id", message: `The submitted proof_id is not valid for this file. ${current.failure.message}` } }
+					: current;
+			}
 			return {
 				failure: {
 					code: "invalid_proof_id",
-					message: evidence
-						? `The submitted proof_id ${proofId} belongs to an earlier revision of this file; the current proof_id is ${evidence.proofId}. Resubmit with it if you have already reviewed the target lines in the latest read; otherwise call hledit_read_anchors first.`
-						: "The submitted proof_id is missing, expired, or belongs to a different read. Call hledit_read_anchors again and use the returned proof_id.",
+					message: `The submitted proof_id ${proofId} is not valid for this file's current evidence.`,
+					retryProofId: evidence!.proofId,
 					reportedMissingLines: [],
 				},
 			};
@@ -764,6 +793,15 @@ export class ReadEvidenceStore {
 			};
 		}
 
+		// [喵喵喵]: 合并范围后计数，不逐行展开；至少还需要一个 proof id 记录。
+		const requiredLines = requested.ranges.reduce((count, range) => count + range.end - range.start + 1, 0);
+		if (requiredLines >= MAX_EVIDENCE_RECORDS_PER_FILE) {
+			return { failure: {
+				code: "evidence_capacity_exceeded",
+				message: `This batch requires ${requiredLines} distinct source lines plus a proof id, exceeding the ${MAX_EVIDENCE_RECORDS_PER_FILE}-record per-file evidence limit. Reading more pages cannot make this batch fit.`,
+				reportedMissingLines: [],
+			} };
+		}
 		if (!evidence) {
 			const emptyEvidence = new Map<number, EvidenceLine>();
 			const coverage = collectProofCoverage(requested.ranges, emptyEvidence);
@@ -805,7 +843,14 @@ export class ReadEvidenceStore {
 		}
 
 		const renamedAnchors = renamedEndpointAnchors(evidence.renames, requested.endpointAnchors);
-		if (renamedAnchors.length === 0) return { failure: insufficientReadProof(direct.failure) };
+		const failureFor = (failure: EvidenceProofFailure, renames?: RenamedAnchor[]): ReadProofFailure => ({
+			...insufficientReadProof(failure, renames),
+			...(evidence.capacityEvicted && failure.proofGap ? {
+				code: "read_evidence_evicted" as const,
+				message: `Earlier evidence was evicted at the per-file limit (${MAX_EVIDENCE_RECORDS_PER_FILE} records / ${MAX_EVIDENCE_BYTES_PER_FILE / 1024 / 1024} MiB). ${failure.message}`,
+			} : {}),
+		});
+		if (renamedAnchors.length === 0) return { failure: failureFor(direct.failure) };
 
 		const renamed = replaceRenamedAnchors(changes, evidence.renames);
 		const substituted = requestedChangeEvidence(renamed.changes);
@@ -820,7 +865,7 @@ export class ReadEvidenceStore {
 				renamedAnchors: renamed.renamedAnchors,
 			};
 		}
-		return { failure: insufficientReadProof((substitutedEvaluation ?? direct).failure, renamedAnchors) };
+		return { failure: failureFor((substitutedEvaluation ?? direct).failure, renamedAnchors) };
 	}
 
 	restoreFromBranch(ctx: ExtensionContext): void {

@@ -422,6 +422,13 @@ func planBatchEdits(request BatchEditRequest, originalLines []string, currentRev
 		return BatchPlan{}, invalidBatchPlanFailure("batch request contains no edits", -1)
 	}
 	if failure := validateBatchProofRevision(request.Proof, currentRevision); failure != nil {
+		if failure.Code == "stale" {
+			// [喵喵喵]: revision 失效属于整个 batch；首项范围仅用于有界定位，不冒充锚点诊断。
+			failure.FailedEdit = -1
+			if first, invalid := plannedBatchEdit(0, request.Edits[0]); invalid == nil {
+				failure.CurrentAnchors = buildCurrentAnchorContext(originalLines, first.position.Line, plannedEditEndLine(first))
+			}
+		}
 		return BatchPlan{}, failure
 	}
 

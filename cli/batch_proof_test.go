@@ -87,8 +87,48 @@ func TestBatchReadProofRejectsInteriorChangeWithStableEndpoints(t *testing.T) {
 	if rejection.OK || rejection.Error != "stale" || rejection.CurrentRevision != rawFileRevision([]byte(changed)) {
 		t.Fatalf("rejection = %#v; want revision stale", rejection)
 	}
+	if rejection.Failed != -1 || len(rejection.Remaps) != 0 || rejection.CurrentAnchors == nil {
+		t.Fatalf("rejection = %#v; want batch-level revision failure with current snapshot", rejection)
+	}
+	context := rejection.CurrentAnchors
+	if context.Truncated || context.Lines[2].Text != "changed-inside" || context.Lines[2].Anchor != formatTag(3, "changed-inside") {
+		t.Fatalf("context = %#v; want complete snapshot from current revision", context)
+	}
 	if current, err := os.ReadFile(target); err != nil || string(current) != changed {
 		t.Fatalf("revision rejection modified target: %q", current)
+	}
+}
+
+func TestBatchRevisionSnapshotTargetsDistantEditAndRespectsBudget(t *testing.T) {
+	for _, endLine := range []int{11000, 12000} {
+		dir := t.TempDir()
+		lines := strings.Split(strings.Repeat("unchanged\n", 12000), "\n")[:12000]
+		target := editTestWriteLinesFile(t, dir, "target.txt", lines...)
+		proof := batchTestReadProof(t, target, formatTag(11000, "unchanged"))
+		changed := "external\n" + strings.Repeat("unchanged\n", 11999)
+		if err := os.WriteFile(target, []byte(changed), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		request := BatchEditRequest{Proof: proof, Edits: []BatchEditOp{{
+			OP: "delete", Pos: formatTag(11000, "unchanged"), EndPos: formatTag(endLine, "unchanged"),
+		}}}
+		var rejection BatchEditError
+		batchTestMustUnmarshal(t, batchTestRun(t, target, request, false), &rejection)
+		context := rejection.CurrentAnchors
+		if rejection.Error != "stale" || rejection.Failed != -1 || context == nil || context.Offset < 10990 || len(context.Lines) > 80 {
+			t.Fatalf("rejection = %#v; want bounded snapshot at the requested target", rejection)
+		}
+		if context.Truncated != (endLine > 11000) {
+			t.Fatalf("context = %#v; unexpected truncation", context)
+		}
+		for _, line := range context.Lines {
+			if line.Text != "unchanged" || line.Anchor != formatTag(line.Line, line.Text) {
+				t.Fatalf("snapshot line = %#v; not from current contents", line)
+			}
+		}
+		if current, err := os.ReadFile(target); err != nil || string(current) != changed {
+			t.Fatalf("revision rejection modified target: %v", err)
+		}
 	}
 }
 

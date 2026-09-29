@@ -440,6 +440,20 @@ test("applyFileChangesResult falls back to rereading when a stale snapshot is un
     assert.equal(isFailedHleditResult(result.details), true);
 });
 
+test("revision failures without a complete snapshot direct rereads to the requested range", () => {
+	for (const currentAnchors of [undefined, { offset: 11000, limit: 1, desiredLimit: 80, truncated: true, lines: [{ line: 11000, anchor: "11000#AAA", text: "partial", textTruncated: true }] }]) {
+		const result = applyFileChangesResult({
+			stdout: JSON.stringify({ ok: false, error: "stale", message: "read proof revision does not match the current file", failed: -1, currentRevision: REVISION, currentAnchors }),
+			stderr: "", exitCode: 0,
+		}, { path: "src/a.ts", changes: [{ operation: "delete_range", start_anchor: "11000#AAA", end_anchor: "14000#BBB" }] });
+		const text = result.content[0]!.text;
+		assert.match(text, /file revision changed/);
+		assert.match(text, /offset: 10998, limit: 2000/);
+		assert.match(text, /continue with nextOffset through line 14000/);
+		assert.doesNotMatch(text, /Change 1 uses a stale anchor|use the returned proof_id|offset: 1,/);
+	}
+});
+
 test("applyFileChangesResult exposes validated stale snapshot context", () => {
 	const currentAnchors = {
 		lines: [
@@ -464,6 +478,7 @@ test("applyFileChangesResult exposes validated stale snapshot context", () => {
 					{ requested: "2#BHJ", current: "2#BBK" },
 				],
 				currentAnchors,
+				currentRevision: REVISION,
 			}),
 			stderr: "",
 			exitCode: 0,
@@ -476,7 +491,7 @@ test("applyFileChangesResult exposes validated stale snapshot context", () => {
 	const text = result.content[0]?.text ?? "";
 
 	assert.match(text, /2#BBK:modified/);
-	assert.match(text, /Only reuse these anchors after confirming/);
+	assert.match(text, /Review this current snapshot before submitting/);
 	assert.match(text, /explicitly replace start_anchor\/end_anchor with 2#BBK/);
 	assert.doesNotMatch(text, /Before retrying, call hledit_read_anchors/);
 	assert.match(text, /Field: start_anchor\/end_anchor/);
@@ -550,7 +565,7 @@ test("model body snapshot: stale rejection with snapshot context and field-level
 	};
 	const result = applyFileChangesResult(
 		{
-			stdout: JSON.stringify({ ok: false, error: "stale", message: "edit 0: anchor stale", failed: 0, remaps: [{ requested: "2#BHJ", current: "2#BBK" }], currentAnchors }),
+			stdout: JSON.stringify({ ok: false, error: "stale", message: "edit 0: anchor stale", failed: 0, remaps: [{ requested: "2#BHJ", current: "2#BBK" }], currentRevision: REVISION, currentAnchors }),
 			stderr: "",
 			exitCode: 0,
 		},
@@ -573,7 +588,7 @@ test("model body snapshot: stale rejection with snapshot context and field-level
 		"1#BHJ:one\n" +
 		"2#BBK:modified\n" +
 		"3#BJL:three\n" +
-		"Only reuse these anchors after confirming that the span still covers the intended target and complete range; otherwise call hledit_read_anchors again.",
+		"Review this current snapshot before submitting a new batch. It covers only the displayed span; reread any other required ranges and use the returned proof_id and current anchors. The tool does not retry automatically.",
 	);
 	assert.equal(result.details.disposition, "rejected");
 });

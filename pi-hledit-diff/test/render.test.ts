@@ -1,22 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { Box, getCapabilities, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
+import { Theme, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import { backgroundAnsi, Box, getCapabilities, mixColors, setCapabilities, visibleWidth, type TerminalColorMode } from "@earendil-works/pi-tui";
 import { renderStandaloneDiff } from "../src/diff-renderer.ts";
 import { renderFileChangesResult, renderHleditCall, renderReadAnchorsResult, type RenderTheme } from "../src/render.ts";
 import type { TextResult } from "../src/result.ts";
 
+function createNativeTheme(mode: TerminalColorMode, background = ""): Theme {
+	return new Theme({
+		text: "", toolOutput: "", muted: 8, dim: 8, warning: 3, thinkingXhigh: 5,
+		accent: 4, error: 1, success: 2, toolTitle: "",
+		toolDiffAdded: "#64c878", toolDiffRemoved: "#dc5a64",
+	} as ConstructorParameters<typeof Theme>[0], {
+		toolSuccessBg: background, selectedBg: "",
+	} as ConstructorParameters<typeof Theme>[1], mode);
+}
+
+const coloredTheme = createNativeTheme("truecolor", "#283228");
 const theme: RenderTheme = {
 	fg: (_name, text) => text,
 	bold: (text) => text,
-};
-
-const coloredTheme: RenderTheme = {
-	fg: (_name, text) => text,
-	bold: (text) => text,
-	getBgAnsi: () => "\x1b[48;2;40;50;40m",
-	getFgAnsi: (name) => name === "toolDiffAdded" ? "\x1b[38;2;100;200;120m" : "\x1b[38;2;220;90;100m",
+	colors: coloredTheme.colors,
+	style: (text) => text,
+	getBgAnsi: () => "",
 };
 
 function options(expanded = false): ToolRenderResultOptions {
@@ -35,6 +42,46 @@ const replacementPreview = {
 	],
 };
 
+for (const mode of ["truecolor", "256color"] as const) {
+	test(`diff uses native theme colors on the terminal default background (${mode})`, () => {
+		const nativeTheme = createNativeTheme(mode);
+		assert.equal(nativeTheme.getBgAnsi("toolSuccessBg"), "\x1b[49m");
+		const component = renderStandaloneDiff("-2 beta\n+2 BETA", "notes.txt", false, nativeTheme)!;
+		const addedBg = backgroundAnsi(mixColors(nativeTheme.colors.toolSuccessBg, nativeTheme.colors.toolDiffAdded, 0.14), mode);
+		const removedBg = backgroundAnsi(mixColors(nativeTheme.colors.toolSuccessBg, nativeTheme.colors.toolDiffRemoved, 0.14), mode);
+		// [喵喵喵]: 原生 256 色量化可能合并浅底色，增删区别必须仍由主题前景和 +/- 保持。
+		assert.notEqual(nativeTheme.getFgAnsi("toolDiffAdded"), nativeTheme.getFgAnsi("toolDiffRemoved"));
+		for (const width of [72, 120]) {
+			const output = component.render(width);
+			assert.ok(output.some((line) => line.includes(addedBg) && line.includes("BETA")));
+			assert.ok(output.some((line) => line.includes(removedBg) && line.includes("beta")));
+			assert.ok(output.some((line) => line.includes(nativeTheme.fg("toolDiffAdded", "+")) && line.includes("BETA")));
+			assert.ok(output.some((line) => line.includes(nativeTheme.fg("toolDiffRemoved", "-")) && line.includes("beta")));
+			assert.ok(output.every((line) => visibleWidth(line) <= width));
+			if (mode === "256color") assert.doesNotMatch(output.join("\n"), /\x1b\[(?:38|48);2;/);
+			const changedRows = output.filter((line) => line.includes("beta") || line.includes("BETA"));
+			assert.ok(changedRows.every((line) => line.endsWith(nativeTheme.getBgAnsi("toolSuccessBg"))));
+		}
+	});
+}
+
+test("diff invalidation refreshes native theme colors", () => {
+	let activeTheme = createNativeTheme("truecolor", "#101010");
+	const switchingTheme: RenderTheme = {
+		...theme,
+		get colors() { return activeTheme.colors; },
+		style: (text, options) => activeTheme.style(text, options),
+		getBgAnsi: (name) => activeTheme.getBgAnsi(name),
+	};
+	const component = renderStandaloneDiff("-2 beta\n+2 BETA", "notes.txt", false, switchingTheme)!;
+	const first = component.render(72);
+	activeTheme = createNativeTheme("truecolor", "#fafafa");
+	component.invalidate();
+	const refreshed = component.render(72);
+	assert.notDeepEqual(refreshed, first);
+	const addedBg = backgroundAnsi(mixColors(activeTheme.colors.toolSuccessBg, activeTheme.colors.toolDiffAdded, 0.14), "truecolor");
+	assert.ok(refreshed.some((line) => line.startsWith(addedBg) && line.includes("BETA")));
+});
 test("renderHleditCall includes search range and pattern", () => {
 	assert.deepEqual(render(renderHleditCall("search_anchors", { path: "src/a.ts", offset: 3, limit: 5, pattern: "token", context: 2 }, theme)), [
 		'search anchors src/a.ts 匹配 "token"（正则匹配；上下文 ±2 行；从第 3 行开始；最多 5 行）',

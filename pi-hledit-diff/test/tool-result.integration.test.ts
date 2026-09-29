@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { ToolAnnotations, ToolExposure } from "@earendil-works/pi-coding-agent";
 
 import piHleditDiffExtension from "../index.ts";
 import { HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL } from "../src/active-tools.ts";
@@ -10,10 +11,11 @@ import { formatReadMetadata } from "../src/read-result.ts";
 import type { TextResult } from "../src/result.ts";
 import { MAX_RECOVERY_TEXT_BYTES } from "../src/read-recovery.ts";
 
-type ToolResultListener = (event: { toolName: string; details: unknown }, context: { cwd: string }) => unknown;
 type ExtensionEventListener = (event: never, context: never) => unknown;
 type RegisteredTool = {
 	name: string;
+	exposure?: ToolExposure;
+	annotations?: ToolAnnotations;
 	label?: string;
 	description?: string;
 	promptSnippet?: string;
@@ -25,7 +27,6 @@ type RegisteredTool = {
 
 function registerExtensionForTest(): {
 	registeredTools: Map<string, RegisteredTool>;
-	toolResultListener: ToolResultListener;
 	eventListeners: Map<string, ExtensionEventListener>;
 } {
 	const registeredTools = new Map<string, RegisteredTool>();
@@ -48,24 +49,32 @@ function registerExtensionForTest(): {
 	};
 
 	piHleditDiffExtension(pi as never);
-	const toolResultListener = eventListeners.get("tool_result") as ToolResultListener | undefined;
-	assert.ok(toolResultListener, "extension must register a tool_result listener");
-	return { registeredTools, toolResultListener, eventListeners };
+	return { registeredTools, eventListeners };
 }
 
-test("extension keeps proof misses recoverable and escalates other hledit failures", () => {
-	const { registeredTools, toolResultListener } = registerExtensionForTest();
-
+test("anchored tools declare model-only exposure and local read/write hints", () => {
+	const { registeredTools, eventListeners } = registerExtensionForTest();
 	assert.deepEqual([...registeredTools.keys()], [HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL]);
-	const context = { cwd: process.cwd() };
-	assert.equal(toolResultListener({
-		toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL,
-		details: { disposition: "rejected", error: { code: "insufficient_read_proof" } },
-	}, context), undefined);
-	assert.deepEqual(toolResultListener({ toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL, details: { disposition: "rejected" } }, context), { isError: true });
-	assert.deepEqual(toolResultListener({ toolName: HLEDIT_READ_ANCHORS_TOOL, details: { disposition: "unavailable" } }, context), { isError: true });
-	assert.equal(toolResultListener({ toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL, details: { disposition: "succeeded" } }, context), undefined);
-	assert.equal(toolResultListener({ toolName: "bash", details: { disposition: "rejected" } }, context), undefined);
+	for (const tool of registeredTools.values()) {
+		assert.equal(tool.exposure, "model-only");
+		assert.deepEqual(tool.annotations, tool.name === HLEDIT_APPLY_FILE_CHANGES_TOOL
+			? { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }
+			: { readOnlyHint: true, openWorldHint: false });
+	}
+	assert.equal(eventListeners.has("tool_result"), false);
+});
+
+test("apply returns native errors for invalid input and missing proof", async () => {
+	const { registeredTools } = registerExtensionForTest();
+	const apply = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
+	for (const params of [
+		{ path: "target.txt", changes: [] },
+		{ path: "target.txt", changes: [{ operation: "delete_range", start_anchor: "1#abc", end_anchor: "1#abc" }] },
+	]) {
+		const result = await apply.execute("invalid", params as never, undefined, undefined, { cwd: process.cwd() });
+		assert.equal(result.isError, true);
+		assert.equal(result.details.disposition, "rejected");
+	}
 });
 
 test("registered tool metadata stays concise and names each flattened guideline", () => {
@@ -140,6 +149,7 @@ test("read and search tools return structured ranges and actionable EOF errors",
 
 	const readResult = await readTool.execute("read", { path: "target.txt", offset: 2, limit: 1 } as never, undefined, undefined, context);
 	assert.equal(readResult.details.disposition, "succeeded");
+	assert.equal(readResult.isError, false);
 	assert.deepEqual(readResult.details.read?.actual, { firstLine: 2, lastLine: 2, lineCount: 1, totalLines: 3 });
 	assert.equal(readResult.details.read?.nextOffset, 3);
 	assert.match(readResult.content[0]?.text ?? "", /Showing lines 2-2 of 3; continue with offset 3/);
@@ -152,6 +162,7 @@ test("read and search tools return structured ranges and actionable EOF errors",
 		context,
 	);
 	assert.equal(searchResult.details.disposition, "succeeded");
+	assert.equal(searchResult.isError, false);
 	assert.deepEqual(searchResult.details.read?.lines.map((line) => line.text), ["one", "two", "three"]);
 
 	const caseMissResult = await searchTool.execute("search", { path: "target.txt", pattern: "TWO" } as never, undefined, undefined, context);
@@ -171,6 +182,7 @@ test("read and search tools return structured ranges and actionable EOF errors",
 
 	const rangeError = await readTool.execute("read", { path: "target.txt", offset: 4, limit: 1 } as never, undefined, undefined, context);
 	assert.equal(rangeError.details.disposition, "rejected");
+	assert.equal(rangeError.isError, true);
 	assert.equal(rangeError.details.error?.message, "Starting line 4 is outside the file range (3 total lines).");
 	assert.equal(rangeError.content[0]?.text.split("\n", 1)[0], "Starting line 4 is outside the file range (3 total lines).");
 });
@@ -239,6 +251,7 @@ test("search tool explains RE2 rejections instead of echoing a bare error code",
 	);
 	assert.equal(invalid.details.disposition, "rejected");
 	assert.equal(invalid.details.error?.code, "pattern");
+	assert.equal(invalid.isError, true);
 	assert.match(invalid.details.error?.message ?? "", /not a valid RE2 regular expression/);
 	assert.match(invalid.details.error?.hint ?? "", /lookahead, lookbehind, or backreferences/);
 	assert.match(invalid.details.error?.hint ?? "", /literal:true/);
@@ -284,6 +297,7 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 	);
 
 	assert.equal(applyResult.details.disposition, "succeeded");
+	assert.equal(applyResult.isError, false);
 	const resultText = applyResult.content[0]?.text ?? "";
 	assert.match(resultText, /^Applied 1 change; line delta: \+1 -1\.\n\nUpdated anchors:\n/);
 	assert.match(resultText, /TWO/);
@@ -468,6 +482,7 @@ test("apply tool rejects accidental single-line range expansion with actionable 
 	);
 
 	assert.equal(applyResult.details.disposition, "rejected");
+	assert.equal(applyResult.isError, true);
 	assert.deepEqual(applyResult.details.error, {
 		code: "single_line_range_expansion",
 		message: "Change 1 uses replace_range for one source line while repeating that source line. Expand end_anchor or use insert_after; do not retry the same request.",
@@ -709,6 +724,7 @@ test("apply tool rejects an anchor that does not match its read proof before sta
 
 	assert.equal(applyResult.details.disposition, "rejected");
 	assert.equal(applyResult.details.error?.code, "insufficient_read_proof");
+	assert.equal(applyResult.isError, false);
 	assert.equal(applyResult.details.recoveredReads?.[0]?.lines.find((line) => line.line === 2)?.anchor, currentAnchor);
 	assert.equal((applyResult.details.error as Record<string, unknown> | undefined)?.recoveredReads, undefined);
 	assert.match(applyResult.content[0]?.text ?? "", /submitted anchor for line 2 does not match/);

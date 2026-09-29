@@ -2,6 +2,8 @@
 
 为 Pi 提供 stale-safe 哈希锚点编辑能力的本地扩展。
 
+运行需要 Pi 0.99.0 或以上版本；当前开发验证基线为 0.99.0。
+
 ## 工具
 
 插件注册三个职责明确的工具：
@@ -9,6 +11,8 @@
 - `hledit_read_anchors`（TUI 显示为 `Read for Edit`）：只读取连续物理行并返回 `LN#HASH` 锚点；需要正则、字面量或上下文定位时使用 `hledit_search_anchors`。
 - `hledit_search_anchors`（TUI 显示为 `Search Anchors`）：按 RE2 正则或字面量模式搜索，并返回带锚点的匹配/上下文行。
 - `hledit_apply_file_changes`：对一个文件原子提交一组非冲突修改，并直接返回修改后的新锚点。
+
+三个工具均使用 `model-only` 暴露方式：由模型直接调用，完整读取结果进入会话后再提交编辑，结构化结果用于分支恢复与压缩文件记录。read/search 声明只读，apply 声明可能覆盖或删除内容；这些属性不替代权限检查。
 
 编辑语义：
 

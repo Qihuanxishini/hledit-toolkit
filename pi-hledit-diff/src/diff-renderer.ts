@@ -1,5 +1,5 @@
-import { keyHint } from "@earendil-works/pi-coding-agent";
-import { sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { keyHint, type Theme } from "@earendil-works/pi-coding-agent";
+import { mixColors, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { createHighlightedTextCache, escapeTerminalControls, type HighlightedText } from "./syntax-highlight.ts";
 
 export type HleditRenderComponent = {
@@ -7,22 +7,11 @@ export type HleditRenderComponent = {
 	invalidate(): void;
 };
 
-export type HleditRenderTheme = {
-	fg(name: string, text: string): string;
-	bold(text: string): string;
-	getFgAnsi?(name: string): string;
-	getBgAnsi?(name: string): string;
-};
-
-type RgbColor = {
-	r: number;
-	g: number;
-	b: number;
-};
+export type HleditRenderTheme = Pick<Theme, "fg" | "bold" | "colors" | "style" | "getBgAnsi">;
 
 type DiffBackgroundPalette = {
-	added: string;
-	removed: string;
+	added(text: string): string;
+	removed(text: string): string;
 	container: string;
 };
 
@@ -93,85 +82,16 @@ function fitToWidth(text: string, width: number): string {
 	return `${fitted}${" ".repeat(Math.max(0, width - visibleWidth(fitted)))}`;
 }
 
-function ansi256ToRgb(index: number): RgbColor | undefined {
-	if (!Number.isInteger(index) || index < 0 || index > 255) return undefined;
-	if (index < 16) {
-		const baseColors: RgbColor[] = [
-			{ r: 0, g: 0, b: 0 },
-			{ r: 128, g: 0, b: 0 },
-			{ r: 0, g: 128, b: 0 },
-			{ r: 128, g: 128, b: 0 },
-			{ r: 0, g: 0, b: 128 },
-			{ r: 128, g: 0, b: 128 },
-			{ r: 0, g: 128, b: 128 },
-			{ r: 192, g: 192, b: 192 },
-			{ r: 128, g: 128, b: 128 },
-			{ r: 255, g: 0, b: 0 },
-			{ r: 0, g: 255, b: 0 },
-			{ r: 255, g: 255, b: 0 },
-			{ r: 0, g: 0, b: 255 },
-			{ r: 255, g: 0, b: 255 },
-			{ r: 0, g: 255, b: 255 },
-			{ r: 255, g: 255, b: 255 },
-		];
-		return baseColors[index];
-	}
-	if (index >= 232) {
-		const level = 8 + (index - 232) * 10;
-		return { r: level, g: level, b: level };
-	}
-	const cubeIndex = index - 16;
-	const levels = [0, 95, 135, 175, 215, 255];
+function resolveDiffBackgroundPalette(theme: HleditRenderTheme): DiffBackgroundPalette {
+	// [喵喵喵]: 由宿主解析终端默认色并完成混色、量化；不从 ANSI 转义序列反推 RGB。
+	const colors = theme.colors;
+	const added = mixColors(colors.toolSuccessBg, colors.toolDiffAdded, 0.14);
+	const removed = mixColors(colors.toolSuccessBg, colors.toolDiffRemoved, 0.14);
 	return {
-		r: levels[Math.floor(cubeIndex / 36)] ?? 0,
-		g: levels[Math.floor(cubeIndex / 6) % 6] ?? 0,
-		b: levels[cubeIndex % 6] ?? 0,
+		added: (text) => theme.style(text, { bg: added }),
+		removed: (text) => theme.style(text, { bg: removed }),
+		container: theme.getBgAnsi("toolSuccessBg"),
 	};
-}
-
-function ansiToRgb(ansi: string | undefined): RgbColor | undefined {
-	if (!ansi) return undefined;
-	const trueColor = /\x1b\[(?:38|48);2;(\d{1,3});(\d{1,3});(\d{1,3})m/.exec(ansi);
-	if (trueColor) {
-		return {
-			r: Math.min(255, Number.parseInt(trueColor[1] ?? "0", 10)),
-			g: Math.min(255, Number.parseInt(trueColor[2] ?? "0", 10)),
-			b: Math.min(255, Number.parseInt(trueColor[3] ?? "0", 10)),
-		};
-	}
-	const indexedColor = /\x1b\[(?:38|48);5;(\d{1,3})m/.exec(ansi);
-	return indexedColor ? ansi256ToRgb(Number.parseInt(indexedColor[1] ?? "", 10)) : undefined;
-}
-
-function mixRgb(base: RgbColor, tint: RgbColor, tintRatio: number): RgbColor {
-	const baseRatio = 1 - tintRatio;
-	return {
-		r: Math.round(base.r * baseRatio + tint.r * tintRatio),
-		g: Math.round(base.g * baseRatio + tint.g * tintRatio),
-		b: Math.round(base.b * baseRatio + tint.b * tintRatio),
-	};
-}
-
-function toBackgroundAnsi(color: RgbColor): string {
-	return `\x1b[48;2;${color.r};${color.g};${color.b}m`;
-}
-
-function resolveDiffBackgroundPalette(theme: HleditRenderTheme): DiffBackgroundPalette | undefined {
-	if (!theme.getBgAnsi || !theme.getFgAnsi) return undefined;
-	try {
-		const containerAnsi = theme.getBgAnsi("toolSuccessBg");
-		const container = ansiToRgb(containerAnsi);
-		const added = ansiToRgb(theme.getFgAnsi("toolDiffAdded"));
-		const removed = ansiToRgb(theme.getFgAnsi("toolDiffRemoved"));
-		if (!container || !added || !removed) return undefined;
-		return {
-			added: toBackgroundAnsi(mixRgb(container, added, 0.14)),
-			removed: toBackgroundAnsi(mixRgb(container, removed, 0.14)),
-			container: containerAnsi,
-		};
-	} catch {
-		return undefined;
-	}
 }
 
 function applyChangeBackground(
@@ -181,9 +101,8 @@ function applyChangeBackground(
 ): string {
 	const rowBackground = kind === "add" ? palette?.added : kind === "remove" ? palette?.removed : undefined;
 	if (!rowBackground || !palette) return text;
-	// ANSI 全量重置或背景重置可能来自主题/高亮器；重置后立即恢复本行底色。
-	const stable = text.replace(/\x1b\[(?:0|49)?m/g, (reset) => `${reset}${rowBackground}`);
-	return `${rowBackground}${stable}${palette.container}`;
+	// 宿主 style 负责在高亮器的内部 reset 后恢复本行底色，行末回到工具容器背景。
+	return `${rowBackground(text)}${palette.container}`;
 }
 
 function parseGeneratedDiff(diff: string): ParsedDiff {

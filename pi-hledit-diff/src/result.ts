@@ -133,6 +133,7 @@ export type HleditDetails = Record<string, unknown> & {
 export type TextResult = {
 	content: Array<{ type: "text"; text: string }>;
 	details: HleditDetails;
+	isError?: boolean;
 };
 
 const RAW_REVISION_PATTERN = /^sha256:[0-9a-f]{64}$/;

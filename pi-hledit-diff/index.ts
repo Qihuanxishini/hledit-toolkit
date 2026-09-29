@@ -8,7 +8,6 @@ import {
 	HLEDIT_APPLY_FILE_CHANGES_TOOL,
 	HLEDIT_READ_ANCHORS_TOOL,
 	HLEDIT_SEARCH_ANCHORS_TOOL,
-	isAnchoredEditingTool,
 	preferBuiltInEditFallback,
 	preferAnchoredEditingTools,
 } from "./src/active-tools.ts";
@@ -226,8 +225,11 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		if (preferredTools.join("\0") !== activeTools.join("\0")) pi.setActiveTools(preferredTools);
 	};
 
+	// [喵喵喵]: 嵌套调用不持久化完整结果；三个工具只直达模型，保证源码审阅和 branch proof 重放。
 	pi.registerTool<typeof HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, TextResult["details"]>({
 		name: HLEDIT_READ_ANCHORS_TOOL,
+		exposure: "model-only",
+		annotations: { readOnlyHint: true, openWorldHint: false },
 		label: "Read for Edit",
 		description: "Read contiguous text lines with LN#HASH anchors for stale-safe edits.",
 		promptGuidelines: [
@@ -247,12 +249,14 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, signal, _onUpdate, ctx): Promise<TextResult> {
 			const result = await runReadAnchorsTransaction(params, ctx.cwd, signal, readEvidence, runHledit);
 			synchronizeAnchoredTools();
-			return result;
+			return { ...result, isError: shouldMarkHleditResultAsError(result.details) };
 		},
 	});
 
 	pi.registerTool<typeof HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, TextResult["details"]>({
 		name: HLEDIT_SEARCH_ANCHORS_TOOL,
+		exposure: "model-only",
+		annotations: { readOnlyHint: true, openWorldHint: false },
 		label: "Search Anchors",
 		description: "Search one text file (not a directory) for literal text or RE2 matches.",
 		promptGuidelines: [
@@ -270,12 +274,14 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, signal, _onUpdate, ctx): Promise<TextResult> {
 			const result = await runSearchAnchorsTransaction(params, ctx.cwd, signal, readEvidence, runHledit);
 			synchronizeAnchoredTools();
-			return result;
+			return { ...result, isError: shouldMarkHleditResultAsError(result.details) };
 		},
 	});
 
 	pi.registerTool<typeof HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, TextResult["details"]>({
 		name: HLEDIT_APPLY_FILE_CHANGES_TOOL,
+		exposure: "model-only",
+		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
 		label: "Apply File Changes",
 		description: "Atomically edit one text file with non-overlapping inclusive ranges or before/after anchor inserts; requires complete read proof.",
 		promptGuidelines: [
@@ -293,21 +299,12 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, signal, _onUpdate, ctx): Promise<TextResult> {
 			const decoded = decodeFileChangeInput(params);
 			if ("error" in decoded) {
-				return rejectedToolResult(decoded.error, { code: "invalid", message: decoded.error });
+				return { ...rejectedToolResult(decoded.error, { code: "invalid", message: decoded.error }), isError: true };
 			}
 			const result = await runFileChangesWithDiff(decoded.params, ctx, signal, readEvidence);
 			synchronizeAnchoredTools();
-			return result;
+			return { ...result, isError: shouldMarkHleditResultAsError(result.details) };
 		},
-	});
-
-	pi.on("tool_result", (event) => {
-		// D6/2.2：实时结果的 evidence 只由 execute 路径在 mutation queue 内应用一次；
-		// branch/session 重放由 restoreFromBranch 负责。insufficient_read_proof 是可恢复的
-		// 补读结果，其余失败继续升级为 Pi 工具错误。
-		if (isAnchoredEditingTool(event.toolName) && shouldMarkHleditResultAsError(event.details)) {
-			return { isError: true };
-		}
 	});
 
 	// D7：内置 compaction 文件提取只识别 read/write/edit 工具；被压缩消息中的

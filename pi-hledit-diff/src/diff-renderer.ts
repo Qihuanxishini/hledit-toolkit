@@ -52,7 +52,7 @@ export type DiffSummaryStats = {
 	completeHunks: boolean;
 };
 
-type SplitDiffRow = {
+type PairedDiffRow = {
 	left?: DiffLine;
 	right?: DiffLine;
 	meta?: string;
@@ -61,8 +61,6 @@ type SplitDiffRow = {
 const GENERATED_DIFF_LINE = /^([ +\-])(\s*\d+)\s(.*)$/s;
 const COLLAPSED_DIFF_LINES = 24;
 const MAX_EXPANDED_DIFF_LINES = 2000;
-const SPLIT_MIN_WIDTH = 120;
-const SPLIT_SEPARATOR = " │ ";
 
 function expandHint(): string {
 	try {
@@ -74,12 +72,6 @@ function expandHint(): string {
 
 function normalizeWidth(width: number): number {
 	return Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
-}
-
-function fitToWidth(text: string, width: number): string {
-	if (width <= 0) return "";
-	const fitted = truncateToWidth(text, width, "");
-	return `${fitted}${" ".repeat(Math.max(0, width - visibleWidth(fitted)))}`;
 }
 
 function resolveDiffBackgroundPalette(theme: HleditRenderTheme): DiffBackgroundPalette {
@@ -141,50 +133,6 @@ function parseGeneratedDiff(diff: string): ParsedDiff {
 	return { entries, added, removed, hunks: Math.max(hunks, added + removed > 0 ? 1 : 0) };
 }
 
-function collectLines(entries: DiffEntry[], start: number, kind: DiffLineKind): { lines: DiffLine[]; next: number } {
-	const lines: DiffLine[] = [];
-	let index = start;
-	while (index < entries.length) {
-		const entry = entries[index];
-		if (!entry || entry.kind !== kind) break;
-		lines.push(entry);
-		index++;
-	}
-	return { lines, next: index };
-}
-
-function buildSplitRows(entries: DiffEntry[]): SplitDiffRow[] {
-	const rows: SplitDiffRow[] = [];
-	let index = 0;
-	while (index < entries.length) {
-		const entry = entries[index];
-		if (!entry) break;
-		if (entry.kind === "meta") {
-			rows.push({ meta: entry.content });
-			index++;
-			continue;
-		}
-		if (entry.kind === "context") {
-			rows.push({ left: entry, right: entry });
-			index++;
-			continue;
-		}
-		if (entry.kind === "remove") {
-			const removed = collectLines(entries, index, "remove");
-			const added = collectLines(entries, removed.next, "add");
-			const pairCount = Math.max(removed.lines.length, added.lines.length);
-			for (let pairIndex = 0; pairIndex < pairCount; pairIndex++) {
-				rows.push({ left: removed.lines[pairIndex], right: added.lines[pairIndex] });
-			}
-			index = added.next;
-			continue;
-		}
-		rows.push({ right: entry });
-		index++;
-	}
-	return rows;
-}
-
 function structuredLineKey(line: StructuredDiffLine): string {
 	const number = line.kind === "remove" ? line.oldLine : line.newLine ?? line.oldLine;
 	return `${line.kind}:${number ?? "?"}:${line.text}`;
@@ -216,7 +164,7 @@ function attachStructuredGroups(entries: DiffEntry[], lines: readonly Structured
 	return mapped;
 }
 
-function alignChangeRun(entries: DiffLine[]): SplitDiffRow[] {
+function alignChangeRun(entries: DiffLine[]): PairedDiffRow[] {
 	const removes = entries.filter((entry) => entry.kind === "remove");
 	const adds = entries.filter((entry) => entry.kind === "add");
 	const pairedRemove = new Map<DiffLine, DiffLine>();
@@ -256,7 +204,7 @@ function alignChangeRun(entries: DiffLine[]): SplitDiffRow[] {
 		pairedAdd.set(add, remove);
 	}
 
-	const rows: SplitDiffRow[] = [];
+	const rows: PairedDiffRow[] = [];
 	let previousSingleSide: "left" | "right" | undefined;
 	const appendSingle = (side: "left" | "right", line: DiffLine): void => {
 		if (previousSingleSide !== undefined && previousSingleSide !== side) rows.push({ meta: "" });
@@ -280,10 +228,10 @@ function alignChangeRun(entries: DiffLine[]): SplitDiffRow[] {
 	return rows;
 }
 
-function buildStructuredSplitRows(entries: DiffEntry[], lines: readonly StructuredDiffLine[]): SplitDiffRow[] | undefined {
+function buildStructuredPairs(entries: DiffEntry[], lines: readonly StructuredDiffLine[]): PairedDiffRow[] | undefined {
 	const groupedEntries = attachStructuredGroups(entries, lines);
 	if (!groupedEntries) return undefined;
-	const rows: SplitDiffRow[] = [];
+	const rows: PairedDiffRow[] = [];
 	let index = 0;
 	while (index < groupedEntries.length) {
 		const entry = groupedEntries[index]!;
@@ -307,7 +255,7 @@ function buildStructuredSplitRows(entries: DiffEntry[], lines: readonly Structur
 	return rows;
 }
 
-function structuredUnifiedEntries(rows: SplitDiffRow[]): DiffEntry[] {
+function structuredUnifiedEntries(rows: PairedDiffRow[]): DiffEntry[] {
 	const entries: DiffEntry[] = [];
 	for (const row of rows) {
 		if (row.meta !== undefined) {
@@ -358,8 +306,7 @@ function markerFor(kind: DiffLineKind): string {
 	return " ";
 }
 
-// 统一栏与双栏共用同一个单元格布局：`± 行号 │ 内容`，超宽换行后续行只留缩进。
-// 两种布局的差别只在于外层怎么摆放这些单元格，不在于单元格本身。
+// 单栏使用完整可用宽度；超宽换行后续行只留缩进，避免重复行号被误认成新的源行。
 function renderDiffLineRows(
 	line: DiffLine,
 	width: number,
@@ -406,49 +353,9 @@ function renderUnified(
 	return rows;
 }
 
-function renderSplit(
-	rowsToRender: SplitDiffRow[],
-	width: number,
-	numberWidth: number,
-	highlightLine: (line: DiffLine) => HighlightedText,
-	theme: HleditRenderTheme,
-	palette: DiffBackgroundPalette | undefined,
-	maxRows: number,
-): string[] {
-	const separatorWidth = visibleWidth(SPLIT_SEPARATOR);
-	const leftWidth = Math.floor((width - separatorWidth) / 2);
-	const rightWidth = width - separatorWidth - leftWidth;
-	const separator = theme.fg("dim", SPLIT_SEPARATOR);
-	const rows: string[] = [];
-	// 双栏特有：某一侧没有对应行时留空白单元格。
-	const cell = (line: DiffLine | undefined, cellWidth: number): string[] =>
-		line ? renderDiffLineRows(line, cellWidth, numberWidth, highlightLine, theme, palette, maxRows - rows.length) : [" ".repeat(cellWidth)];
-
-	const oldLabel = fitToWidth(theme.fg("muted", theme.bold("修改前")), leftWidth);
-	const newLabel = fitToWidth(theme.fg("muted", theme.bold("修改后")), rightWidth);
-	rows.push(`${oldLabel}${separator}${newLabel}`);
-	rows.push(theme.fg("dim", "─".repeat(width)));
-
-	for (const row of rowsToRender) {
-		if (rows.length >= maxRows) break;
-		if (row.meta !== undefined) {
-			rows.push(theme.fg("dim", truncateToWidth(`  ${escapeTerminalControls(row.meta)}`, width, "")));
-			continue;
-		}
-		const left = cell(row.left, leftWidth);
-		const right = cell(row.right, rightWidth);
-		const rowCount = Math.max(left.length, right.length);
-		for (let index = 0; index < rowCount; index++) {
-			rows.push(`${left[index] ?? " ".repeat(leftWidth)}${separator}${right[index] ?? " ".repeat(rightWidth)}`);
-		}
-	}
-	return rows;
-}
-
 function diffSummary(
 	parsed: ParsedDiff,
 	theme: HleditRenderTheme,
-	mode?: "split" | "unified",
 	summaryStats?: DiffSummaryStats,
 ): string {
 	const added = summaryStats?.added ?? parsed.added;
@@ -460,14 +367,13 @@ function diffSummary(
 	];
 	if (summaryStats?.completeHunks !== false) pieces.push(theme.fg("muted", `• ${parsed.hunks} 个变更块`));
 	else pieces.push(theme.fg("muted", "• 局部预览"));
-	if (mode) pieces.push(theme.fg("dim", `• ${mode === "split" ? "双栏" : "统一"}`));
 	return pieces.join(" ");
 }
 
 function applyLineLimit(lines: string[], expanded: boolean, width: number, theme: HleditRenderTheme): string[] {
 	const limit = expanded ? MAX_EXPANDED_DIFF_LINES : COLLAPSED_DIFF_LINES;
 	if (lines.length <= limit) return lines;
-	const hint = expanded ? "… 更多差异" : `… 更多差异 • ${expandHint()}`;
+	const hint = expanded ? "… 更多差异" : `… 预览已折叠 • ${expandHint()}`;
 	return [...lines.slice(0, limit), "", truncateToWidth(theme.fg(expanded ? "warning" : "muted", hint), width, "")];
 }
 
@@ -484,10 +390,8 @@ export function renderStandaloneDiff(
 	if (parsed.entries.length === 0) return undefined;
 	const highlighter = createHighlightedTextCache(path);
 	const highlightLine = (line: DiffLine): HighlightedText => highlighter.highlight(line);
-	const structuredRows = structuredLines ? buildStructuredSplitRows(parsed.entries, structuredLines) : undefined;
-	const splitRows = structuredRows ?? buildSplitRows(parsed.entries);
-	const hasStructuredGroups = structuredRows !== undefined;
-	const unifiedEntries = hasStructuredGroups ? structuredUnifiedEntries(splitRows) : parsed.entries;
+	const structuredRows = structuredLines ? buildStructuredPairs(parsed.entries, structuredLines) : undefined;
+	const unifiedEntries = structuredRows ? structuredUnifiedEntries(structuredRows) : parsed.entries;
 	const numberWidth = lineNumberWidth(parsed.entries);
 	let paletteLoaded = false;
 	let palette: DiffBackgroundPalette | undefined;
@@ -513,18 +417,15 @@ export function renderStandaloneDiff(
 			const safeWidth = normalizeWidth(width);
 			if (cachedLines && cachedWidth === safeWidth) return cachedLines;
 			if (safeWidth === 0) return storeRenderedLines(safeWidth, []);
-			if (safeWidth < 24) return storeRenderedLines(safeWidth, [truncateToWidth(diffSummary(parsed, theme, undefined, summaryStats), safeWidth, "")]);
+			if (safeWidth < 24) return storeRenderedLines(safeWidth, [truncateToWidth(diffSummary(parsed, theme, summaryStats), safeWidth, "")]);
 
-			const mode = safeWidth >= SPLIT_MIN_WIDTH ? "split" : "unified";
 			// [喵喵喵]: 只布局显示上限加一行哨兵；摘要保留全量统计，
 			// 不为隐藏行的精确换行数触发高亮和着色。(2026-09-05)
 			const maxRows = (expanded ? MAX_EXPANDED_DIFF_LINES : COLLAPSED_DIFF_LINES) + 1;
-			const body = mode === "split"
-				? renderSplit(splitRows, safeWidth, numberWidth, highlightLine, theme, currentPalette(), maxRows)
-				: renderUnified(unifiedEntries, safeWidth, numberWidth, highlightLine, theme, currentPalette(), maxRows);
+			const body = renderUnified(unifiedEntries, safeWidth, numberWidth, highlightLine, theme, currentPalette(), maxRows);
 			const frame = theme.fg("dim", "─".repeat(safeWidth));
 			return storeRenderedLines(safeWidth, [
-				truncateToWidth(diffSummary(parsed, theme, mode, summaryStats), safeWidth, ""),
+				truncateToWidth(diffSummary(parsed, theme, summaryStats), safeWidth, ""),
 				frame,
 				...applyLineLimit(body, expanded, safeWidth, theme),
 				frame,

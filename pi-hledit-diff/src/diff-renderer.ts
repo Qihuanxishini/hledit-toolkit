@@ -1,5 +1,5 @@
 import { keyHint, type Theme } from "@earendil-works/pi-coding-agent";
-import { mixColors, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { parseColor, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { createHighlightedTextCache, escapeTerminalControls, type HighlightedText } from "./syntax-highlight.ts";
 
 export type HleditRenderComponent = {
@@ -7,11 +7,12 @@ export type HleditRenderComponent = {
 	invalidate(): void;
 };
 
-export type HleditRenderTheme = Pick<Theme, "fg" | "bold" | "colors" | "style" | "getBgAnsi">;
+export type HleditRenderTheme = Pick<Theme, "fg" | "bold" | "appearance" | "getColorMode" | "style" | "getBgAnsi">;
 
 type DiffBackgroundPalette = {
 	added(text: string): string;
 	removed(text: string): string;
+	gutter(text: string, kind: "add" | "remove"): string;
 	container: string;
 };
 
@@ -75,13 +76,17 @@ function normalizeWidth(width: number): number {
 }
 
 function resolveDiffBackgroundPalette(theme: HleditRenderTheme): DiffBackgroundPalette {
-	// [喵喵喵]: 由宿主解析终端默认色并完成混色、量化；不从 ANSI 转义序列反推 RGB。
-	const colors = theme.colors;
-	const added = mixColors(colors.toolSuccessBg, colors.toolDiffAdded, 0.14);
-	const removed = mixColors(colors.toolSuccessBg, colors.toolDiffRemoved, 0.14);
+	// 独立底色避免成功背景污染色相；深色取自参考截图，浅色沿用 GitHub 风格。
+	const light = theme.appearance === "light";
+	const indexed = theme.getColorMode() === "256color";
+	const added = parseColor(indexed ? (light ? 194 : 22) : (light ? "#DAFBE1" : "#354330"));
+	const removed = parseColor(indexed ? (light ? 224 : 52) : (light ? "#FFEBE9" : "#3E3831"));
+	const addedFg = parseColor(light ? "#116329" : "#B5BD68");
+	const removedFg = parseColor(light ? "#82071E" : "#CC6666");
 	return {
 		added: (text) => theme.style(text, { bg: added }),
 		removed: (text) => theme.style(text, { bg: removed }),
+		gutter: (text, kind) => theme.style(text, { fg: kind === "add" ? addedFg : removedFg }),
 		container: theme.getBgAnsi("toolSuccessBg"),
 	};
 }
@@ -108,7 +113,7 @@ function parseGeneratedDiff(diff: string): ParsedDiff {
 		if (!rawLine && entries.length === 0) continue;
 		const match = GENERATED_DIFF_LINE.exec(rawLine);
 		if (!match) {
-			entries.push({ kind: "meta", content: rawLine.trim() || "…" });
+			entries.push({ kind: "meta", content: rawLine.trim() });
 			insideChangeGroup = false;
 			continue;
 		}
@@ -317,7 +322,7 @@ function renderDiffLineRows(
 	maxRows: number,
 ): string[] {
 	const plainNumber = String(line.lineNumber).padStart(numberWidth, " ");
-	const prefixWidth = 2 + numberWidth + 3;
+	const prefixWidth = 4 + numberWidth + 3;
 	const contentWidth = Math.max(1, width - prefixWidth);
 	const wrapped = wrapHighlightedLine(highlightLine(line), contentWidth, maxRows);
 	const rows = wrapped.length > 0 ? wrapped : [{ text: "", width: 0 }];
@@ -326,7 +331,10 @@ function renderDiffLineRows(
 	return rows.map((content, index) => {
 		const marker = index === 0 ? markerFor(line.kind) : " ";
 		const number = index === 0 ? plainNumber : " ".repeat(numberWidth);
-		const prefix = `${theme.fg(color, marker)} ${theme.fg(color, number)}${theme.fg("dim", " │ ")}`;
+		const stripe = line.kind === "context" ? " " : "▎";
+		const label = `${stripe} ${marker} ${number}`;
+		const gutter = palette && line.kind !== "context" ? palette.gutter(label, line.kind) : theme.fg(color, label);
+		const prefix = `${gutter}${theme.fg("dim", " │ ")}`;
 		const paddedContent = `${content.text}${" ".repeat(Math.max(0, contentWidth - content.width))}`;
 		return applyChangeBackground(`${prefix}${paddedContent}`, line.kind, palette);
 	});
@@ -345,7 +353,10 @@ function renderUnified(
 	for (const entry of entries) {
 		if (rows.length >= maxRows) break;
 		if (entry.kind === "meta") {
-			rows.push(theme.fg("dim", truncateToWidth(`  ${escapeTerminalControls(entry.content)}`, width, "")));
+			// [喵喵喵]: 空元数据仅隔离内部配对，不占可见行；真实省略标记继续显示。
+			if (!entry.content.trim()) continue;
+			const content = entry.content.trim() === "..." ? "⋮" : entry.content;
+			rows.push(theme.fg("dim", truncateToWidth(`  ${escapeTerminalControls(content)}`, width, "")));
 			continue;
 		}
 		rows.push(...renderDiffLineRows(entry, width, numberWidth, highlightLine, theme, palette, maxRows - rows.length));

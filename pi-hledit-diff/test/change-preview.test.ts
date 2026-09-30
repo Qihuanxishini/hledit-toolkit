@@ -160,6 +160,17 @@ test("change preview survives a details JSON round trip and rejects malformed sh
 	assert.equal(parseChangePreview({ truncated: false, lines: [{ kind: "add", newLine: 1, text: "x", textTruncated: true }] }), undefined);
 });
 
+test("adjacent insert, replacement and deletion use blank operation separators", () => {
+	const preview = buildAnchoredChangePreview([
+		{ operation: "replace_range", start_anchor: "2#AAA", end_anchor: "3#BBB", lines: ["BRAVO", "CHARLIE"] },
+		{ operation: "delete_range", start_anchor: "4#CCC", end_anchor: "4#CCC" },
+		{ operation: "insert_after", anchor: "1#DDD", lines: ["inserted-line"] },
+	], consumedLines([[1, "alpha"], [2, "bravo"], [3, "charlie"], [4, "echo-line"]]));
+	assert.ok(preview);
+	assert.equal(changePreviewDiffText(preview), [
+		"+2 inserted-line", "", "-2 bravo", "-3 charlie", "+3 BRAVO", "+4 CHARLIE", "", "-4 echo-line",
+	].join("\n"));
+});
 test("changePreviewDiffText renders line-numbered hunks with fold markers", () => {
 	const preview = buildAnchoredChangePreview(
 		[
@@ -191,7 +202,7 @@ test("changePreviewDiffText pairs unique identical text and separates unrelated 
 	assert.ok(preview);
 	assert.equal(
 		changePreviewDiffText(preview),
-		["-2 same", "+3 same", "   ...", "-3 removed", "   ...", "+4 added"].join("\n"),
+		["-2 same", "+3 same", "", "-3 removed", "", "+4 added"].join("\n"),
 	);
 });
 });

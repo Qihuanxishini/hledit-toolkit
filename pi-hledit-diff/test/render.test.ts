@@ -2,26 +2,27 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { Theme, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { backgroundAnsi, Box, getCapabilities, mixColors, setCapabilities, visibleWidth, type TerminalColorMode } from "@earendil-works/pi-tui";
+import { backgroundAnsi, Box, getCapabilities, parseColor, setCapabilities, visibleWidth, type TerminalColorMode } from "@earendil-works/pi-tui";
 import { renderStandaloneDiff } from "../src/diff-renderer.ts";
 import { renderFileChangesResult, renderHleditCall, renderReadAnchorsResult, type RenderTheme } from "../src/render.ts";
 import type { TextResult } from "../src/result.ts";
 
-function createNativeTheme(mode: TerminalColorMode, background = ""): Theme {
+function createNativeTheme(mode: TerminalColorMode, background = "", appearance: "dark" | "light" = "dark"): Theme {
 	return new Theme({
 		text: "", toolOutput: "", muted: 8, dim: 8, warning: 3, thinkingXhigh: 5,
 		accent: 4, error: 1, success: 2, toolTitle: "",
 		toolDiffAdded: "#64c878", toolDiffRemoved: "#dc5a64",
 	} as ConstructorParameters<typeof Theme>[0], {
 		toolSuccessBg: background, selectedBg: "",
-	} as ConstructorParameters<typeof Theme>[1], mode);
+	} as ConstructorParameters<typeof Theme>[1], mode, { appearance });
 }
 
 const coloredTheme = createNativeTheme("truecolor", "#283228");
 const theme: RenderTheme = {
 	fg: (_name, text) => text,
 	bold: (text) => text,
-	colors: coloredTheme.colors,
+	appearance: "dark",
+	getColorMode: () => "truecolor",
 	style: (text) => text,
 	getBgAnsi: () => "",
 };
@@ -34,6 +35,14 @@ function render(component: { render(width: number): string[] }, width = 120): st
 	return component.render(width);
 }
 
+test("diff hides operation separators but retains omitted content markers", () => {
+	const output = renderStandaloneDiff("+2 inserted\n\n-2 old\n+3 new\n   ...\n-9 distant", "notes.txt", false, theme)!.render(72);
+	const inserted = output.findIndex((line) => line.includes("inserted"));
+	assert.match(output[inserted + 1]!, /old/);
+	assert.equal(output.filter((line) => line.includes("⋮")).length, 1);
+	assert.ok(output.some((line) => line.includes("distant")));
+});
+
 const replacementPreview = {
 	truncated: false,
 	lines: [
@@ -43,43 +52,50 @@ const replacementPreview = {
 };
 
 for (const mode of ["truecolor", "256color"] as const) {
-	test(`diff uses native theme colors on the terminal default background (${mode})`, () => {
-		const nativeTheme = createNativeTheme(mode);
-		assert.equal(nativeTheme.getBgAnsi("toolSuccessBg"), "\x1b[49m");
-		const component = renderStandaloneDiff("-2 beta\n+2 BETA", "notes.txt", false, nativeTheme)!;
-		const addedBg = backgroundAnsi(mixColors(nativeTheme.colors.toolSuccessBg, nativeTheme.colors.toolDiffAdded, 0.14), mode);
-		const removedBg = backgroundAnsi(mixColors(nativeTheme.colors.toolSuccessBg, nativeTheme.colors.toolDiffRemoved, 0.14), mode);
-		// [喵喵喵]: 原生 256 色量化可能合并浅底色，增删区别必须仍由主题前景和 +/- 保持。
-		assert.notEqual(nativeTheme.getFgAnsi("toolDiffAdded"), nativeTheme.getFgAnsi("toolDiffRemoved"));
-		for (const width of [72, 120]) {
-			const output = component.render(width);
-			assert.ok(output.some((line) => line.includes(addedBg) && line.includes("BETA")));
-			assert.ok(output.some((line) => line.includes(removedBg) && line.includes("beta")));
-			assert.ok(output.some((line) => line.includes(nativeTheme.fg("toolDiffAdded", "+")) && line.includes("BETA")));
-			assert.ok(output.some((line) => line.includes(nativeTheme.fg("toolDiffRemoved", "-")) && line.includes("beta")));
-			assert.ok(output.every((line) => visibleWidth(line) <= width));
-			if (mode === "256color") assert.doesNotMatch(output.join("\n"), /\x1b\[(?:38|48);2;/);
-			const changedRows = output.filter((line) => line.includes("beta") || line.includes("BETA"));
-			assert.ok(changedRows.every((line) => line.endsWith(nativeTheme.getBgAnsi("toolSuccessBg"))));
-		}
-	});
+	for (const appearance of ["dark", "light"] as const) {
+		test(`diff preserves tinted fills and normal-weight stripes (${appearance}, ${mode})`, () => {
+			const light = appearance === "light";
+			const addedBg = mode === "256color" ? `\x1b[48;5;${light ? 194 : 22}m` : light ? "\x1b[48;2;218;251;225m" : "\x1b[48;2;53;67;48m";
+			const removedBg = mode === "256color" ? `\x1b[48;5;${light ? 224 : 52}m` : light ? "\x1b[48;2;255;235;233m" : "\x1b[48;2;62;56;49m";
+			// [喵喵喵]: 绿色成功背景曾把删除行混成黄绿；同时覆盖终端默认色和有色容器。
+			for (const background of ["", light ? "#fafafa" : "#283228", "#282828"]) {
+				const nativeTheme = createNativeTheme(mode, background, appearance);
+				const addedGutter = nativeTheme.style("▎ +  2", { fg: parseColor(light ? "#116329" : "#B5BD68") });
+				const removedGutter = nativeTheme.style("▎ -  2", { fg: parseColor(light ? "#82071E" : "#CC6666") });
+				const component = renderStandaloneDiff(" 1 context\n-2 beta\n+2 BETA", "notes.txt", false, nativeTheme)!;
+				for (const width of [72, 120]) {
+					const output = component.render(width);
+					assert.ok(output.some((line) => line.startsWith(addedBg) && line.includes(addedGutter) && line.includes("BETA")));
+					assert.ok(output.some((line) => line.startsWith(removedBg) && line.includes(removedGutter) && line.includes("beta")));
+					assert.ok(output.every((line) => visibleWidth(line) <= width));
+					if (mode === "256color") assert.doesNotMatch(output.join("\n"), /\x1b\[(?:38|48);2;/);
+					const context = output.find((line) => line.includes("context"))!;
+					assert.ok(!context.includes(addedBg) && !context.includes(removedBg));
+					const changedRows = output.filter((line) => line.includes("beta") || line.includes("BETA"));
+					assert.ok(changedRows.every((line) => line.endsWith(nativeTheme.getBgAnsi("toolSuccessBg"))));
+					assert.ok(changedRows.every((line) => !line.includes("\x1b[1m")));
+				}
+			}
+		});
+	}
 }
 
 test("diff invalidation refreshes native theme colors", () => {
 	let activeTheme = createNativeTheme("truecolor", "#101010");
 	const switchingTheme: RenderTheme = {
 		...theme,
-		get colors() { return activeTheme.colors; },
+		get appearance() { return activeTheme.appearance; },
+		getColorMode: () => activeTheme.getColorMode(),
 		style: (text, options) => activeTheme.style(text, options),
 		getBgAnsi: (name) => activeTheme.getBgAnsi(name),
 	};
 	const component = renderStandaloneDiff("-2 beta\n+2 BETA", "notes.txt", false, switchingTheme)!;
 	const first = component.render(72);
-	activeTheme = createNativeTheme("truecolor", "#fafafa");
+	activeTheme = createNativeTheme("256color", "#fafafa", "light");
 	component.invalidate();
 	const refreshed = component.render(72);
 	assert.notDeepEqual(refreshed, first);
-	const addedBg = backgroundAnsi(mixColors(activeTheme.colors.toolSuccessBg, activeTheme.colors.toolDiffAdded, 0.14), "truecolor");
+	const addedBg = backgroundAnsi(parseColor(194), "256color");
 	assert.ok(refreshed.some((line) => line.startsWith(addedBg) && line.includes("BETA")));
 });
 test("renderHleditCall includes search range and pattern", () => {
@@ -299,8 +315,8 @@ test("renderFileChangesResult renders a unified diff", () => {
 	const output = render(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }), 72);
 
 	assert.equal(output[0], "↳ 差异 +2 -1 • 1 个变更块");
-	assert.ok(output.some((line) => /^-\s+2\s+│/.test(line) && line.includes("beta")));
-	assert.ok(output.some((line) => /^\+\s+2\s+│/.test(line) && line.includes("BETA")));
+	assert.ok(output.some((line) => /^▎ -\s+2\s+│/.test(line) && line.includes("beta")));
+	assert.ok(output.some((line) => /^▎ \+\s+2\s+│/.test(line) && line.includes("BETA")));
 	assert.ok(output.every((line) => visibleWidth(line) <= 72));
 });
 
@@ -325,8 +341,8 @@ test("renderFileChangesResult keeps old and new line numbers visible when change
 
 	const unifiedRows = render(component, 80).filter((line) => line.includes(text));
 	assert.equal(unifiedRows.length, 2);
-	assert.match(unifiedRows[0] ?? "", /^-\s+30\s+│/);
-	assert.match(unifiedRows[1] ?? "", /^\+\s+50\s+│/);
+	assert.match(unifiedRows[0] ?? "", /^▎ -\s+30\s+│/);
+	assert.match(unifiedRows[1] ?? "", /^▎ \+\s+50\s+│/);
 
 	const wideRows = render(component, 120).filter((line) => line.includes(text));
 	assert.deepEqual(wideRows.map((line) => line.trimEnd()), unifiedRows.map((line) => line.trimEnd()));
@@ -362,15 +378,38 @@ test("renderFileChangesResult separates unrelated mixed changes while aligning i
 
 	const unifiedRows = render(component, 80).filter((line) => line.includes(text) || line.includes("delete only") || line.includes("add only"));
 	assert.equal(unifiedRows.length, 4);
-	assert.match(unifiedRows[0] ?? "", /^-\s+2\s+│/);
-	assert.match(unifiedRows[1] ?? "", /^\+\s+3\s+│/);
-	assert.match(unifiedRows[2] ?? "", /^-\s+3\s+│/);
-	assert.match(unifiedRows[3] ?? "", /^\+\s+4\s+│/);
+	assert.match(unifiedRows[0] ?? "", /^▎ -\s+2\s+│/);
+	assert.match(unifiedRows[1] ?? "", /^▎ \+\s+3\s+│/);
+	assert.match(unifiedRows[2] ?? "", /^▎ -\s+3\s+│/);
+	assert.match(unifiedRows[3] ?? "", /^▎ \+\s+4\s+│/);
 
 	const wideRows = render(component, 120).filter((line) => line.includes(text) || line.includes("delete only") || line.includes("add only"));
 	assert.deepEqual(wideRows.map((line) => line.trimEnd()), unifiedRows.map((line) => line.trimEnd()));
 });
 
+test("adjacent operations render continuously without losing replacement pairing", () => {
+	const result: TextResult = {
+		content: [{ type: "text", text: "Changes applied." }],
+		details: {
+			disposition: "succeeded", editsApplied: 3,
+			changePreview: { truncated: false, lines: [
+				{ kind: "add", newLine: 2, text: "inserted-line", changeIndex: 2 },
+				{ kind: "remove", oldLine: 2, text: "bravo", changeIndex: 0 },
+				{ kind: "remove", oldLine: 3, text: "charlie", changeIndex: 0 },
+				{ kind: "add", newLine: 3, text: "BRAVO", changeIndex: 0 },
+				{ kind: "add", newLine: 4, text: "CHARLIE", changeIndex: 0 },
+				{ kind: "remove", oldLine: 4, text: "echo-line", changeIndex: 1 },
+			] },
+		},
+	};
+	const component = renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } });
+	for (const width of [40, 120]) {
+		const rows = component.render(width).slice(2, -1);
+		assert.deepEqual(rows.map((line) => line.split(" │ ")[1]!.trimEnd()), [
+			"inserted-line", "bravo", "BRAVO", "charlie", "CHARLIE", "echo-line",
+		]);
+	}
+});
 test("renderFileChangesResult stays unified across narrow and wide terminals", () => {
 	const result: TextResult = {
 		content: [{ type: "text", text: "Changes applied." }],
@@ -380,8 +419,8 @@ test("renderFileChangesResult stays unified across narrow and wide terminals", (
 	for (const width of [40, 80, 119, 120, 121, 200, 80]) {
 		const output = render(component, width);
 		assert.equal(output[0], "↳ 差异 +1 -1 • 1 个变更块");
-		assert.ok(output.some((line) => /^-\s+2\s+│/.test(line) && line.includes("beta")));
-		assert.ok(output.some((line) => /^\+\s+2\s+│/.test(line) && line.includes("BETA")));
+		assert.ok(output.some((line) => /^▎ -\s+2\s+│/.test(line) && line.includes("beta")));
+		assert.ok(output.some((line) => /^▎ \+\s+2\s+│/.test(line) && line.includes("BETA")));
 		assert.ok(output.every((line) => visibleWidth(line) <= width));
 		assert.doesNotMatch(output.join("\n"), /修改前|修改后|双栏|统一/);
 	}
@@ -394,9 +433,9 @@ test("unified diff uses full width and preserves wrapped Unicode source", () => 
 		const output = component.render(width);
 		const rows = output.slice(2, -1);
 		assert.ok(output.every((line) => visibleWidth(line) <= width));
-		assert.match(rows[0]!, /^\+ 100 │ /);
-		assert.ok(rows.slice(1).every((line) => line.startsWith("      │ ")));
-		assert.equal(rows.map((line) => line.slice(8).trimEnd()).join(""), text);
+		assert.match(rows[0]!, /^▎ \+ 100 │ /);
+		assert.ok(rows.slice(1).every((line) => line.startsWith("▎       │ ")));
+		assert.equal(rows.map((line) => line.slice(10).trimEnd()).join(""), text);
 		if (width >= 119) assert.equal(rows.length, 1);
 		else assert.ok(rows.length > 1);
 	}

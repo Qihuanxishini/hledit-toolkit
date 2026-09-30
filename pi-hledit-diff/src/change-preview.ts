@@ -300,7 +300,10 @@ export function changePreviewDiffText(preview: VerifiedChangePreview): string {
 		const continuesLegacyHunk = !hasChangeIndex && previousChangeIndex === undefined &&
 			(continuesOld || continuesNew || (previousKind === "remove" && line.kind === "add"));
 		if (rendered.length > 0 && !forceAdjacent && !continuesSameChange && !continuesLegacyHunk) {
-			rendered.push("   ...");
+			// [喵喵喵]: 操作边界只留空行；同一侧行号确实向前跳跃时才表示省略。
+			const skipsOld = oldLine !== undefined && previousOld !== undefined && oldLine > previousOld + 1;
+			const skipsNew = newLine !== undefined && previousNew !== undefined && newLine > previousNew + 1;
+			rendered.push(skipsOld || skipsNew ? "   ..." : "");
 		}
 		const marker = line.kind === "add" ? "+" : line.kind === "remove" ? "-" : " ";
 		rendered.push(`${marker}${line.kind === "remove" ? oldLine : newLine} ${line.text}`);

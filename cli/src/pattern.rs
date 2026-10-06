@@ -97,49 +97,64 @@ fn re2_expression(pattern: &str) -> Result<String, String> {
     Ok(out)
 }
 
-fn any_char(ast: &Ast) -> bool {
-    match ast {
-        Ast::Dot(_) => true,
-        Ast::Group(g) => any_char(&g.ast),
-        _ => false,
-    }
+#[derive(Default)]
+struct PatternProperties {
+    any_char: bool,
+    skippable: bool,
+    broad: bool,
 }
-fn skippable(ast: &Ast) -> bool {
+
+// [喵喵喵]: 一次后序遍历计算三个属性；分别递归查询会在嵌套 concat 中重复访问子树，产生指数开销。
+fn properties(ast: &Ast) -> PatternProperties {
+    let mut result = PatternProperties::default();
     match ast {
-        Ast::Empty(_) | Ast::Flags(_) => true,
-        Ast::Assertion(a) => matches!(
-            a.kind,
-            AssertionKind::StartLine
-                | AssertionKind::EndLine
-                | AssertionKind::StartText
-                | AssertionKind::EndText
-        ),
-        Ast::Group(g) => skippable(&g.ast),
-        Ast::Repetition(r) => match r.op.kind {
-            R::ZeroOrOne | R::ZeroOrMore => true,
-            R::Range(Range::Exactly(0) | Range::AtLeast(0) | Range::Bounded(0, _)) => true,
-            _ => skippable(&r.ast),
-        },
-        Ast::Concat(c) => c.asts.iter().all(skippable),
-        Ast::Alternation(a) => a.asts.iter().any(skippable),
-        _ => false,
-    }
-}
-fn broad(ast: &Ast) -> bool {
-    match ast {
-        Ast::Group(g) => broad(&g.ast),
-        Ast::Repetition(r) => match r.op.kind {
-            R::ZeroOrMore | R::OneOrMore | R::Range(Range::AtLeast(0..=1)) => {
-                any_char(&r.ast) || broad(&r.ast)
-            }
-            _ => false,
-        },
-        Ast::Concat(c) => {
-            c.asts.iter().any(broad) && c.asts.iter().all(|a| broad(a) || skippable(a))
+        Ast::Dot(_) => result.any_char = true,
+        Ast::Empty(_) | Ast::Flags(_) => result.skippable = true,
+        Ast::Assertion(a) => {
+            result.skippable = matches!(
+                a.kind,
+                AssertionKind::StartLine
+                    | AssertionKind::EndLine
+                    | AssertionKind::StartText
+                    | AssertionKind::EndText
+            );
         }
-        Ast::Alternation(a) => a.asts.iter().any(broad),
-        _ => false,
+        Ast::Group(g) => return properties(&g.ast),
+        Ast::Repetition(r) => {
+            let child = properties(&r.ast);
+            result.skippable = match r.op.kind {
+                R::ZeroOrOne | R::ZeroOrMore => true,
+                R::Range(Range::Exactly(0) | Range::AtLeast(0) | Range::Bounded(0, _)) => true,
+                _ => child.skippable,
+            };
+            result.broad = match r.op.kind {
+                R::ZeroOrMore | R::OneOrMore | R::Range(Range::AtLeast(0..=1)) => {
+                    child.any_char || child.broad
+                }
+                _ => false,
+            };
+        }
+        Ast::Concat(c) => {
+            result.skippable = true;
+            let mut all_unconstrained = true;
+            for ast in &c.asts {
+                let child = properties(ast);
+                result.skippable &= child.skippable;
+                result.broad |= child.broad;
+                all_unconstrained &= child.broad || child.skippable;
+            }
+            result.broad &= all_unconstrained;
+        }
+        Ast::Alternation(a) => {
+            for ast in &a.asts {
+                let child = properties(ast);
+                result.skippable |= child.skippable;
+                result.broad |= child.broad;
+            }
+        }
+        _ => {}
     }
+    result
 }
 
 fn validate_repetitions(ast: &Ast, parent: u32) -> Result<(), String> {
@@ -189,6 +204,6 @@ pub fn compile(pattern: &str, literal: bool, ignore_case: bool) -> Result<Matche
         .map_err(|e| e.to_string())?;
     Ok(Matcher {
         regex,
-        broad: !literal && broad(&ast),
+        broad: !literal && properties(&ast).broad,
     })
 }

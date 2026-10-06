@@ -91,6 +91,29 @@ test("bundled read-range emits structured range metadata", async (t) => {
 	assert.equal(parsed.nextOffset, 3);
 });
 
+test("bundled search classifies nested wildcards without exponential work", async (t) => {
+	const directory = await mkdtemp(join(process.cwd(), ".pattern-test-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "required\n", "utf8");
+	// [喵喵喵]: 旧分类器在每层 concat 重复遍历子树；40 层可稳定暴露指数增长，超时负责终止本次子进程。
+	const nested = "(?:a?".repeat(40) + ".*" + ")".repeat(40);
+	for (const [pattern, literal, broad] of [
+		[nested, false, true],
+		[`${nested}required`, false, false],
+		[nested, true, false],
+	] as const) {
+		const run = await runHledit(
+			["search", target, pattern, ...(literal ? ["--literal"] : [])],
+			undefined, directory, AbortSignal.timeout(5_000),
+		);
+		assert.equal(run.exitCode, 0, run.stdout);
+		const parsed = JSON.parse(run.stdout) as Record<string, unknown>;
+		assert.equal(parsed.ok, !broad);
+		assert.equal(parsed.error, broad ? "broad_pattern" : undefined);
+		if (!broad) assert.equal(parsed.totalMatches, literal ? 0 : 1);
+	}
+});
 test("bundled batch emits plugin-compatible updated anchors", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-diff-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));

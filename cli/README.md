@@ -6,19 +6,25 @@ Every source row contains a stable `LN#HHH` anchor. A batch validates its anchor
 
 ## Install and develop
 
+From this directory:
+
 ```bash
-go install github.com/Qihuanxishini/hledit-toolkit/cli@latest
-# or, from this directory:
+cargo install --path . --locked
+# or build locally:
 make build
-```
-
-Requirements: Go 1.25+. The Windows security implementation uses `golang.org/x/sys/windows`; the bundled Windows binary is built with Go 1.26.3.
-
-```bash
-go test ./...
-go vet ./...
 make check
 ```
+
+The toolchain is pinned in `rust-toolchain.toml` and dependencies in `Cargo.lock`. Windows metadata preservation uses `windows-sys`. Read-only commands borrow lines from a single UTF-8 buffer; batch sorting and file reconstruction each run once.
+
+Build or verify the bundled Windows x64 CLI from the repository root:
+
+```powershell
+pwsh -NoProfile -File cli/build-bundle.ps1
+pwsh -NoProfile -File cli/build-bundle.ps1 -VerifyOnly
+```
+
+The bundle uses a static CRT and includes dependency licenses plus a source/artifact fingerprint. Fingerprints detect stale artifacts; they are not a reproducible-build or authenticity proof. CI validates both the tracked and rebuilt binaries against the plugin contract.
 
 ## Commands
 
@@ -58,7 +64,7 @@ hledit search main.go 'func\\s+main' --context 2
 hledit search main.go 'fmt.Println' --literal --ignore-case
 ```
 
-The required pattern uses Go RE2 syntax unless `--literal` is given. Search pagination uses a physical source-line cursor, so a returned `nextOffset` can be passed directly as `--offset`. `totalMatches` counts matches before context expansion. Empty patterns and whole-file patterns such as `.*` are rejected; use `read-range` to read source contiguously.
+The required pattern uses RE2-compatible syntax unless `--literal` is given. Perl character classes and word boundaries remain ASCII; Unicode categories and case folding use Unicode 15.0. Search pagination uses a physical source-line cursor, so a returned `nextOffset` can be passed directly as `--offset`. `totalMatches` counts matches before context expansion and is included in the final JSON budget. Empty patterns and whole-file patterns such as `.*` are rejected; use `read-range` to read source contiguously.
 
 ### Apply an atomic batch
 

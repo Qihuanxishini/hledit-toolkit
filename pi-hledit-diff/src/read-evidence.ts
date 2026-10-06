@@ -225,9 +225,7 @@ function collectProofCoverage(
 	ranges: ReadProofLineRange[],
 	evidenceLines: Map<number, EvidenceLine>,
 ): { coveredLines: number[]; reportedMissingLines: number[]; firstMissingRange: ReadProofLineRange | undefined } {
-	const availableLines = [...evidenceLines.keys()].sort((left, right) => left - right);
 	const coveredLines: number[] = [];
-	let availableIndex = 0;
 
 	// [喵喵喵]: 诊断只属于首个连续缺口；后续 change 的缺行不应混入同一次
 	// failure，完整补读跨度由 affected change 的 evidence 另行计算。(2026-07-28)
@@ -241,16 +239,18 @@ function collectProofCoverage(
 	};
 
 	for (const range of ranges) {
-		while (availableLines[availableIndex] !== undefined && availableLines[availableIndex]! < range.start) availableIndex += 1;
-		let expectedLine = range.start;
-		while (availableLines[availableIndex] !== undefined && availableLines[availableIndex]! <= range.end) {
-			const availableLine = availableLines[availableIndex]!;
-			if (availableLine > expectedLine) return missingCoverage(expectedLine, availableLine - 1);
-			coveredLines.push(availableLine);
-			expectedLine = availableLine + 1;
-			availableIndex += 1;
+		for (let line = range.start; line <= range.end; line += 1) {
+			if (evidenceLines.has(line)) {
+				coveredLines.push(line);
+				continue;
+			}
+			// [喵喵喵]: 正常路径只查询消费行；缺口时无排序寻找下个已知行，避免枚举异常大空区间。
+			let missingEnd = range.end;
+			for (const availableLine of evidenceLines.keys()) {
+				if (availableLine > line && availableLine <= missingEnd) missingEnd = availableLine - 1;
+			}
+			return missingCoverage(line, missingEnd);
 		}
-		if (expectedLine <= range.end) return missingCoverage(expectedLine, range.end);
 	}
 	return { coveredLines, reportedMissingLines: [], firstMissingRange: undefined };
 }

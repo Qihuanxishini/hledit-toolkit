@@ -11,7 +11,7 @@ import { applyFileChangesResult } from "../src/apply-result.ts";
 
 // CLI 声明的完整能力集；解析结果只保留 version，其余字段仅用于构造被校验的输入。
 const DECLARED_CAPABILITIES = {
-	version: "3.3.1",
+	version: "3.4.0",
 	anchorProtocolV2: true,
 	readRangeMetadata: true,
 	batchInsertAfter: true,

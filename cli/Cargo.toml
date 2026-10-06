@@ -1,0 +1,26 @@
+[package]
+name = "hledit"
+version = "3.4.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+description = "Hash-anchored, revision-checked atomic text editor"
+
+[dependencies]
+# [喵喵喵]: 锚点及搜索保留原协议的 Unicode 15.0 数据，升级需显式核对行为。
+regex = "=1.9.6"
+regex-syntax = "=0.7.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+unicode-general-category = "=0.6.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Memory"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -3,6 +3,7 @@
 
 # Build, test, and profiling outputs
 **/dist/
+**/target/
 **/coverage/
 **/*.cover
 **/coverage.out

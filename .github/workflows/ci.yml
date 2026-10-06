@@ -14,22 +14,14 @@ jobs:
         working-directory: cli
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: cli/go.mod
-          cache: false
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
       - name: Check formatting
-        shell: bash
-        run: |
-          fmt_out="$(gofmt -l *.go)"
-          if [ -n "$fmt_out" ]; then
-            echo "$fmt_out"
-            exit 1
-          fi
-      - name: Vet
-        run: go vet ./...
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
       - name: Test
-        run: go test ./...
+        run: cargo test --locked
 
   pi-extension:
     name: Pi extension
@@ -39,13 +31,12 @@ jobs:
         working-directory: pi-hledit-diff
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-go@v6
-        with:
-          go-version: "1.26.3"
-          cache: false
+      - name: Install pinned Rust toolchain
+        working-directory: cli
+        run: rustup show active-toolchain
       - name: Test CLI on Windows
         working-directory: cli
-        run: go test ./...
+        run: cargo test --locked
       - uses: actions/setup-node@v5
         with:
           node-version: 24
@@ -53,31 +44,18 @@ jobs:
           cache-dependency-path: pi-hledit-diff/package-lock.json
       - name: Install dependencies
         run: npm ci
-      - name: Verify tracked bundled CLI
-        run: npm run test:bundled
-      - name: Save tracked bundled CLI
+      - name: Verify tracked bundled CLI provenance
         shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $source = Join-Path $PWD "bin/hledit.exe"
-          $destination = Join-Path $env:RUNNER_TEMP "hledit-tracked.exe"
-          Copy-Item -LiteralPath $source -Destination $destination -Force
+        run: ../cli/build-bundle.ps1 -VerifyOnly
+      - name: Verify tracked bundled CLI contract
+        run: npm run test:bundled
       - name: Build bundled CLI from current source
-        working-directory: cli
-        env:
-          CGO_ENABLED: "0"
-          GOAMD64: "v1"
-        run: go build -buildvcs=false -trimpath -ldflags="-s -w" -o ../pi-hledit-diff/bin/hledit.exe .
-      - name: Verify rebuilt bundled CLI
-        run: npm run test:bundled
-      - name: Verify bundled CLI matches current source
         shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $trackedHash = (Get-FileHash -LiteralPath (Join-Path $env:RUNNER_TEMP "hledit-tracked.exe") -Algorithm SHA256).Hash
-          $rebuiltHash = (Get-FileHash -LiteralPath (Join-Path $PWD "bin/hledit.exe") -Algorithm SHA256).Hash
-          if ($trackedHash -ne $rebuiltHash) {
-            throw "tracked bundled CLI is stale; rebuild it from current source and commit the updated artifact"
-          }
+        run: ../cli/build-bundle.ps1
+      - name: Verify rebuilt bundled CLI provenance
+        shell: pwsh
+        run: ../cli/build-bundle.ps1 -VerifyOnly
+      - name: Verify rebuilt bundled CLI contract
+        run: npm run test:bundled
       - name: Check
         run: npm run check

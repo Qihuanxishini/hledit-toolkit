@@ -34,7 +34,7 @@ The response is the compatibility gate for the Pi extension:
 ```json
 {
   "ok": true,
-  "version": "3.3.1",
+  "version": "3.4.0",
   "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,
@@ -89,7 +89,7 @@ Offset past a non-empty file returns:
 hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N] [--ignore-case]
 ```
 
-`search` is the only search verb. `pattern` uses Go RE2 syntax by default; `--literal` treats it as a substring. `--ignore-case` enables case folding and `--context N` includes adjacent physical source lines, merging overlapping windows. `offset` is a physical source-line cursor (default `1`), not a match index; `limit` defaults to `100` and bounds returned matching/context lines.
+`search` is the only search verb. `pattern` uses RE2-compatible syntax by default; `--literal` treats it as a substring. The Rust matcher preserves ASCII Perl classes (`\d`, `\w`, `\s`) and word boundaries, Unicode 15.0 categories and case folding, and rejects lookaround/backreferences. `--ignore-case` enables case folding and `--context N` includes adjacent physical source lines, merging overlapping windows. `offset` is a physical source-line cursor (default `1`), not a match index; `limit` defaults to `100` and bounds returned matching/context lines.
 
 ```json
 {
@@ -106,6 +106,8 @@ hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N
 `totalMatches` counts matching lines before context expansion. Zero matches return success with `totalMatches:0`, an empty `lines` array, `truncated:false`, and no `nextOffset`. Empty or invalid patterns return `error:"pattern"`. Broad whole-file expressions such as `.*`, `.+`, and their anchored or dot-all variants return `error:"broad_pattern"`; callers must use `read-range` for contiguous source.
 
 Both read verbs reject directories, binary files, and invalid UTF-8 with structured `directory`, `binary`, or `encoding` errors. They cap the serialized JSON page at 50 KiB.
+
+The read path owns one validated UTF-8 buffer and borrows logical lines from it without allocating whole-file line/terminator arrays. Search counts matches first so the page budget includes the actual `totalMatches`, then lazily expands matching windows into the bounded page. Full-file scanning is still required for revision, line count, and match count; paging bounds response memory, not source scanning.
 
 ## 4. Batch edit protocol
 
@@ -175,7 +177,7 @@ An anchor has the exact grammar:
 ^(\d+)#([A-Za-z0-9_-]{3})$
 ```
 
-The hash is the low 18 bits of FNV-1a-32 encoded with URL-safe Base64. Its input trims trailing `\r` and whitespace. Lines with no Unicode letter or digit additionally mix their 1-indexed line number into the hash, distinguishing otherwise identical structural lines.
+The hash is the low 18 bits of FNV-1a-32 encoded with URL-safe Base64. Its input trims trailing `\r` and Unicode White_Space. Lines with no Unicode 15.0 letter (`L*`) or decimal digit (`Nd`) additionally mix their 1-indexed line number into the hash, distinguishing otherwise identical structural lines.
 
 Raw-byte revisions use `sha256:<64 lowercase hex digits>` over the unchanged source bytes, including BOM, line-ending style, and trailing newline. Revisions are concurrency preconditions; they do not replace per-line anchor validation.
 
@@ -188,15 +190,13 @@ On Windows, the temporary file receives the target DACL before any replacement t
 ## 6. Source layout
 
 ```text
-main.go               command dispatch and capability response
-read.go               structured read-range and search implementation
-batch_request.go      strict batch wire v3 decoding
-batch_plan.go         proof/edit validation and one-pass rebuild planning
-batch_command.go      check/apply command flow
-anchor.go             exact anchor parsing and validation
-hash.go               anchor hash calculation
-textfile.go           UTF-8, BOM, line terminators, raw-byte revision
-write.go              atomic replacement and revision recheck
-updated_anchors.go    bounded post-edit anchor window
-types.go              shared JSON response types
+src/main.rs          command dispatch and capability response
+src/read.rs          bounded read/search pages and anchor contexts
+src/pattern.rs       RE2-compatible matching and broad-pattern classification
+src/batch.rs         strict wire decoding, proof validation, one-pass batch planning
+src/text.rs          UTF-8 ownership, BOM, terminators, hashes and revisions
+src/write.rs         platform atomic replacement and revision recheck
+src/write/platform/tests.rs  Windows metadata and recovery safety cases
+tests/write_contract.rs     raw CLI zero-write safety cases
+build-bundle.ps1     Windows release artifact, licenses and source fingerprint
 ```

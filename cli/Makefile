@@ -1,29 +1,31 @@
-BIN := hledit
-DIST := dist
+BIN := hledit$(if $(filter Windows_NT,$(OS)),.exe,)
 LOCAL_BIN ?= $(HOME)/.local/bin
 
-.PHONY: build install fmt test vet check clean
+.PHONY: build install fmt test lint check clean bundle
 
 build:
-	mkdir -p $(DIST)
-	go build -o $(DIST)/$(BIN) .
+	cargo build --release --locked
 
 install: build
-	mkdir -p $(LOCAL_BIN)
-	ln -sf $(PWD)/$(DIST)/$(BIN) $(LOCAL_BIN)/$(BIN)
-	@echo "Installed $(BIN) -> $(LOCAL_BIN)/$(BIN)"
+	mkdir -p "$(LOCAL_BIN)"
+	cp "target/release/$(BIN)" "$(LOCAL_BIN)/$(BIN)"
 
 fmt:
-	gofmt -w *.go
+	cargo fmt
 
 test:
-	go test ./...
+	cargo test --locked
 
-vet:
-	go vet ./...
+lint:
+	cargo clippy --all-targets --locked -- -D warnings
 
-check: fmt test vet
-	go test -cover ./...
+check:
+	cargo fmt --check
+	cargo clippy --all-targets --locked -- -D warnings
+	cargo test --locked
+
+bundle:
+	pwsh -NoProfile -File build-bundle.ps1
 
 clean:
-	rm -rf $(DIST)
+	cargo clean

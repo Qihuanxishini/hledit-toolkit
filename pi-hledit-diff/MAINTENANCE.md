@@ -29,7 +29,7 @@ pi-hledit-diff/
 ```json
 {
   "ok": true,
-  "version": "3.3.1",
+  "version": "3.4.0",
   "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,
@@ -115,7 +115,7 @@ pi-hledit-diff/
 }
 ```
 
-- 默认 `pattern` 使用 Go RE2 正则；`literal:true` 切换为字面子串，`context` 添加匹配行前后的物理行，`ignore_case` 启用大小写不敏感匹配。
+- 默认 `pattern` 使用 RE2 兼容正则；Rust matcher 保留 ASCII Perl 类和词边界、Unicode 15.0 分类与大小写折叠。`literal:true` 切换为字面子串，`context` 添加匹配行前后的物理行，`ignore_case` 启用大小写不敏感匹配。
 - 宽匹配模式会被 CLI 拒绝为 `broad_pattern`，不能用搜索工具伪装连续整文件读取；需要查看连续文件范围时改用 `hledit_read_anchors`。
 - 固定调用 `search`。结果额外包含 `totalMatches`，`nextOffset` 仍是物理行游标；零命中不生成新 proof：响应 revision 与现有 evidence 相同时保留旧证据并回显当前 `proof_id`，revision 不同时清除该 canonical path 的旧 proof。
 - 搜索返回的完整匹配/上下文行可以贡献局部 proof；搜索结果不保证连续覆盖，范围编辑缺口由 apply 内部自动分页补读。
@@ -218,7 +218,7 @@ Batch wire v3 是唯一 canonical 形状：`replace` 必须带 `lines`（可为�
 
 CLI 写入保留非空结果的 BOM 与未修改行尾，真实空末行必要地补 terminator；正文以 CR 结尾的已终止行使用 CRLF，避免丢失正文 CR。会把首字符 U+FEFF 重新解释为 BOM 的修改在 check/apply 共同入口零写入拒绝，删除全部逻辑行则生成真正空文件。CLI 拒绝 multi-hardlink target，保留 symlink entry，并在 temp sync 后、atomic replace 前复检原始字节 revision。recheck 与 rename 之间仍有极短外部竞态，不宣称线性化 CAS。
 
-Windows 使用 `golang.org/x/sys/windows` 处理 DACL，正文写入临时文件前即复制目标权限与继承状态；已有目标由 `ReplaceFileW` 保留附加流，flags 为 0，不忽略权限或元数据合并失败。每次事务预留唯一恢复路径：成功后仅清理本次文件，清理失败以含路径的成功 warning 返回；1177 部分替换失败时以不覆盖方式把原文件移回目标路径，成功即为零写入 `io` 错误。移回失败，或文档外错误后目标缺失时，保留候选与恢复文件，CLI 非零退出并输出路径，使插件走 `outcome_unknown` 失效旧 proof，并指示模型不要重建或覆盖目标、把路径交给用户处理。禁止覆盖式回滚或按名称、时间清理其他文件。
+Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标权限与继承状态；已有目标由 `ReplaceFileW` 保留附加流，flags 为 0，不忽略权限或元数据合并失败。每次事务预留唯一恢复路径：成功后仅清理本次文件，清理失败以含路径的成功 warning 返回；1177 部分替换失败时以不覆盖方式把原文件移回目标路径，成功即为零写入 `io` 错误。移回失败，或文档外错误后目标缺失时，保留候选与恢复文件，CLI 非零退出并输出路径，使插件走 `outcome_unknown` 失效旧 proof，并指示模型不要重建或覆盖目标、把路径交给用户处理。未知结果必须禁用候选 TempPath 的 RAII 清理；禁止覆盖式回滚或按名称、时间清理其他文件。
 
 ## 失败与子进程语义
 
@@ -294,16 +294,17 @@ npm run test:bundled
 
 ```bash
 cd ../cli
-gofmt -d *.go
-go vet ./...
-go test ./...
-CGO_ENABLED=0 GOAMD64=v1 go build -buildvcs=false -trimpath -ldflags="-s -w" -o ../pi-hledit-diff/bin/hledit.exe .
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+pwsh -NoProfile -File build-bundle.ps1
+pwsh -NoProfile -File build-bundle.ps1 -VerifyOnly
 cd ../pi-hledit-diff
 npm run test:bundled
 npm run check
 ```
 
-`test:bundled` 必须覆盖 CLI contract、anchor hash 对拍、三工具激活与 tool-result 集成。tracked bundled CLI 固定使用 Go 1.26.3、`CGO_ENABLED=0`、`GOAMD64=v1` 与上述参数构建，`-buildvcs=false` 保证工作树状态不进入制品。CI 的 Windows job 必须在 build step 前安装 Node 依赖并运行该脚本，然后以同一工具链重建、逐字节校验 tracked binary，再次运行 bundled 与 full check。
+`test:bundled` 必须覆盖 CLI contract、anchor hash 对拍、三工具激活与 tool-result 集成。Rust 工具链和依赖分别固定在 `rust-toolchain.toml` 与 `Cargo.lock`，Windows release 使用 Rust 随附 linker 与静态 CRT。构建脚本同步生成 binary、第三方许可和 `hledit.build.json`，后者记录规范化源码指纹、binary SHA-256、许可摘要与工具链。CI 在覆盖 tracked binary 前核对指纹并运行 bundled tests，再从源码构建并运行同一契约与 full check。平台运行库可能随构建机不同，不能把源码指纹检查描述成跨主机逐字节可复现或真实性签名；源码、锁文件、构建脚本或产物变化后必须重新构建与核对。
 
 ## 真实 Pi 验收
 
@@ -313,7 +314,7 @@ npm run check
 pi --no-extensions -e ./pi-hledit-diff/index.ts
 ```
 
-用 `/hledit-status` 确认 CLI 3.3.1 与 capability 健康，并覆盖：
+用 `/hledit-status` 确认 CLI 3.4.0 与 capability 健康，并覆盖：
 
 1. 连续 range read、正则/字面量 search/context 和四种 anchored operation；
 2. proof 缺失、stale、token 复用零写入、显式重读后成功；

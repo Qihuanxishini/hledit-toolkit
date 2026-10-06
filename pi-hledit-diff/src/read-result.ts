@@ -239,7 +239,7 @@ function readErrorHint(facts: ReadErrorFacts): string | undefined {
 		return "Provide a concrete text file path. For a directory-wide search, locate candidate files first and search them individually.";
 	}
 	if (facts.code === "pattern") {
-		return "hledit matches with Go RE2, which has no lookahead, lookbehind, or backreferences. Rewrite the pattern in RE2 syntax, or pass literal:true to match the text exactly.";
+		return "hledit uses RE2-compatible matching, which has no lookahead, lookbehind, or backreferences. Rewrite the pattern in RE2 syntax, or pass literal:true to match the text exactly.";
 	}
 	if (facts.code === "broad_pattern") {
 		return "Search for concrete text, or add a subpattern that constrains the match. To inspect a contiguous region, call hledit_read_anchors instead.";

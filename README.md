@@ -6,7 +6,7 @@
 
 | 目录 | 用途 |
 | --- | --- |
-| [`cli/`](./cli/) | Go 编写的 `hledit` CLI：只提供结构化 `read-range`、`search` 与原子 `batch` 协议；使用 v2 `LN#HASH`（三位 URL-safe Base64）锚点和 raw-byte revision。 |
+| [`cli/`](./cli/) | Rust 编写的 `hledit` CLI：只提供结构化 `read-range`、`search` 与原子 `batch` 协议；使用 v2 `LN#HASH`（三位 URL-safe Base64）锚点和 raw-byte revision。 |
 | [`pi-hledit-diff/`](./pi-hledit-diff/) | Pi 插件：注册严格的 `hledit_read_anchors`、`hledit_search_anchors` 与 `hledit_apply_file_changes` 工具，并提供 evidence 管理和 diff 渲染。 |
 
 插件当前面向 Windows x64，仓库内附带 `pi-hledit-diff/bin/hledit.exe`。
@@ -48,8 +48,9 @@ CLI：
 
 ```bash
 cd cli
-go test ./...
-go vet ./...
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
 ```
 
 Pi 插件：
@@ -66,7 +67,7 @@ npm run check
 
 ```json
 {
-  "version": "3.3.1",
+  "version": "3.4.0",
   "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "batchInsertAfter": true,

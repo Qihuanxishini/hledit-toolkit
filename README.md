@@ -17,30 +17,15 @@
 - [`cli/SPEC.md`](./cli/SPEC.md)：CLI 的当前实现与协议契约。
 - [`pi-hledit-diff/README.md`](./pi-hledit-diff/README.md)：Pi 插件工作流和安装说明。
 - [`pi-hledit-diff/MAINTENANCE.md`](./pi-hledit-diff/MAINTENANCE.md)：插件与 bundled CLI 的维护约束。
-- [`cli/CHANGELOG.md`](./cli/CHANGELOG.md)：CLI 版本变更记录。
 
 ## 核心特点
 
-- 使用 v2 `LN#HASH`（三位 URL-safe Base64 hash）锚点检测读取后发生的文件变化，拒绝 stale 修改。
-- 一次 batch 原子提交同一文件中的多个非冲突修改，并在原子替换前复检原始字节 revision。
-- 单次重建文件，避免多 edit 场景下反复复制整份内容。
-- batch 成功后直接返回 `updatedAnchorSpans` 与 `editDeltas`，无需再次启动 `read-range`；每个产出了行的编辑各得一个精确覆盖产出区间的 span，插件用 `editDeltas` 把未受影响行的读取证据平移到新行号，顺序多次编辑同一文件通常不再需要中间重读。
-- 模型提交编辑前的旧锚点时，插件会对持续存活的平移目标给出 verified rename；若旧 token 被当前行重新占用，或其源行/alias 目标被消费失联，则在显式重读前拒绝立即与延迟复用。
-- JSON 读取返回基于原始字节的 SHA-256 revision；插件在 canonical file queue 内维护有界 evidence，并将完整消费行 proof 注入 anchored batch。公开 change 只需复制首尾或依附行的 `LN#HASH` token。
-- CLI 健康时，三个专用工具替代内置 `edit`；apply 始终独立检查当前 branch 的读取证据，CLI 缺失或不兼容时恢复内置 `edit`。
-- 插件工具参数采用严格 schema 并启用 provider 侧 constrained sampling（`strict: prefer`，不支持的模型自动回落）；`insufficient_read_proof` 作为可恢复补读结果返回，其他失败继续转换为真正的 Pi 工具错误。
-- proof 缺口的定向补读有硬预算（1,200 行 / 4 页 / 96 KiB）：它把读到的每一行回灌进模型上下文，跨度超限时不启动任何子进程，直接返回 `proof_recovery_budget_exceeded` 与显式分块读取指令。
-- CLI 只有 `read-range`（连续物理行）和 `search`（RE2/字面量、上下文、大小写选项）两种 JSON 读取路径；不存在旧 `read`、`anchors`、`--grep`、ANSI/纯文本或单项写命令。
-- replace/delete 范围的前后物理边界上允许位置确定的 insert（内容依附其锚点行）；落入范围内部边界的 insert 仍整批拒绝。
-- 插件内置主题自适应的锚点预览与统一/双栏 diff 渲染；结构化 preview 按 UTF-8 字节限制，截断时显示 CLI 校验的完整增删统计。
-
-### 行尾与编码行为
-
-- revision 基于原始字节，BOM、CRLF/LF 与末尾换行差异都会改变 revision。
-- 写入时逐行保留 terminator：未修改行的行尾字节保持原样，混合行尾文件不再被整体规范化，也不再产生 mixed line ending warning。编辑产生的新行使用编辑位置附近的局部行尾，replacement 最后一行继承被替换范围末行的 terminator。
-- 孤立 `\r` 属于行文本；正文以 CR 结尾且需要终止行时使用 CRLF，防止正文 CR 被吞掉。非空结果保留既有 UTF-8 BOM；会把首字符 U+FEFF 重新解释为 BOM 的请求在写入前拒绝。
-- 空字符串表示真实的一行空白文本；生成空末行时必要地补行尾，其他情况保持末尾换行状态。删除全部逻辑行会生成真正的空文件；实际 NUL 字符不能写入。
-- Windows 写入保留目标 DACL、继承状态与 NTFS 附加流，临时正文写入前即复制 DACL。部分替换失败时以不覆盖方式移回原文件；无法移回时按结果未知处理，保留并报告本次恢复文件。
+- **原子编辑**：一次 batch 验证同一文件全部变更，单次重建，并在替换前复检 raw-byte revision。
+- **安全续编**：proof 与锚点共同定义目标身份。成功编辑返回新 proof；旧目标仅在可验证存续时迁移，不因 token 复用而误认新行。
+- **有界证据与恢复**：完整源行形成 proof，缺口可定向补读；越界、截断或容量不足给出明确下一步，不自动重试写入。
+- **结构化搜索**：RE2 兼容正则与字面量搜索，支持上下文、大小写选项及物理行分页。
+- **编码与写入保护**：保留 BOM、局部行尾及 Windows 权限/附加流；未知写入结果保留恢复材料，不盲目覆盖。
+- **Pi 集成**：分支证据重放、主题自适应锚点预览和统一/双栏 diff；CLI 不可用时恢复内置 `edit`。
 
 ## 开发验证
 
@@ -61,30 +46,7 @@ npm ci
 npm run check
 ```
 
-## CLI 与插件契约
-
-插件要求 bundled CLI 的 `capabilities` 至少包含：
-
-```json
-{
-  "version": "3.4.0",
-  "anchorProtocolV2": true,
-  "readRangeMetadata": true,
-  "batchInsertAfter": true,
-  "batchCheck": true,
-  "batchUpdatedAnchorSpans": true,
-  "batchStaleContext": true,
-  "batchWireV3": true,
-  "batchReadProof": true,
-  "batchEditDeltas": true,
-  "searchIgnoreCase": true,
-  "searchRegex": true,
-  "searchLiteral": true,
-  "search": true
-}
-```
-
-读取结果必须携带 `revision`、`totalLines` 和严格截断元数据。连续范围或专用 search 返回的完整匹配行都可形成局部写入证据；revision 与已读 anchors 保持在内部，不加入模型工具 schema。batch wire v3 中 `delete` 必须省略 `lines`，旧 `delete.lines:[]` 形状直接拒绝。成功 batch 响应必须携带新 `revision`、与 `editDeltas` 产出区间逐项对应的 `updatedAnchorSpans` 与非空且与请求一致的 `editDeltas`（插件逐项互核，内部矛盾按结果未知处理）；失败可按需返回 `currentRevision` 和同一快照的 `currentAnchors`。插件要求 CLI 3.x、拒绝已删除的 `contentReplaceOnce` 字段，并且不保留旧 CLI、旧 wire、无 proof batch 写入、内容匹配替换或自动 stale 重试路径。
+构建产物更新、capability 门禁和完整验收流程见 [维护说明](./pi-hledit-diff/MAINTENANCE.md#验证与-binary-更新)。CLI wire 字段与错误语义以 [协议规范](./cli/SPEC.md) 为准。
 
 ## 开发仓库与运行目录
 

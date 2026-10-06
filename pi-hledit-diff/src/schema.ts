@@ -10,7 +10,7 @@ export const MAX_REPLACEMENT_TEXT_BYTES = 1024 * 1024;
 export const MAX_REPLACEMENT_LINE_COUNT = 20_000;
 
 const PATH_SCHEMA = Type.String({ minLength: 1, description: "One text file path; not a directory." });
-const ANCHOR_SCHEMA = Type.String({ pattern: ANCHOR_PATTERN, description: "Current LN#HASH token." });
+const ANCHOR_SCHEMA = Type.String({ pattern: ANCHOR_PATTERN, description: "This proof's LN#HASH token." });
 const REPLACEMENT_TEXT_SCHEMA = Type.String({
 	// [喵喵喵]: 单项不设字符上限；UTF-8 字节数与 batch 聚合限制由 execute 边界精确校验。
 	description: "Raw text; \\n separates lines; no LN#HASH prefixes.",
@@ -71,7 +71,7 @@ export const HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA = Type.Object(
 export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 	{
 		path: PATH_SCHEMA,
-		proof_id: Type.String({ minLength: 1, description: "Current proof_id returned for this path; use the latest read/search after rereading." }),
+		proof_id: Type.String({ minLength: 1, description: "Use submitted anchors' generation for this path; new proof with its Updated anchors; do not mix generations." }),
 		changes: Type.Array(
 			Type.Union([REPLACE_RANGE_CHANGE_SCHEMA, DELETE_RANGE_CHANGE_SCHEMA, INSERT_CHANGE_SCHEMA]),
 			{

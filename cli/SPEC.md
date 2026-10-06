@@ -71,7 +71,8 @@ hledit read-range <file> [--offset N] [--limit M]
   "lines": [
     { "line": 51, "anchor": "51#aB3", "text": "source" }
   ],
-  "truncated": false
+  "truncated": true,
+  "nextOffset": 52
 }
 ```
 
@@ -103,11 +104,11 @@ hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N
 }
 ```
 
-`totalMatches` counts matching lines before context expansion. Zero matches return success with `totalMatches:0`, an empty `lines` array, `truncated:false`, and no `nextOffset`. Empty or invalid patterns return `error:"pattern"`. Broad whole-file expressions such as `.*`, `.+`, and their anchored or dot-all variants return `error:"broad_pattern"`; callers must use `read-range` for contiguous source.
+`totalMatches` counts matching lines in the entire file before context expansion, independently of `offset`. The offset is a lower bound on returned source lines; earlier matches may still contribute trailing context. An empty returned page can therefore have a nonzero `totalMatches`. Zero matches in the file return success with `totalMatches:0`, an empty `lines` array, `truncated:false`, and no `nextOffset`. Empty or invalid patterns return `error:"pattern"`. Broad whole-file expressions such as `.*`, `.+`, and their anchored or dot-all variants return `error:"broad_pattern"`; callers must use `read-range` for contiguous source.
 
 Both read verbs reject directories, binary files, and invalid UTF-8 with structured `directory`, `binary`, or `encoding` errors. They cap the serialized JSON page at 50 KiB.
 
-The read path owns one validated UTF-8 buffer and borrows logical lines from it without allocating whole-file line/terminator arrays. Search counts matches first so the page budget includes the actual `totalMatches`, then lazily expands matching windows into the bounded page. Full-file scanning is still required for revision, line count, and match count; paging bounds response memory, not source scanning.
+The read path owns one validated UTF-8 buffer and borrows logical lines from it without allocating whole-file line/terminator arrays. One matching pass counts all matching lines and collects bounded page candidates, including context; the page is then rendered with the exact `totalMatches` included in its JSON byte budget. No full-file match index is retained. Full-file scanning is still required for revision, line count, and match count; paging bounds response memory, not source scanning.
 
 ## 4. Batch edit protocol
 
@@ -174,7 +175,7 @@ A stale response may include `remaps`, `currentRevision`, and a bounded same-sna
 An anchor has the exact grammar:
 
 ```text
-^(\d+)#([A-Za-z0-9_-]{3})$
+^([1-9]\d*)#([A-Za-z0-9_-]{3})$
 ```
 
 The hash is the low 18 bits of FNV-1a-32 encoded with URL-safe Base64. Its input trims trailing `\r` and Unicode White_Space. Lines with no Unicode 15.0 letter (`L*`) or decimal digit (`Nd`) additionally mix their 1-indexed line number into the hash, distinguishing otherwise identical structural lines.

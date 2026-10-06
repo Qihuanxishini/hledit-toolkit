@@ -1,4 +1,3 @@
-import { MAX_READ_LIMIT, MAX_SEARCH_LIMIT } from "./read-args.ts";
 import {
 	MAX_FILE_CHANGE_COUNT,
 	MAX_REPLACEMENT_LINE_COUNT,
@@ -25,33 +24,14 @@ function parseIntegerLike(value: unknown): unknown {
 	return value;
 }
 
-function clampReadOffset(value: unknown): unknown {
-	const parsed = parseIntegerLike(value);
-	if (typeof parsed !== "number" || !Number.isSafeInteger(parsed)) return parsed;
-	return Math.max(1, parsed);
-}
-
-function clampReadLimit(value: unknown, maximum: number): unknown {
-	const parsed = parseIntegerLike(value);
-	if (typeof parsed !== "number" || !Number.isSafeInteger(parsed)) return parsed;
-	if (parsed < 1) return undefined;
-	return Math.min(parsed, maximum);
-}
-
-
-
-function clampReadContext(value: unknown): unknown {
-	const parsed = parseIntegerLike(value);
-	if (typeof parsed !== "number" || !Number.isSafeInteger(parsed)) return parsed;
-	return Math.max(0, parsed);
-}
+// [喵喵喵]: 仅转换无歧义的整数表示；保留非法数值供宿主 schema 拒绝，不替调用方改请求。
 
 export function prepareReadAnchorsArguments(args: unknown): ReadAnchorsParams {
 	if (!isRecord(args)) return args as ReadAnchorsParams;
 	return {
 		...args,
-		offset: clampReadOffset(args.offset),
-		limit: clampReadLimit(args.limit, MAX_READ_LIMIT),
+		offset: parseIntegerLike(args.offset),
+		limit: parseIntegerLike(args.limit),
 	} as ReadAnchorsParams;
 }
 
@@ -59,9 +39,9 @@ export function prepareSearchAnchorsArguments(args: unknown): SearchAnchorsParam
 	if (!isRecord(args)) return args as SearchAnchorsParams;
 	return {
 		...args,
-		offset: clampReadOffset(args.offset),
-		limit: clampReadLimit(args.limit, MAX_SEARCH_LIMIT),
-		context: clampReadContext(args.context),
+		offset: parseIntegerLike(args.offset),
+		limit: parseIntegerLike(args.limit),
+		context: parseIntegerLike(args.context),
 	} as SearchAnchorsParams;
 }
 export type FileChangeInputDecoding =

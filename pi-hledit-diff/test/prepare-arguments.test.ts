@@ -5,17 +5,19 @@ import { Value } from "typebox/value";
 import { decodeFileChangeInput, prepareReadAnchorsArguments, prepareSearchAnchorsArguments } from "../src/prepare-arguments.ts";
 import { HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, MAX_REPLACEMENT_LINE_COUNT, MAX_REPLACEMENT_TEXT_BYTES } from "../src/schema.ts";
 
-test("read and search argument preparation clamp only their own fields", () => {
-	const read = prepareReadAnchorsArguments({ path: "src/a.ts", offset: 0, limit: 5000 });
-	assert.deepEqual(read, { path: "src/a.ts", offset: 1, limit: 2000 });
-	assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, read), true);
-
-	const search = prepareSearchAnchorsArguments({ path: "src/a.ts", pattern: "token", offset: 0, limit: 5000, context: -2 });
-	assert.deepEqual(search, { path: "src/a.ts", pattern: "token", offset: 1, limit: 2000, context: 0 });
-	assert.equal(Value.Check(HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, search), true);
-
-	const fractional = prepareReadAnchorsArguments({ path: "src/a.ts", offset: 1.5 });
-	assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, fractional), false);
+test("read and search reject invalid values instead of silently clamping them", () => {
+	for (const [prepare, schema, base] of [
+		[prepareReadAnchorsArguments, HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts" }],
+		[prepareSearchAnchorsArguments, HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts", pattern: "token" }],
+	] as const) {
+		assert.equal(Value.Check(schema, prepare(base)), true);
+		assert.equal(Value.Check(schema, prepare({ ...base, offset: "1", limit: "2000" })), true);
+		for (const invalid of [{ offset: 0 }, { offset: -1 }, { offset: 1.5 }, { limit: 0 }, { limit: -1 }, { limit: 1.5 }, { limit: 2001 }]) {
+			assert.equal(Value.Check(schema, prepare({ ...base, ...invalid })), false, JSON.stringify(invalid));
+		}
+	}
+	assert.equal(Value.Check(HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA,
+		prepareSearchAnchorsArguments({ path: "src/a.ts", pattern: "token", context: -1 })), false);
 });
 
 test("decodeFileChangeInput converts newline-delimited text once at the execute boundary", () => {

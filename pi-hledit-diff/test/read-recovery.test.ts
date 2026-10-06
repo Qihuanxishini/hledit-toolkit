@@ -11,7 +11,7 @@ import { readAnchorsResult } from "../src/read-result.ts";
 import type { TextResult } from "../src/result.ts";
 
 for (const knownLines of [9977, 9978]) {
-	test(`recovery records each page once and replays the same capacity decision (${knownLines} cached lines)`, async (t) => {
+	test(`recovery records each page once and replays the same capacity decision (${knownLines} cached lines)`, async () => {
 		const cwd = process.cwd();
 		const path = resolve(cwd, "recovery-capacity.txt");
 		const totalLines = knownLines + 2;
@@ -38,13 +38,14 @@ for (const knownLines of [9977, 9978]) {
 			live.updateFromToolResult(HLEDIT_READ_ANCHORS_TOOL, result.details, cwd);
 			history.push({ toolName: HLEDIT_READ_ANCHORS_TOOL, details: result.details });
 		}
-		const recording = t.mock.method(live, "recordRead");
+		const requiredRanges = [{ start: knownLines + 1, end: totalLines }];
 		const selection = live.selectProof(path, [{
 			operation: "delete_range", start_anchor: row(knownLines + 1).anchor, end_anchor: row(totalLines).anchor,
 		}], live.getProofId(path));
 		assert.ok("failure" in selection);
 		const recovered = await recoverMissingReadProof({
 			failure: selection.failure, path, evidencePath: path, cwd, signal: undefined,
+			requiredRanges, canRetain: (reads, proofId) => live.canRetainRecovery(path, reads, proofId, requiredRanges),
 			run: async (args) => {
 				const offset = Number(args[args.indexOf("--offset") + 1]);
 				// [喵喵喵]: 两个 30 KiB 源行各占一页，精确窗口不再重读已知上下文。
@@ -63,9 +64,9 @@ for (const knownLines of [9977, 9978]) {
 				type: "message", message: { role: "toolResult", ...entry },
 			})) },
 		} as never);
-		assert.equal(recording.mock.callCount(), 2);
 		assert.deepEqual(live.anchorTokens(path), replayed.anchorTokens(path));
-		assert.equal(live.anchorTokens(path).size, knownLines === 9977 ? totalLines : 1);
+		assert.equal(live.anchorTokens(path).size, knownLines === 9977 ? totalLines : 2);
+		assert.ok("proof" in live.selectProof(path, [{ operation: "delete_range", start_anchor: row(knownLines + 1).anchor, end_anchor: row(totalLines).anchor }], recovered.details.proofId));
 		for (const line of [1, knownLines + 1, totalLines]) {
 			const changes = [{ operation: "delete_range" as const, start_anchor: row(line).anchor, end_anchor: row(line).anchor }];
 			assert.deepEqual(
@@ -117,11 +118,13 @@ for (const scenario of ["nearby", "budget", "changed-before", "changed-between"]
 		assert.equal(live.getProofId(path), replay.getProofId(path));
 		if (scenario === "nearby") {
 			assert.equal(calls, 1);
+			assert.equal(recovered.details.error?.nextAction, "review_and_retry");
 			assert.equal(recovered.details.recoveredReads?.[0]?.lines.length, 13);
 			assert.ok("proof" in live.selectProof(path, changes, recovered.details.proofId));
 		} else if (scenario === "budget") {
 			assert.equal(calls, 4);
 			assert.equal(recovered.details.error?.code, "proof_recovery_budget_exceeded");
+			assert.equal(recovered.details.error?.nextAction, "read_target");
 			assert.deepEqual(recovered.details.recoveredReads?.flatMap((read) => read.lines.map((line) => line.line)), [2, 102, 202, 302]);
 			assert.match(recovered.content[0]!.text, /Remaining read windows: line 402/);
 			const remaining = live.selectProof(path, changes, recovered.details.proofId);
@@ -130,6 +133,7 @@ for (const scenario of ["nearby", "budget", "changed-before", "changed-between"]
 		} else {
 			assert.equal(calls, scenario === "changed-before" ? 1 : 2);
 			assert.equal(recovered.details.error?.code, "proof_recovery_source_changed");
+			assert.equal(recovered.details.error?.nextAction, "relocate_target");
 			assert.equal(recovered.details.recoveredReads, undefined);
 			assert.equal(recovered.details.proofId, undefined);
 			assert.equal(live.getProofId(path), undefined);

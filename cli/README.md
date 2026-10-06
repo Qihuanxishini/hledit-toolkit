@@ -42,7 +42,7 @@ hledit batch [--check] <file>
 ### Read a contiguous window
 
 ```bash
-hledit read-range main.go --offset 40 --limit 20
+hledit read-range main.rs --offset 40 --limit 1
 ```
 
 ```json
@@ -50,8 +50,9 @@ hledit read-range main.go --offset 40 --limit 20
   "ok": true,
   "revision": "sha256:<digest>",
   "totalLines": 120,
-  "lines": [{"line":40,"anchor":"40#aB3","text":"package main"}],
-  "truncated": false
+  "lines": [{"line":40,"anchor":"40#aB3","text":"fn main() {"}],
+  "truncated": true,
+  "nextOffset": 41
 }
 ```
 
@@ -60,18 +61,18 @@ The `nextOffset` field appears when another page is needed. A `textTruncated:tru
 ### Search anchors
 
 ```bash
-hledit search main.go 'func\\s+main' --context 2
-hledit search main.go 'fmt.Println' --literal --ignore-case
+hledit search main.rs 'fn\s+main' --context 2
+hledit search main.rs 'println!' --literal --ignore-case
 ```
 
-The required pattern uses RE2-compatible syntax unless `--literal` is given. Perl character classes and word boundaries remain ASCII; Unicode categories and case folding use Unicode 15.0. Search pagination uses a physical source-line cursor, so a returned `nextOffset` can be passed directly as `--offset`. `totalMatches` counts matches before context expansion and is included in the final JSON budget. Empty patterns and whole-file patterns such as `.*` are rejected; use `read-range` to read source contiguously.
+The required pattern uses RE2-compatible syntax unless `--literal` is given. Perl character classes and word boundaries remain ASCII; Unicode categories and case folding use Unicode 15.0. Search pagination uses a physical source-line cursor, so a returned `nextOffset` can be passed directly as `--offset`. `totalMatches` counts matching lines in the entire file before context expansion, independently of the requested offset. Empty patterns and whole-file patterns such as `.*` are rejected; use `read-range` to read source contiguously.
 
 ### Apply an atomic batch
 
 `batch` reads one strict JSON document from stdin:
 
 ```bash
-cat <<'JSON' | hledit batch main.go
+cat <<'JSON' | hledit batch main.rs
 {
   "edits": [
     {"op":"replace","pos":"12#aB3","lines":["new line"]},
@@ -85,7 +86,7 @@ cat <<'JSON' | hledit batch main.go
 JSON
 ```
 
-Use `batch --check main.go` with the same request to validate without writing. Batch wire v3 is exact:
+Use `batch --check main.rs` with the same request to validate without writing. Batch wire v3 is exact:
 
 - `replace` requires a `lines` array; an empty array deletes its target range.
 - `delete` omits `lines`.
@@ -108,4 +109,3 @@ Confirmed zero-write failures return JSON on stdout with exit code `0`; malforme
 ## Further reference
 
 - [`SPEC.md`](./SPEC.md) — complete machine protocol
-- [`CHANGELOG.md`](./CHANGELOG.md) — version history

@@ -77,6 +77,7 @@ function isRecoveryRead(value: unknown): value is HleditReadMetadata {
 // 已完成的补读页记进 evidence，若对应的 code 不在集合内，branch replay 就会静默丢掉这些页，
 // 实时状态与重放状态从此分歧（见 read-recovery.ts 的三条返回路径）。
 export const READ_PROOF_RECOVERY_CODES = [
+	"evidence_capacity_exceeded",
 	"insufficient_read_proof",
 	"source_line_truncated",
 	"proof_recovery_read_failed",
@@ -284,12 +285,13 @@ export function formatReadMetadata(read: HleditReadMetadata, proofId?: string, m
 	} else if (read.textTruncated) {
 		notice = `-- Source line text was truncated${lastLine !== undefined ? `; the last returned line is ${lastLine}` : ""} (${totalLines} lines total); rereading line ranges cannot recover the omitted in-line text. Truncated lines cannot establish edit proof; if the edit target includes such a line, rewrite the file with write instead.${read.nextOffset !== undefined ? ` To read later lines, continue with offset ${read.nextOffset}.` : ""} --`;
 	} else if (pattern !== undefined) {
+		const counts = `${read.totalMatches !== undefined ? `${read.totalMatches} matches in file; ` : ""}search offset ${read.requested.offset}; ${totalLines} lines total`;
 		if (lineCount === 0) {
-			notice = `-- No lines matching ${JSON.stringify(pattern)} were found (${totalLines} lines total) --`;
+			notice = `-- No lines matching ${JSON.stringify(pattern)} were found at or after line ${read.requested.offset} (${counts}) --`;
 		} else if (read.nextOffset !== undefined) {
-			notice = `-- Returned ${lineCount} matching lines with context, ending at line ${lastLine} (${totalLines} lines total); continue with offset ${read.nextOffset} --`;
+			notice = `-- Returned ${lineCount} source lines (matches and context), ending at line ${lastLine} (${counts}); continue with offset ${read.nextOffset} --`;
 		} else {
-			notice = `-- Returned ${lineCount} matching lines with context${read.totalMatches !== undefined ? ` (${read.totalMatches} matches total)` : ""} (${totalLines} lines total) --`;
+			notice = `-- Returned ${lineCount} source lines (matches and context) (${counts}) --`;
 		}
 	} else if (read.nextOffset !== undefined) {
 		notice = `-- Showing lines ${firstLine}-${lastLine} of ${totalLines}; continue with offset ${read.nextOffset} --`;

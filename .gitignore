@@ -26,6 +26,3 @@ Thumbs.db
 .idea/
 .pi/
 .pi-lens/
-
-# The upstream CLI workflow is retained as source reference; root CI is authoritative.
-/cli/.github/

@@ -98,6 +98,7 @@ export function producedLineRangesFromEditDeltas(deltas: HleditEditDelta[]): Pro
 }
 
 export type HleditErrorMetadata = {
+	nextAction?: "read_target" | "relocate_target" | "reduce_batch" | "review_and_retry" | "resolve_read_error" | "inspect_source";
 	code: string;
 	message: string;
 	rawMessage?: string;
@@ -122,9 +123,15 @@ export type HleditDetails = Record<string, unknown> & {
 	evidencePath?: string;
 	revision?: string;
 	proofId?: string;
+	evidenceVersion?: 2;
+	evidenceOrder?: { timeline: string; sequence: number };
+	evidenceDropped?: true;
+	baseProofId?: string;
 	updatedAnchorSpans?: BatchAnchorContext[];
+	unprovenAnchors?: string[];
 	read?: HleditReadMetadata;
 	recoveredReads?: HleditReadMetadata[];
+	recoveryRequiredRanges?: Array<{ start: number; end: number }>;
 	recoveryReadError?: { disposition: HleditDisposition; error?: HleditErrorMetadata };
 	error?: HleditErrorMetadata;
 	resolvedAnchors?: Array<{ requested: string; current: string }>;

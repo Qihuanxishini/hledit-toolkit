@@ -7,8 +7,8 @@ const ANCHOR_HASH_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 
 // v2 协议的 Unicode White_Space 精确集合，用转义序列避免不可见字符。
 // 与 JS 的 \s 或 trimEnd() 不同：包含 U+0085 (NEL)，不包含 U+FEFF (BOM)。
-const TRAILING_WHITESPACE = new RegExp(
-	"[\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]+$",
+const WHITESPACE_CHARACTER = new RegExp(
+	"^[\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]$",
 	"u",
 );
 
@@ -21,7 +21,11 @@ const FNV_OFFSET_BASIS = 0x811c9dc5;
 const FNV_PRIME = 0x01000193;
 
 export function computeLineHash(lineNum: number, line: string): string {
-	const trimmed = line.replace(TRAILING_WHITESPACE, "");
+	// [喵喵喵]: 从末尾逐字符检查，避免长内部空白使未锚定的尾空白正则平方级回溯。
+	// White_Space 全部位于 BMP；按 UTF-16 code unit 扫描不会截断正文中的代理对。
+	let end = line.length;
+	while (end > 0 && WHITESPACE_CHARACTER.test(line[end - 1]!)) end -= 1;
+	const trimmed = line.slice(0, end);
 
 	let hash = FNV_OFFSET_BASIS;
 	const mix = (byte: number) => {

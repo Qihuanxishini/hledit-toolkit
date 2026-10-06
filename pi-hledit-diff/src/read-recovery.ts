@@ -7,7 +7,7 @@ import {
 } from "./read-evidence.ts";
 import type { HleditReadRunner } from "./read-transaction.ts";
 import { formatReadMetadata, readAnchorsResult } from "./read-result.ts";
-import { attachEvidencePath, rejectedToolResult, type HleditReadMetadata, type TextResult } from "./result.ts";
+import { attachEvidencePath, rejectedToolResult, type HleditErrorMetadata, type HleditReadMetadata, type TextResult } from "./result.ts";
 
 // 编辑证明缺口的定向补读：在调用方持有的 file mutation queue 事务内收集缺失行，
 // 把源码原样返回给调用方复核后显式重提 batch；证据由调用方在队列放行前统一登记。
@@ -30,6 +30,9 @@ export type ReadProofRecoveryRequest = {
 	cwd: string;
 	signal: AbortSignal | undefined;
 	run: HleditReadRunner;
+	requiredLastLine?: number;
+	requiredRanges?: Array<{ start: number; end: number }>;
+	canRetain?: (reads: readonly HleditReadMetadata[], proofId: string) => boolean;
 };
 
 // failure 没给出目标区间时无处可读（例如锚点行号本身不可用），交回调用方走普通拒绝。
@@ -58,6 +61,7 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 		code: string,
 		message: string,
 		instructions: string[],
+		nextAction: NonNullable<HleditErrorMetadata["nextAction"]>,
 		extraDetails: Record<string, unknown> = {},
 	): TextResult => {
 		const proofIdInstruction = proofId && !instructions.some((instruction) => instruction.includes(`proof_id: ${proofId}`))
@@ -65,13 +69,14 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 			: [];
 		const rejected = rejectedToolResult(
 			[diagnosis, ...proofIdInstruction, ...instructions, ...renderedPages].filter(Boolean).join("\n"),
-			{ code, message, ...failureContext, ...(changedRevision ? { currentRevision: changedRevision } : {}) },
+			{ code, message, ...failureContext, nextAction, ...(changedRevision ? { currentRevision: changedRevision } : {}) },
 		);
 		return attachEvidencePath({
 			...rejected,
 			details: {
 				...rejected.details,
 				...(proofId ? { proofId } : {}),
+				...(request.requiredRanges ? { recoveryRequiredRanges: request.requiredRanges } : {}),
 				...(reads.length > 0 ? { recoveredReads: [...reads] } : {}),
 				...extraDetails,
 			},
@@ -88,7 +93,7 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 		`${message} ${reads.length > 0 ? `The ${reads.length} retained page(s) are recorded below; recovery is incomplete.` : "No recovery read was retained, so no source is included below."}`,
 		remainingInstruction(),
 		"If the change does not need to consume that many source lines, narrow start_anchor/end_anchor instead.",
-	]);
+	], "read_target");
 
 	const plannedLines = pending.reduce((count, range) => count + range.end - range.start + 1, 0);
 	if (plannedLines > MAX_RECOVERY_LINES) {
@@ -107,10 +112,16 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 			evidencePath,
 		);
 		if (readResult.details.disposition !== "succeeded" || !readResult.details.read) {
+			if (readResult.details.error?.code === "range") {
+				return recoveryResult("proof_recovery_read_failed", "The requested source range is outside the current file.", [
+					readResult.content[0]?.text ?? "",
+					"Stop this recovery plan. Do not retry the same offsets or batch: relocate the intended target within the current file and obtain fresh anchors. If the file is empty, no anchors exist; adding content requires write.",
+				], "relocate_target", { recoveryReadError: readResult.details });
+			}
 			const message = "The targeted recovery read failed before edit proof could be established.";
 			return recoveryResult("proof_recovery_read_failed", message,
 				[`${message} Resolve the read error below before resubmitting.`, readResult.content[0]?.text ?? "", remainingInstruction()],
-				{ recoveryReadError: readResult.details });
+				"resolve_read_error", { recoveryReadError: readResult.details });
 		}
 
 		const recoveredRead = readResult.details.read;
@@ -124,9 +135,16 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 			const message = "The file revision changed during proof recovery; the previous read plan is no longer valid.";
 			return recoveryResult("proof_recovery_source_changed", message, [
 				`${message} No content was written. Recovery pages were discarded. Reread the intended targets with hledit_read_anchors, reconfirm their locations, and use fresh anchors and proof_id; do not blindly resubmit the old batch.`,
-			]);
+			], "relocate_target");
 		}
 		expectedRevision = recoveredRead.revision;
+		const requiredLastLine = request.requiredLastLine ?? failure.proofGap?.requiredEnd;
+		// [喵喵喵]: 上下文窗口可越过 EOF，只有实际消费或依附的目标越界才终止恢复。
+		if (requiredLastLine !== undefined && requiredLastLine > recoveredRead.actual.totalLines) {
+			return recoveryResult("proof_recovery_read_failed", "The requested source range extends beyond the current file.", [
+				`The requested target ends at line ${requiredLastLine}, but the file has ${recoveredRead.actual.totalLines} lines. Stop this recovery plan; do not resubmit the same batch. Relocate the intended target and obtain fresh anchors within the current file.`,
+			], "relocate_target");
+		}
 		const renderedPage = formatReadMetadata(recoveredRead, undefined, "recovery");
 		const renderedPageBytes = Buffer.byteLength(renderedPage, "utf8") + (renderedPages.length > 0 ? 1 : 0);
 		const fitsBudget = renderedBytes + renderedPageBytes <= MAX_RECOVERY_TEXT_BYTES;
@@ -138,7 +156,7 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 			return recoveryResult("source_line_truncated", message, [
 				`${message} Do not resubmit this hledit_apply_file_changes call. Use write only if an intentional complete-file rewrite is safe.`,
 				...(!fitsBudget ? ["The truncated source page was omitted to stay within the recovery text budget."] : []),
-			]);
+			], "inspect_source");
 		}
 		if (!fitsBudget) return budgetResult(`Automatic recovery stopped at its text budget (${Math.floor(MAX_RECOVERY_TEXT_BYTES / 1024)} KiB).`);
 		reads.push(recoveredRead);
@@ -152,8 +170,12 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 		else pending.shift();
 	}
 
-	const renameInstruction = failure.renamedAnchors?.length ? "apply every listed anchor rename, " : "";
+	if (proofId && request.canRetain && !request.canRetain(reads, proofId)) {
+		return recoveryResult("evidence_capacity_exceeded", "The full target evidence cannot remain retained after recovery.", [
+			"The source pages below are shown for review, but the entire batch is NOT authorized: its required evidence cannot remain retained together. Do not resubmit this unchanged batch or keep paging the same ranges. Narrow the consumed ranges, or ask whether separate batches are acceptable; splitting forfeits whole-batch atomicity. No content was written.",
+		], "reduce_batch");
+	}
 	return recoveryResult(failure.code, failure.message, [
-		`The batch recovery plan was read and recorded in ${reads.length} page(s). Review the displayed source, ${renameInstruction}replace any mismatched endpoint anchors with the returned current anchors, then explicitly resubmit the batch using the proof_id above. The batch has not been executed.`,
-	]);
+		`The batch recovery plan was read and recorded in ${reads.length} page(s). Review the displayed source, replace any mismatched endpoint anchors with the returned current anchors, then explicitly resubmit the batch using the proof_id above. The batch has not been executed.`,
+	], "review_and_retry");
 }

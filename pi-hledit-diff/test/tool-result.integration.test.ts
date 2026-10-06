@@ -64,6 +64,78 @@ test("anchored tools declare model-only exposure and local read/write hints", ()
 	assert.equal(eventListeners.has("tool_result"), false);
 });
 
+test("feedback recovery diagnostics preserve safety and give actionable next steps", async (t) => {
+	const directory = await mkdtemp(join(process.cwd(), ".hledit-feedback-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const { registeredTools } = registerExtensionForTest();
+	const call = (name: string, params: unknown) => registeredTools.get(name)!.execute("feedback", params as never, undefined, undefined, { cwd: directory });
+	const read = (path: string, extra = {}) => call(HLEDIT_READ_ANCHORS_TOOL, { path, ...extra });
+	const apply = (path: string, proof_id: string | undefined, changes: unknown[]) => call(HLEDIT_APPLY_FILE_CHANGES_TOOL, { path, proof_id, changes });
+	await writeFile(join(directory, "other.txt"), "other\n");
+	const other = await read("other.txt");
+
+	await t.test("reused tokens accept the newly published proof and reject consumed historical targets", async () => {
+		for (const [index, text] of ["", "end", "}"].entries()) {
+			const path = `reuse-${index}.txt`;
+			await writeFile(join(directory, path), `${text}\n${text}\n`);
+			const initial = await read(path);
+			const [first, last] = initial.details.read!.lines;
+			const changed = await apply(path, initial.details.proofId, [{ operation: "replace_range", start_anchor: first!.anchor, end_anchor: last!.anchor, lines: text }]);
+			assert.equal(changed.details.disposition, "succeeded");
+			assert.notEqual(changed.details.proofId, initial.details.proofId);
+			assert.doesNotMatch(changed.content[0]!.text, /requiring explicit reread/);
+			assert.ok(changed.content[0]!.text.includes(first!.anchor));
+			const deletion = [{ operation: "delete_range", start_anchor: first!.anchor, end_anchor: first!.anchor }];
+			const wrongFile = await apply(path, other.details.proofId, deletion);
+			assert.match(wrongFile.content[0]!.text, /was issued for.*other\.txt.*not/);
+			assert.doesNotMatch(wrongFile.content[0]!.text, /lost its unique identity|Correct the request anchors/);
+			const unknownProof = await apply(path, "unknown-feedback-proof", deletion);
+			assert.match(unknownProof.content[0]!.text, /proof_id unknown-feedback-proof is unknown or expired/);
+			assert.doesNotMatch(unknownProof.content[0]!.text, /lost its unique identity/);
+			const blocked = await apply(path, initial.details.proofId, deletion);
+			assert.equal(blocked.details.disposition, "rejected");
+			assert.equal(blocked.details.error?.code, "target_consumed");
+			assert.equal(await readFile(join(directory, path), "utf8"), `${text}\n`);
+			const zero = await call(HLEDIT_SEARCH_ANCHORS_TOOL, { path, pattern: "missing-feedback-token", literal: true });
+			assert.equal(zero.details.proofId, changed.details.proofId);
+			const deleted = await apply(path, changed.details.proofId, deletion);
+			assert.equal(deleted.details.disposition, "succeeded");
+			assert.equal(await readFile(join(directory, path), "utf8"), "");
+			const empty = await read(path);
+			assert.match(empty.content[0]!.text, /file is empty[\s\S]*use write/i);
+		}
+	});
+
+	await t.test("out-of-range starts, ends and empty targets stop recovery without repeating invalid reads", async () => {
+		for (const kind of ["start", "end", "empty"]) {
+			const path = `range-${kind}.txt`;
+			await writeFile(join(directory, path), "one\ntwo\n");
+			const initial = await read(path, { limit: 1 });
+			const first = initial.details.read!.lines[0]!.anchor;
+			if (kind === "empty") await writeFile(join(directory, path), "");
+			const result = await apply(path, initial.details.proofId, [{ operation: "replace_range", start_anchor: kind === "end" ? first : "9999#aaa", end_anchor: kind === "end" ? "3#aaa" : "9999#aaa", lines: "X" }]);
+			assert.equal(result.details.disposition, "rejected");
+			assert.match(result.content[0]!.text, /Stop this recovery plan/);
+			assert.doesNotMatch(result.content[0]!.text, /Remaining read windows|offset: 9999/);
+			assert.equal(await readFile(join(directory, path), "utf8"), kind === "empty" ? "" : "one\ntwo\n");
+		}
+		const last = await read("range-start.txt", { offset: 2, limit: 2000 });
+		assert.equal(last.details.read!.actual.lineCount, 1);
+		assert.equal(last.details.read!.eof, true);
+	});
+
+	await t.test("search labels distinguish file totals from the offset window, including empty windows", async () => {
+		await writeFile(join(directory, "search.txt"), "L1\nx\nL2\ny\n");
+		for (const offset of [1, 3, 4]) {
+			const result = await call(HLEDIT_SEARCH_ANCHORS_TOOL, { path: "search.txt", pattern: "^L", offset, context: 0 });
+			assert.equal(result.details.read!.totalMatches, 2);
+			assert.equal(result.details.read!.actual.lineCount, offset === 1 ? 2 : offset === 3 ? 1 : 0);
+			assert.match(result.content[0]!.text, /2 matches in file/);
+			assert.match(result.content[0]!.text, offset === 4 ? /at or after line 4/ : new RegExp(`search offset ${offset}`));
+		}
+	});
+});
+
 test("apply returns native errors for invalid input and missing proof", async () => {
 	const { registeredTools } = registerExtensionForTest();
 	const apply = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
@@ -113,12 +185,12 @@ test("registered tool metadata stays concise and names each flattened guideline"
 	assert.match(searchGuidelines, /locate matching lines[\s\S]*not to inspect broad contiguous text[\s\S]*hledit_read_anchors/);
 	assert.match(searchGuidelines, /Only returned complete, non-truncated lines provide proof[\s\S]*read any range gaps/);
 	assert.match(applyTool.description, /non-overlapping inclusive ranges[\s\S]*complete read proof/);
-	assert.match(applyGuidelines, /latest proof_id returned for that path[\s\S]*current LN#HASH tokens[\s\S]*any proof_id issued for the file's current revision is accepted/);
-	assert.match(applyGuidelines, /failed read creates no proof/);
+	assert.match(applyGuidelines, /proof_id and LN#HASH tokens from the same evidence generation[\s\S]*Old pairs work only for verified surviving targets/);
+	assert.match(applyGuidelines, /Failed reads create no proof/);
 	assert.match(applyGuidelines, /raw text without LN#HASH prefixes[\s\S]*\\n separates lines[\s\S]*one blank line/);
 	assert.match(applyGuidelines, /For targeted edits[\s\S]*write only for a new\/empty file[\s\S]*complete-file rewrite/);
 	const applySchema = JSON.stringify(applyTool.parameters);
-	assert.match(applySchema, /Current proof_id returned for this path[\s\S]*latest read\/search/);
+	assert.match(applySchema, /submitted anchors' generation[\s\S]*new proof with its Updated anchors[\s\S]*do not mix generations/);
 	assert.ok(applySchema.includes(JSON.stringify("Raw text; \\n separates lines; no LN#HASH prefixes.")));
 
 	assert.match(searchTool.description, /one text file[\s\S]*not a directory/i);
@@ -301,8 +373,8 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 	const resultText = applyResult.content[0]?.text ?? "";
 	assert.match(resultText, /^Applied 1 change; line delta: \+1 -1\.\n\nUpdated anchors:\n/);
 	assert.match(resultText, /TWO/);
-	assert.equal(applyResult.details.proofId, readResult.details.proofId);
-	assert.equal(resultText.split("\n").at(-1), `proof_id: ${readResult.details.proofId}`);
+	assert.notEqual(applyResult.details.proofId, readResult.details.proofId);
+	assert.equal(resultText.split("\n").at(-1), `proof_id: ${applyResult.details.proofId}`);
 	assert.equal(resultText.match(/^Updated anchors:$/gm)?.length, 1);
 	assert.ok(resultText.length < 250);
 	assert.doesNotMatch(resultText, /Later changes inside this span/);
@@ -374,7 +446,7 @@ test("apply tool returns a complete produced span for a long-line file", async (
 	assert.equal(spans?.length, 1);
 	const updatedLine = spans?.[0]?.lines.find((line) => line.line === 5);
 	assert.ok(updatedLine);
-	assert.equal(applyResult.content[0]?.text ?? "", `Applied 1 change; line delta: +1 -1.\n\nUpdated anchors:\n${updatedLine.anchor}:CHANGED\n\nproof_id: ${readResult.details.proofId}`);
+	assert.equal(applyResult.content[0]?.text ?? "", `Applied 1 change; line delta: +1 -1.\n\nUpdated anchors:\n${updatedLine.anchor}:CHANGED\n\nproof_id: ${applyResult.details.proofId}`);
 	assert.equal(spans?.[0]?.truncated, false);
 	assert.equal(spans?.[0]?.lines.length, 1);
 	assert.equal((await readFile(target, "utf8")).split(/\r?\n/)[4], "CHANGED");
@@ -453,8 +525,11 @@ test("apply tool deleting the only line leaves an empty file", async (t) => {
 	// 纯删除没有产出 span：模型正文不含 anchor 块，details 记录空 span列表。
 	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /Updated anchors/);
 	assert.deepEqual(applyResult.details.updatedAnchorSpans, []);
-	assert.equal(applyResult.details.proofId, undefined);
-	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /^proof_id:/m);
+	assert.ok(applyResult.details.proofId);
+	assert.notEqual(applyResult.details.proofId, readResult.details.proofId);
+	const followup = await applyTool.execute("empty-followup", { path: "target.txt", proof_id: applyResult.details.proofId, changes: [{ operation: "delete_range", start_anchor: anchor, end_anchor: anchor }] } as never, undefined, undefined, context);
+	assert.equal(followup.details.error?.code, "invalid_anchor_range");
+	assert.doesNotMatch(followup.content[0]!.text, /offset:/);
 	assert.equal(await readFile(target, "utf8"), "");
 });
 
@@ -612,7 +687,7 @@ test("zero-match search keeps same-revision proof and echoes the current proof_i
 	assert.doesNotMatch(staleSearch.content[0]?.text ?? "", /^proof_id:/m);
 });
 
-test("apply tool accepts any proof_id issued for the current revision and names the current one otherwise", async (t) => {
+test("same-epoch read proofs stay valid while externally invalidated proofs require new target evidence", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
@@ -648,8 +723,8 @@ test("apply tool accepts any proof_id issued for the current revision and names 
 		context,
 	);
 	assert.equal(expired.details.error?.code, "invalid_proof_id");
-	assert.match(expired.content[0]?.text ?? "", new RegExp(`Use proof_id: ${fresh.details.proofId}`));
-	assert.doesNotMatch(expired.content[0]?.text ?? "", /hledit_read_anchors|offset:/);
+	assert.match(expired.content[0]?.text ?? "", /unknown or expired/);
+	assert.doesNotMatch(expired.content[0]?.text ?? "", /Use proof_id:|offset:/);
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nTHREE\nfour\n");
 });
 
@@ -862,11 +937,11 @@ test("truncated recovery preserves its source budget and proof across session re
 	await restored.eventListeners.get("session_tree")!({} as never, restoredContext as never);
 	const continuation = await restoredApply.execute("continue", continuationParams as never, undefined, undefined, restoredContext);
 	assert.equal(continuation.details.disposition, "succeeded");
-	assert.equal(continuation.details.proofId, proofId);
+	assert.notEqual(continuation.details.proofId, proofId);
 	assert.equal(await readFile(target, "utf8"), original.replace("x".repeat(49 * 1024), "short"));
 });
 
-test("successive single-line edits preserve proof identity and lone carriage returns", async (t) => {
+test("successive single-line edits use published proof generations and preserve lone carriage returns", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL)!;
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
@@ -877,14 +952,17 @@ test("successive single-line edits preserve proof identity and lone carriage ret
 	const context = { cwd: directory };
 	const read = await readTool.execute("read", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
 	let anchor = read.details.read!.lines[0]!.anchor;
+	let proof = read.details.proofId;
 	for (const lines of ["a\rB", "a\rC"]) {
 		const result = await applyTool.execute("apply", {
-			path: "target.txt", proof_id: read.details.proofId,
+			path: "target.txt", proof_id: proof,
 			changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines }],
 		} as never, undefined, undefined, context);
 		assert.equal(result.details.disposition, "succeeded", JSON.stringify(result.details.error));
 		assert.equal(await readFile(target, "utf8"), `${lines}\nkeep\n`);
 		anchor = result.details.updatedAnchorSpans![0]!.lines.find((line) => line.line === 1)!.anchor;
+		assert.notEqual(result.details.proofId, proof);
+		proof = result.details.proofId;
 	}
 });
 test("apply without proof_id rejects before trying to recover a missing target", async (t) => {
@@ -1269,7 +1347,7 @@ test("path aliases share the canonical apply queue", async (t) => {
 	assert.equal(await readFile(target, "utf8"), "one\ninserted\ntwo\nTHREE\n");
 });
 
-test("reused pre-edit anchor tokens are rejected without modifying the newly inserted line", async (t) => {
+test("identical inserted and surviving lines remain distinct under their original proof generations", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
@@ -1294,34 +1372,28 @@ test("reused pre-edit anchor tokens are rejected without modifying the newly ins
 	assert.equal(inserted.details.disposition, "succeeded");
 	assert.equal(await readFile(target, "utf8"), "before\nneedle\nneedle\nafter\n");
 
-	const ambiguous = await applyTool.execute(
-		"reuse-old-anchor",
+	const originalEdit = await applyTool.execute(
+		"edit-original-target",
 		{ path: "target.txt", proof_id: initialRead.details.proofId, changes: [{ operation: "replace_range", start_anchor: oldAnchor, end_anchor: oldAnchor, lines: "CHANGED" }] } as never,
-		undefined,
-		undefined,
-		context,
+		undefined, undefined, context,
 	);
-	assert.equal(ambiguous.details.disposition, "rejected");
-	assert.equal(ambiguous.details.error?.code, "insufficient_read_proof");
-	assert.match(ambiguous.details.error?.message ?? "", /lost its unique identity after a verified edit/);
-	assert.match(ambiguous.content[0]?.text ?? "", /plugin will not guess/);
-	assert.equal(await readFile(target, "utf8"), "before\nneedle\nneedle\nafter\n");
+	assert.equal(originalEdit.details.disposition, "succeeded");
+	assert.match(originalEdit.details.resolvedAnchors![0]!.current, /^3#/);
+	assert.equal(await readFile(target, "utf8"), "before\nneedle\nCHANGED\nafter\n");
 
-	const explicitRead = await readTool.execute("read-current", { path: "target.txt", offset: 2, limit: 1 } as never, undefined, undefined, context);
-	assert.equal(explicitRead.details.read?.lines[0]?.anchor, oldAnchor);
 	const currentEdit = await applyTool.execute(
 		"edit-current-line",
-		{ path: "target.txt", proof_id: explicitRead.details.proofId, changes: [{ operation: "replace_range", start_anchor: oldAnchor, end_anchor: oldAnchor, lines: "CHANGED" }] } as never,
+		{ path: "target.txt", proof_id: inserted.details.proofId, changes: [{ operation: "replace_range", start_anchor: oldAnchor, end_anchor: oldAnchor, lines: "CHANGED" }] } as never,
 		undefined,
 		undefined,
 		context,
 	);
 	assert.equal(currentEdit.details.disposition, "succeeded");
-	assert.equal(await readFile(target, "utf8"), "before\nCHANGED\nneedle\nafter\n");
+	assert.equal(await readFile(target, "utf8"), "before\nCHANGED\nCHANGED\nafter\n");
 });
 
 
-test("consumed anchor tokens reused by a shifted duplicate require an explicit reread", async (t) => {
+test("consumed historical targets stay rejected even after rereading a shifted duplicate", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
@@ -1354,12 +1426,14 @@ test("consumed anchor tokens reused by a shifted duplicate require an explicit r
 		context,
 	);
 	assert.equal(ambiguous.details.disposition, "rejected");
-	assert.equal(ambiguous.details.error?.code, "insufficient_read_proof");
-	assert.match(ambiguous.details.error?.message ?? "", /lost its unique identity after a verified edit/);
+	assert.equal(ambiguous.details.error?.code, "target_consumed");
 	assert.equal(await readFile(target, "utf8"), "before\nneedle\nafter\n");
 
 	const explicitRead = await readTool.execute("read-current", { path: "target.txt", offset: 2, limit: 1 } as never, undefined, undefined, context);
 	assert.equal(explicitRead.details.read?.lines[0]?.anchor, consumedAnchor);
+	const stillConsumed = await applyTool.execute("old-after-reread", { path: "target.txt", proof_id: initialRead.details.proofId, changes: [{ operation: "delete_range", start_anchor: consumedAnchor, end_anchor: consumedAnchor }] } as never, undefined, undefined, context);
+	assert.equal(stillConsumed.details.error?.code, "target_consumed");
+	assert.equal(await readFile(target, "utf8"), "before\nneedle\nafter\n");
 	const currentEdit = await applyTool.execute(
 		"edit-current-duplicate",
 		{ path: "target.txt", proof_id: explicitRead.details.proofId, changes: [{ operation: "replace_range", start_anchor: consumedAnchor, end_anchor: consumedAnchor, lines: "CHANGED" }] } as never,
@@ -1616,4 +1690,37 @@ test("disjoint changes recover all missing ranges before an explicit batch retry
 	const result = await apply.execute("retry", { path: "target.txt", proof_id: recovered.details.proofId, changes } as never, undefined, undefined, context);
 	assert.equal(result.details.disposition, "succeeded");
 	assert.equal(await readFile(target, "utf8"), ["first", ...original.slice(4, 1597), "last"].join("\n") + "\n");
+});
+
+
+test("historical ranges never consume inserted or replaced interior lines, but surviving targets still work", async (t) => {
+	const directory = await mkdtemp(join(process.cwd(), ".hledit-epoch-ranges-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const { registeredTools } = registerExtensionForTest();
+	const call = (name: string, params: unknown) => registeredTools.get(name)!.execute("epoch", params as never, undefined, undefined, { cwd: directory });
+	for (const operation of ["insert_after", "replace_range", "delete_range"]) {
+		await t.test(operation, async () => {
+			const path = `${operation}.txt`;
+			await writeFile(join(directory, path), "one\ntwo\nthree\n");
+			const initial = await call(HLEDIT_READ_ANCHORS_TOOL, { path });
+			const [first, middle, last] = initial.details.read!.lines;
+			const change = operation === "insert_after"
+				? { operation, anchor: first!.anchor, lines: "inserted" }
+				: { operation, start_anchor: middle!.anchor, end_anchor: middle!.anchor, ...(operation === "replace_range" ? { lines: "changed" } : {}) };
+			const edited = await call(HLEDIT_APPLY_FILE_CHANGES_TOOL, { path, proof_id: initial.details.proofId, changes: [change] });
+			assert.equal(edited.details.disposition, "succeeded");
+			const before = await readFile(join(directory, path), "utf8");
+			const blocked = await call(HLEDIT_APPLY_FILE_CHANGES_TOOL, { path, proof_id: initial.details.proofId,
+				changes: [{ operation: "delete_range", start_anchor: first!.anchor, end_anchor: last!.anchor }] });
+			assert.equal(blocked.details.disposition, "rejected");
+			assert.equal(blocked.details.error?.code, operation === "insert_after" ? "target_changed" : "target_consumed");
+			assert.equal(blocked.details.error?.nextAction, "relocate_target");
+			assert.equal(blocked.details.recoveredReads, undefined);
+			assert.equal(await readFile(join(directory, path), "utf8"), before);
+			const survivor = await call(HLEDIT_APPLY_FILE_CHANGES_TOOL, { path, proof_id: initial.details.proofId,
+				changes: [{ operation: "replace_range", start_anchor: last!.anchor, end_anchor: last!.anchor, lines: "THREE" }] });
+			assert.equal(survivor.details.disposition, "succeeded");
+			assert.equal(await readFile(join(directory, path), "utf8"), before.replace(/three\n$/, "THREE\n"));
+		});
+	}
 });

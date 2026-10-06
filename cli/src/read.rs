@@ -156,27 +156,20 @@ pub fn run(
         limit
     };
     let mut result = json!({"ok":true,"revision":snapshot.revision,"totalLines":snapshot.total,"lines":[],"truncated":true,"nextOffset":snapshot.total + 1});
+    let mut candidates = Vec::new();
     if let Some(matcher) = &matcher {
-        // [喵喵喵]: 首遍仅计数，预算包含真实 totalMatches；第二遍流式展开窗口，不保存全文件命中索引。
-        result["totalMatches"] = json!(
-            snapshot
-                .lines()
-                .filter(|(line, _)| matcher.regex.is_match(line))
-                .count()
-        );
-    }
-    let shell = serde_json::to_vec(&result)
-        .expect("result serialization")
-        .len()
-        + 1;
-    let mut page = Page::new(MAX_BYTES.saturating_sub(shell));
-    let mut next = None;
-    if let Some(matcher) = &matcher {
+        // [喵喵喵]: 匹配只遍历一次；保留当前页加一个续页哨兵，其余命中仅计数。
+        // 每个 JSON 行至少占一字节，因此字节预算也能约束原生 CLI 的超大 limit，避免全文件索引。
+        let max_candidates = limit.saturating_add(1).min(MAX_BYTES);
         let context = context.min(snapshot.total);
-        let mut source = snapshot.lines().enumerate();
         let mut cursor = 0;
-        'matches: for (index, (line, _)) in snapshot.lines().enumerate() {
+        let mut matches = 0usize;
+        for (index, (line, _)) in snapshot.lines().enumerate() {
             if !matcher.regex.is_match(line) {
+                continue;
+            }
+            matches += 1;
+            if candidates.len() == max_candidates {
                 continue;
             }
             let start = (index + 1)
@@ -184,19 +177,30 @@ pub fn run(
                 .max(offset)
                 .max(cursor + 1);
             let end = (index + 1).saturating_add(context).min(snapshot.total);
-            if start > end {
-                continue;
-            }
-            for number in start..=end {
-                let (_, (text, _)) = source
-                    .nth(number - cursor - 1)
-                    .expect("source window within snapshot");
+            for number in (start..=end).take(max_candidates - candidates.len()) {
+                candidates.push(number);
                 cursor = number;
-                if page.rows.len() >= limit || page.source_truncated() || !page.append(number, text)
-                {
-                    next = Some(page.rows.last().map_or(number, |row| row.line + 1));
-                    break 'matches;
-                }
+            }
+        }
+        result["totalMatches"] = json!(matches);
+    }
+    let shell = serde_json::to_vec(&result)
+        .expect("result serialization")
+        .len()
+        + 1;
+    let mut page = Page::new(MAX_BYTES.saturating_sub(shell));
+    let mut next = None;
+    if matcher.is_some() {
+        let mut source = snapshot.lines();
+        let mut cursor = 0;
+        for number in candidates {
+            let (text, _) = source
+                .nth(number - cursor - 1)
+                .expect("source window within snapshot");
+            cursor = number;
+            if page.rows.len() >= limit || page.source_truncated() || !page.append(number, text) {
+                next = Some(page.rows.last().map_or(number, |row| row.line + 1));
+                break;
             }
         }
     } else {

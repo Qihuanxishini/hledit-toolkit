@@ -22,16 +22,17 @@
 - 公开修改协议只有 `replace_range`、`delete_range`、`insert_before` 和 `insert_after`。范围操作同时提供 `start_anchor` 与 `end_anchor`；单行范围使用同一锚点。旧 operation 与内容匹配替换不迁移。
 - `replace_range`、`insert_before` 和 `insert_after` 的 `lines` 只接受换行分隔字符串；一个末尾换行仅终止末行，空字符串表示一行空文本。`delete_range` 不接受 `lines`。
 - 单次 batch 限 1–200 个 changes、1 MiB replacement UTF-8 bytes 和 20,000 个输出行。batch 是原子的：任一 change 非法、冲突、proof 不完整或 stale 时均不写入。
-- 无效 `proof_id` 按目标证据给出单一恢复动作：证据完整时换用当前 id；有缺口或身份不明时定向读取。revision 过期返回目标附近的当前快照，完整快照附带可续编的 `proof_id`；审阅后显式提交，插件不会自动重试。
+- proof 归属优先校验：跨文件使用时只报告归属错误，未知或被淘汰的 proof 要求重新获取目标证据，不把旧锚点配上当前 proof 猜测执行。revision 过期返回目标附近的当前快照，完整快照附带可续编的 `proof_id`；审阅后显式提交，插件不会自动重试。
 - `insufficient_read_proof` 会在同一 canonical file queue 内自动分页执行定向只读，直到目标缺口完整覆盖或触及恢复预算。结果返回全部 `recoveredReads`、最新 evidence 和一个权威 `proof_id`，但不会自动重放修改；审阅当前源码与端点锚点后再显式重提 apply。
-- 定向补读按整批规划实际缺口，合并相邻窗口，不重复读取远端缺口之间的已知源码；锚点不匹配或身份歧义保留确认上下文。整批共享窗口累计 1,200 行、4 页、96 KiB 正文预算；累计行数超限时不启动读取，页数或正文超限时保留已返回页并列出剩余窗口，返回 `proof_recovery_budget_exceeded`。补读期间 revision 变化返回 `proof_recovery_source_changed`，丢弃本次补读页并失效旧证据；截断源码不可建立 proof，读取失败通过 `recoveryReadError` 暴露。补读不自动执行编辑，仍须审阅后显式重提。
+- 定向补读按整批实际缺口规划，共享 1,200 行、4 页、96 KiB 正文预算；预算耗尽后保留已返回页并列出合法的剩余窗口。目标越界、被消费或旧范围不再连续时停止计划，要求重新定位；补读期间 revision 变化则丢弃本次页面并失效旧证据。截断源码不可建立 proof，补读不会自动执行编辑。
 - 读取错误一律给出可操作正文：`pattern` 转发 RE2 编译原文并说明 RE2 不支持 lookahead/lookbehind/backreference（可改用 `literal:true`），`broad_pattern` 指向 `hledit_read_anchors`。
+- read/search 仅在省略参数时使用默认值，非法 offset/limit 由 schema 拒绝，不静默回落或截断。搜索明确区分全文件匹配数与本页源行数；offset 是返回源行下界，前面的匹配仍可贡献后置上下文。
 - 超过单页预算的源行会标记 `textTruncated`，不能作为编辑 proof；若后面还有待读行或匹配，结果仍提供 `nextOffset` 和续读提示。
 - 单行 `replace_range` 输出多行且首行重复原行时，插件先用 `batch --check` 验证整个请求，再返回字段级范围修复指引，不自动扩大或执行范围。
 - CLI 在临时文件同步后、原子替换前复检原始字节 revision。`source_changed_before_commit` 是确认零写入；已启动进程的取消、超时、输出超限或异常响应属于 `outcome_unknown`，必须重新读取。
-- 成功 apply 使用 `editDeltas` 重映射未消费 evidence，再合并新 revision 的 `updatedAnchorSpans`（每个产出了行的编辑各一个精确覆盖产出区间的 span）。唯一、非歧义、同 revision 且替换后完整 proof 仍成立的 verified rename 会被内部规范化并报告在 `details.resolvedAnchors`；旧 token 被当前行重新占用，或其源行/alias 最终目标被消费失联时，身份会保持 ambiguous 直到覆盖当前行的显式读取。
+- 改变文件的成功 apply 建立新证据代并返回新 `proof_id`，其完整 Updated anchors 可直接续编，token 字面复用不再要求额外重读。旧 proof/token 对只迁移可验证存续目标；范围内每条源行必须存续且保持连续，不能误消费后来插入的行。已消费身份不会因内容恢复而复活；无变化批次不推进证据代。
 - 读取、proof 选择、CLI mutation 与 evidence 更新按 canonical real path 使用同一 file mutation queue。同文件状态事务串行，不同文件仍可并行。
-- evidence 有界：单文件最多 10,000 records / 4 MiB logical UTF-8 payload，session 最多 50,000 records / 16 MiB。单批最少所需 records 已超上限时提前返回 `evidence_capacity_exceeded`；当前 revision 曾发生单文件容量淘汰且 proof 仍不完整时返回 `read_evidence_evicted`，避免反复分页。缩小目标范围优先；拆分 batch 须接受失去整批原子性的代价。branch replay 使用相同顺序与容量规则。
+- evidence 有界：单文件 10,000 records / 4 MiB 计费额度，session 50,000 records / 16 MiB；历史坐标、proof 与行证据共同计费，最多保留 32 个历史代。优先淘汰历史，其次保留当前发布窗口或恢复目标。整批必需证据无法容纳时终止为 `evidence_capacity_exceeded`，不让补读循环；拆分写入必须接受失去整批原子性的代价。重放使用记录的发布顺序，而不是 Pi 并行结果的请求顺序。
 - 仅接受有效 UTF-8 且不含 NUL 的文本；revision 基于原始字节。非空结果保留既有 BOM，拒绝会把首字符 U+FEFF 重新解释为 BOM 的修改。孤立 CR 作为正文保留；空末行必要地补行尾，其余按局部规则保留行尾与末尾换行状态。
 - Windows 写入保留目标 DACL、继承状态和 NTFS 附加流。替换中途失败时先以不覆盖方式移回原文件，成功即为零写入失败；无法移回时返回 `outcome_unknown` 并保留、报告恢复文件，须先检查文件状态；已成功写入但恢复副本清理失败则返回成功及含路径的 warning。
 
@@ -58,25 +59,7 @@ bin/hledit.exe
 
 兼容响应必须包含 3.x 版本及全部正 capability，并且不得包含 `contentReplaceOnce`：
 
-```json
-{
-  "ok": true,
-  "version": "3.4.0",
-  "anchorProtocolV2": true,
-  "readRangeMetadata": true,
-  "batchInsertAfter": true,
-  "batchCheck": true,
-  "batchUpdatedAnchorSpans": true,
-  "batchStaleContext": true,
-  "batchWireV3": true,
-  "batchReadProof": true,
-  "batchEditDeltas": true,
-  "searchIgnoreCase": true,
-  "searchRegex": true,
-  "searchLiteral": true,
-  "search": true
-}
-```
+完整字段见 [CLI capability 规范](../cli/SPEC.md#2-capabilities)；门禁与失败处理见 [维护说明](./MAINTENANCE.md#cli-capability-门禁)。
 
 成功 JSON 读取包含合法 `revision`、`totalLines`、锚点行和截断状态。内部 batch 携带 `{revision, anchors}` proof；CLI 重新验证逐行覆盖、锚点和当前原始字节 revision。成功 batch 包含新 `revision`、`updatedAnchorSpans`、`editDeltas`、`linesAdded` 与 `linesDeleted`，插件逐项核对请求区间、产出 span 和统计；不兼容成功响应按结果未知处理。batch wire v3 中 `delete` 必须省略 `lines`。
 

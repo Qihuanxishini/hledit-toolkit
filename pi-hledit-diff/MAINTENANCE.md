@@ -1,6 +1,6 @@
 # pi-hledit-diff 维护与升级说明
 
-本文记录 `pi-hledit-diff` 0.2.x 与 patched `hledit` CLI 3.x 之间的硬性契约、验证方式和升级约束。当前运行契约以代码、测试、README 和本文为准；版本变更历史见 [`cli/CHANGELOG.md`](../cli/CHANGELOG.md)。
+本文记录 `pi-hledit-diff` 0.2.x 与 Rust `hledit` CLI 3.x 之间的集成不变量、验证方式和升级约束。CLI wire 协议见 [SPEC.md](../cli/SPEC.md)，用户操作见 [README.md](./README.md)；历史变更通过 Git 查询。
 
 ## 仓库与部署边界
 
@@ -24,27 +24,7 @@ pi-hledit-diff/
 
 ## CLI capability 门禁
 
-插件执行 `bin/hledit.exe capabilities`。兼容响应必须满足：
-
-```json
-{
-  "ok": true,
-  "version": "3.4.0",
-  "anchorProtocolV2": true,
-  "readRangeMetadata": true,
-  "batchInsertAfter": true,
-  "batchCheck": true,
-  "batchUpdatedAnchorSpans": true,
-  "batchStaleContext": true,
-  "batchWireV3": true,
-  "batchReadProof": true,
-  "batchEditDeltas": true,
-  "searchIgnoreCase": true,
-  "searchRegex": true,
-  "searchLiteral": true,
-  "search": true
-}
-```
+插件执行 `bin/hledit.exe capabilities`，按照 [CLI capability 规范](../cli/SPEC.md#2-capabilities) 验证响应。字段清单以该规范和 `src/cli.ts` 为准。
 
 硬性规则：
 
@@ -83,7 +63,7 @@ pi-hledit-diff/
 ```
 
 - 编辑现有非空可读文本文件前，使用该工具读取会被消费的全部连续原始行；普通 `read` 只用于参考或目标未定的探索。
-- 默认 `limit` 为 160，公开上限 2000；它只执行连续范围读取，不接受 grep、literal、context 或 ignore_case。
+- 默认 `limit` 为 160，公开上限 2000；仅省略参数时使用默认值，非法整数、非整数与超限值由 schema 拒绝。它只执行连续范围读取，不接受 grep、literal、context 或 ignore_case。
 - 固定调用 `read-range`。响应验证 revision、总行数、连续性/递增顺序、锚点格式、分页和 source-line truncation；模型正文和 `details.read` 都由已验证结构生成。
 - 单行超过 50 KiB JSON 页预算时仅返回截断文本；该行不建立 proof，但后续仍有物理行时提供 `nextOffset`。搜索同样在还有匹配/上下文行时提供续读游标。
 - CLI 执行、响应验证和 evidence 更新是同一个 canonical file queue 事务。不得在队列外记录晚到 snapshot。
@@ -117,10 +97,10 @@ pi-hledit-diff/
 
 - 默认 `pattern` 使用 RE2 兼容正则；Rust matcher 保留 ASCII Perl 类和词边界、Unicode 15.0 分类与大小写折叠。`literal:true` 切换为字面子串，`context` 添加匹配行前后的物理行，`ignore_case` 启用大小写不敏感匹配。
 - 宽匹配模式会被 CLI 拒绝为 `broad_pattern`，不能用搜索工具伪装连续整文件读取；需要查看连续文件范围时改用 `hledit_read_anchors`。
-- 固定调用 `search`。结果额外包含 `totalMatches`，`nextOffset` 仍是物理行游标；零命中不生成新 proof：响应 revision 与现有 evidence 相同时保留旧证据并回显当前 `proof_id`，revision 不同时清除该 canonical path 的旧 proof。
+- 固定调用 `search`。一次匹配遍历计算全文件 `totalMatches` 并收集有界页候选，随后按精确 JSON 字节预算渲染，不保存全文件命中索引。正文区分全文件匹配数和本页匹配/上下文源行数；offset 是返回源行下界，较早匹配仍可贡献后置上下文。零命中同 revision 保留旧证据并回显当前 proof，不同 revision 清除旧状态。
 - 搜索返回的完整匹配/上下文行可以贡献局部 proof；搜索结果不保证连续覆盖，范围编辑缺口由 apply 内部自动分页补读。
 
-读取结果的 proof 规则：插件对非零命中或普通范围 read 生成 `proof_id`，同时写入模型正文与 `details.proofId`；分页或后续显式 read/search 发出新 id，同 revision 下合并已验证行，且该 revision 内发出过的所有 id 都可提交（id 只标识"哪次读"，准确性由 revision、逐行覆盖与 CLI 复检保证）；revision 变化时旧 id 全部作废。`textTruncated` 行不建立 proof。proof id 形态是 `<进程随机三字母前缀><单调计数>`（如 `kqz7`），由 `src/proof-id.ts` 单点发号；它只参与相等比较，不是安全边界。前缀不可去掉：`restoreFromBranch` 会把转录里的历史 proof id 重新载回 store，纯计数器在进程重启后会与旧 id 相撞。
+读取结果的 proof 规则：非空 read/search 发出 `proof_id` 并写入正文与 `details.proofId`，同一证据代内合并完整行，保留尚未被容量淘汰的已发 id。proof 定义 token 的原始坐标空间，不能随编辑改为指向新目标；外部 revision 变化会失效旧状态，已验证 apply 则建立新代并保留受限的历史迁移。`textTruncated` 行不建立 proof。`src/proof-id.ts` 使用 96 位随机进程 nonce 加 BigInt 单调序号，降低重启后与历史 id 碰撞的风险；id 不是授权凭证，正确性仍依赖来源、逐行覆盖和 CLI revision 复检。
 
 ### `hledit_apply_file_changes`
 
@@ -146,8 +126,8 @@ pi-hledit-diff/
 - 单次 batch 限 1–200 个 changes，replacement 总量限 1 MiB UTF-8，输出总量限 20,000 行；
 - batch stdin request 总大小限 8 MiB；`lines` 与 `proof.anchors` 的每个元素必须是 JSON 字符串，`null` 等类型会被拒绝；
 - CLI 的每个 `lines` 元素必须是一行逻辑文本，拒绝实际 NUL 和内嵌 LF；公开工具仍用换行分隔字符串，由插件拆分成行数组。拒绝携带具体 change 与内容原因，不引导调用方无效重读；
-- 公开 schema 要求 `proof_id`，但不暴露 raw revision 或 CLI `proof`；插件仅接受该 canonical path 当前 revision 内发出过的 id，再从 branch evidence 注入每个消费行或 insert 依附行的完整 hidden proof；
-- proof id 无效或跨路径使用时不启动 CLI；proof 行覆盖不完整时，apply 在同一 canonical file queue 内规划整批实际缺口，合并相邻或重叠窗口，并允许跨接最多两行已知源码以避免零碎缺口耗尽页数预算，但不跨越大段已知源码。锚点不匹配或身份歧义的窗口保留确认上下文。补读经 `recoveredReads` 与最终 `proof_id` 返回源码，调用方审阅后显式重提 batch，不自动重放修改；
+- 公开 schema 要求 `proof_id`，不暴露 raw revision 或 CLI `proof`。先验证 canonical path 归属，再按该 proof 的坐标代解释端点、范围和覆盖；历史目标只有在逐行存续且映射连续时才规范化为当前坐标，并注入完整 hidden proof；
+- 跨文件、未知 proof、目标越界或已消费时不启动编辑 CLI，并给出单一终止/重新定位动作。当前坐标的覆盖缺口才规划补读，合并相邻窗口并最多跨接两行已知源码；锚点不匹配保留确认上下文。结果返回 `recoveredReads` 与最终 proof，调用方审阅后显式重提，不自动重放修改；
 - 定向补读共享硬预算（`src/read-recovery.ts`）：计划窗口累计 1,200 行（含确认上下文）、4 页、96 KiB 正文。累计行数超限时不启动子进程；页数或正文超限时保留已返回页面并列出剩余窗口，返回 `proof_recovery_budget_exceeded`。预算按整批计算，不按每个 change 重置，也不按远端窗口之间的距离计数；
 - 多页补读正文不带中间页续读指令，由最终结果统一给出下一步。正文与 `details.proofId` 使用同一个最终 proof id；调用方在队列放行前经 `updateFromToolResult` 按返回页面顺序登记。实时执行与 branch replay 使用相同的登记顺序和容量淘汰规则；
 - 补读 revision 与计划或先前页面不一致时，返回 `proof_recovery_source_changed`，丢弃此次所有补读页且不发出 proof id；错误携带 `currentRevision`，让实时状态和分支重放均失效旧 evidence，调用方必须重新确认目标。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；
@@ -164,27 +144,27 @@ pi-hledit-diff/
 
 ## Evidence 与并发不变量
 
-Evidence 以 resolved canonical path 为 key，每个文件状态包含当前 `proofId` generation、raw-byte revision、完整观察行、verified rename alias 和 ambiguous token：
+Evidence 以 resolved canonical path 为 key，文件状态包含当前证据代及有界历史；`proof_id + LN#HASH` 共同定义目标身份：
 
-- 普通范围和搜索结果同 revision 按行合并；新 revision 替换旧 state。`textTruncated` 行不建立 proof；
-- 零命中搜索同 revision 时保留旧 proof，revision 变化时清除；非零显式 read/search 发出新 proof id，同 revision 下继续合并已验证窗口，该 revision 内所有已发 id 均可提交。`invalid_proof_id` 先校验目标证据：完整时只给当前 id 与重提指令，不要求重读；缺口或身份不明时只给对应的定向读取。成功 apply 产生的新 revision 延续同一 generation 与 id 集合，使受控更新锚点可继续使用；
-- apply 成功后，消费区间 evidence 被删除，区间外行按已验证 `editDeltas` 平移并用 `anchor-hash.ts` 自校验重算，再合并 `updatedAnchorSpans`；
-- verified rename 仅在目标唯一、非歧义、同 revision，且替换后完整 proof 再次成立时内部规范化；CLI 仍复验 raw revision、proof 和全部 anchors，成功结果通过 `details.resolvedAnchors` 报告映射；
-- 持续存活且可验证平移的目标保留 verified rename；旧 token 被当前行重新占用，或其源行/alias 最终目标被消费失联时进入 ambiguous set 并持续到显式重读，以防立即或延迟复用。`selectProof` 在 CLI 启动前拒绝 ambiguous token；只有直接读取覆盖当前行时才删除同 token 的旧身份并建立当前语义。`updatedAnchorSpans` 不自动消歧；
-- 任一结构化拒绝携带不同合法 `currentRevision` 时淘汰旧 state；同 revision 的确认零写入拒绝保留。`source_changed_before_commit` 与 `outcome_unknown` 总是失效；
-- 只有带合法 `currentRevision` 的完整未截断 `currentAnchors` 可建立新 revision evidence；stale 返回对应 `proof_id`，实时登记与 branch replay 保留同一 id；
-- read 与 apply 都持有 `withFileMutationQueue(canonical path)` 覆盖 CLI、校验和 evidence 更新。同文件串行、不同文件可并行；
-- branch/session 恢复只重放当前 branch 的结构化 tool-result details，包括经过完整 shape、path、proof usability 验证的被拒绝 apply `recoveredReads`，不解析聊天正文。可携带补读结果的拒绝码由 `read-result.ts` 的 `READ_PROOF_RECOVERY_CODES` 单点定义；新增携带页面的终止分支时必须登记。`proof_recovery_source_changed` 不携带页面，只经 `currentRevision` 失效旧证据。截断页不进入补读的 `recoveredReads`，普通 read 的完整行仍可逐行贡献 evidence。
+- 同代 read/search 合并完整行，零命中保留已有 proof；观察到不同外部 revision 时失效旧状态。相同 revision 的合法 id 不因后续读取而失效，容量淘汰除外；
+- 实际改变文件的 apply 产生新 proof/证据代，完整且已保留的 Updated anchors 可立即使用。无变化批次不推进代；空文件没有虚构行锚点；
+- 消费区间不向新代继承身份；未消费行按验证后的 `editDeltas` 平移并用 `anchor-hash.ts` 重算。历史保存原始证据及原坐标到当前坐标的直接映射，不追逐别名链；
+- 历史范围必须每条原始行存续、顺序不变、映射连续；中间插入新行、替换或删除旧行均阻止范围迁移。单独存续目标仍可继续编辑，规范化通过 `details.resolvedAnchors` 报告；
+- 被消费目标不因 token 复用或本地 A→B→A 字节恢复而复活。新 proof 配同字面 token 表示新目标；调用方不得混用不同代的 proof 与 token；
+- 不同合法 `currentRevision`、`source_changed_before_commit`、`outcome_unknown` 失效旧状态；同 revision 零写入拒绝保留证据。stale 仅对完整未截断 `currentAnchors` 发布新 proof；
+- read/apply 持有 canonical queue 覆盖 CLI、校验及证据发布。同文件串行，不同文件并行；提交成功与后续证据可用性分开报告，证据无法保留不改报写入失败；
+- 实时和 branch replay 使用同一 reducer，消费 `evidenceVersion: 2`、`baseProofId`、新 `proofId` 及发布顺序 `evidenceOrder`。Pi 并行结果按请求顺序落盘，重放在同一工具批次及运行实例内按发布序排序，不跨消息或重启边界重排；
+- 只恢复当前 branch 的结构化 details；合法旧读取可恢复，无法证明身份转换的旧 apply 使状态失效，要求重读，不建立旧 id 到新代的隐式别名。补读页面仍由 `READ_PROOF_RECOVERY_CODES` 单点校验。
 
 容量限制：
 
 - 单文件最多 10,000 records 或 4 MiB logical UTF-8 payload；
 - session 最多 50,000 records 或 16 MiB；
-- records 包括行、rename alias、ambiguous token 和当前 revision 的 proof id，payload 计入 path/token/text/id UTF-8 bytes；
-- 单文件溢出先清空全部 state；只有触发更新的显式 read 窗口可作为 fresh evidence 重建，updated-anchor 溢出必须保持无 evidence，避免在丢失历史 ambiguity 后重新接受复用 token；fresh read 窗口本身过大时也保持无 evidence；
-- session 溢出按 tool-result 顺序的 deterministic file-level touch 淘汰完整文件；实时执行与 branch replay 使用同一规则。
-- apply 先合并本次消费/依附区间；源码行数加最少一个 proof id 已超过单文件 record 上限时，返回 `evidence_capacity_exceeded`，不启动 CLI，也不提示继续分页。拆分 batch 会失去整批原子性，必须在语义与授权允许时采用；
-- 显式 read 超限后保留 fresh window，同时记录当前 revision 曾发生容量淘汰；后续 proof 仍有缺口时返回 `read_evidence_evicted`，提供定向读取并提醒停止反复全文件分页。它不表示所有缺口都由淘汰造成，也不扩大缓存或放宽校验。
+- records 包括各代行记录、proof id 和历史坐标映射；字节计费包括 path/token/text/id、坐标与代元数据，共享证据对象不重复计费。额度不是 JavaScript 进程实际堆内存上限；
+- 最多保留 32 个历史代，超限或超预算先淘汰最老历史。当前证据仍超额时保留本次发布窗口；恢复时优先保留整个所需目标，其次回退至可保留的新页面。已淘汰 id 过期，不改指向新坐标；
+- session 按发布顺序的 deterministic file-level touch 淘汰完整文件，实时与重放一致；
+- 整批源行加一个 proof 已超 record 上限时提前拒绝；补读完成前模拟同一容量转换，若所需完整文本仍不能同时保留，返回终态 `evidence_capacity_exceeded`，不得提示可以重提或继续盲目分页。拆分会失去原子性，不自动进行；
+- 同代曾发生容量淘汰且仍有覆盖缺口时返回 `read_evidence_evicted`，给出局部重新定位动作；只有预算允许且确实能补齐的窗口才给续读指令。
 
 ## CLI batch 与结果契约
 
@@ -215,7 +195,7 @@ Batch wire v3 是唯一 canonical 形状：`replace` 必须带 `lines`（可为�
 }
 ```
 
-插件验证 revision、统计、warning、每项 `editDeltas` 与 `updatedAnchorSpans`：delta 条数、区间、物理顺序、总和必须与公开 change 一一对应；窗口数量、`offset` 与 `desiredLimit` 必须与由 `editDeltas` 换算出的非空产出区间逐项对应（纯删除无窗口）。窗口不带上下文行，共享 CLI 侧 80 行 / 16 KiB 预算；首行超过剩余字节预算时可返回 `textTruncated:true` 的部分行，预算耗尽后的窗口以空 `lines` + `truncated:true` 保持可计数。malformed 或 request-inconsistent success 属于 `outcome_unknown`，不得用于 evidence。`contentChanged:false` 不触碰文件，但仍合并同 revision anchor window。
+插件验证 revision、统计、warning、每项 `editDeltas` 与 `updatedAnchorSpans`：delta 条数、区间、物理顺序、总和必须与公开 change 一一对应；窗口数量、`offset` 与 `desiredLimit` 必须与由 `editDeltas` 换算出的非空产出区间逐项对应（纯删除无窗口）。窗口不带上下文行，共享 CLI 侧 80 行 / 16 KiB 预算；首行超过剩余字节预算时可返回 `textTruncated:true` 的部分行，预算耗尽后的窗口以空 `lines` + `truncated:true` 保持可计数。malformed 或 request-inconsistent success 属于 `outcome_unknown`，不得用于 evidence。`contentChanged:false` 不触碰文件，不消费身份或推进 proof 代。
 
 CLI 写入保留非空结果的 BOM 与未修改行尾，真实空末行必要地补 terminator；正文以 CR 结尾的已终止行使用 CRLF，避免丢失正文 CR。会把首字符 U+FEFF 重新解释为 BOM 的修改在 check/apply 共同入口零写入拒绝，删除全部逻辑行则生成真正空文件。CLI 拒绝 multi-hardlink target，保留 symlink entry，并在 temp sync 后、atomic replace 前复检原始字节 revision。recheck 与 rename 之间仍有极短外部竞态，不宣称线性化 CAS。
 
@@ -252,7 +232,7 @@ Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标�
 - preview 上限 2000 行 / 256 KiB，所有计数使用 UTF-8 bytes。超长单行保留首尾及 `textTruncated:true`；
 - TUI 从 `details.read`、`details.changePreview` 与 `details.updatedAnchorSpans` 渲染读取、差异和更新锚点；preview 截断或没有可渲染 change 行时使用 CLI `linesAdded` / `linesDeleted`，不显示局部推导的完整 hunk 数；
 - 失败 TUI 区分待复核（未写入）、未写入、未执行与结果未知；只有已返回可用 proof 的恢复结果标为待复核。展开错误正文使用终端换行，保留完整路径与指令；折叠摘要仍有单行宽度限制，模型正文不受影响；
-- 模型正文列出全部产出窗口中的 updated anchors：窗口里的行都是本次编辑新写入、模型没有旧锚点可用的行；区间外的行已由 evidence 平移与 verified rename 覆盖，CLI 不再返回。纯删除没有窗口，不输出 anchor 块；不完整提示只在窗口被 CLI 预算截断或产出行自身文本被截断时追加；
+- 模型正文展示产出窗口的 Updated anchors，完整且保留的行配合新 proof 可继续编辑；区间外存续目标由历史 proof/token 对迁移，CLI 不额外返回。纯删除没有窗口，不输出 anchor 块。截断或容量导致证据不完整时明确说明后续可用性，不能把展示当作完整 proof，也不能改报提交失败；
 - expanded updated-anchor rows 只来自 `details.updatedAnchorSpans`，不解析模型正文；
 - diff 在 120 列切换 split/unified，主题色、布局和高亮缓存必须在 `invalidate()` 正确清理；
 - 差异底色使用 `theme.colors`、Pi TUI `mixColors()` 和 `theme.style()`，从当前宿主主题派生；终端默认颜色解析与 truecolor/256-color 输出由 Pi 处理；
@@ -264,10 +244,11 @@ Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标�
 | --- | --- |
 | `index.ts` | 三工具注册、apply queue 主流程、错误升级与 active-tool 生命周期。 |
 | `src/schema.ts` | 三工具的严格 schema 与参数类型。 |
-| `src/proof-id.ts` | 单调短 proof id 生成器。 |
+| `src/proof-id.ts` | 96 位进程 nonce 与单调序号 proof id 生成器。 |
 | `src/read-transaction.ts` | read/search CLI、结果校验和 evidence 更新的 canonical queue 事务。 |
 | `src/read-recovery.ts` | 整批 proof 缺口分页补读、共享预算与 revision 变化处理。 |
-| `src/read-evidence.ts` | revision proof、rename/ambiguity、容量、重映射、失效与 branch replay。 |
+| `src/read-evidence.ts` | proof 选择、目标迁移、恢复决策及发布/重放统一 reducer。 |
+| `src/proof-state.ts` | 证据代、历史坐标转换、容量计费及淘汰。 |
 | `src/file-changes.ts` | 四种公开 change → CLI batch、请求护栏及其拒绝信息。 |
 | `src/cli.ts` | CLI 3.x capability 门禁、bounded output 和 exit-confirmed 进程终止。 |
 | `src/result.ts` | 共享结果类型、disposition、edit delta 校验与结果构造器。 |
@@ -318,12 +299,12 @@ pi --no-extensions -e ./pi-hledit-diff/index.ts
 用 `/hledit-status` 确认 CLI 3.4.0 与 capability 健康，并覆盖：
 
 1. 连续 range read、正则/字面量 search/context 和四种 anchored operation；
-2. proof 缺失、stale、token 复用零写入、显式重读后成功；
+2. 新 proof 链式续编、旧 proof 消费目标拒绝、存续目标迁移、stale 与容量恢复；
 3. session branch 切换与 `/reload` 后 evidence/active set；
 4. mixed EOL、BOM、trailing newline、中文/emoji preview；
 5. expanded TUI 从 details 显示 anchors，正文格式变化不影响渲染。
 
-CLI 缺失/2.x/legacy residue fallback、`source_changed_before_commit`、`outcome_unknown`、read/apply race、强制终止和 cache eviction 由自动化测试覆盖。真实 Pi 验收与正式部署均需单独执行；本次仓库实现不自动改变运行目录。
+CLI 缺失/2.x/legacy residue fallback、`source_changed_before_commit`、`outcome_unknown`、read/apply race、强制终止和 cache eviction 由自动化测试覆盖。真实 Pi 验收与正式部署均需单独执行；开发仓库不自动改变运行目录。
 
 ## 升级原则
 
@@ -331,6 +312,6 @@ CLI 缺失/2.x/legacy residue fallback、`source_changed_before_commit`、`outco
 2. 不恢复修改后的额外 `read-range` 子进程或全文件 diff snapshot。
 3. 不把完整 diff 发送给 LLM。
 4. 不绕过 canonical `withFileMutationQueue()`、read proof 或 CLI 原子 batch。
-5. 不自动 stale 重试，不让旧 token ambiguity 静默消失。
+5. 不自动 stale 重试，不把旧 proof 的已消费目标改解释成当前同字面 token。
 6. 不解除定向补读的预算上限，也不自动重放补读后的修改：预算是单次工具结果对上下文窗口的唯一约束，那一趟往返是"模型必须看过被消费的行"的执行点。
 7. 修改协议后同步更新 CLI、插件、tracked binary、端到端测试和当前文档。

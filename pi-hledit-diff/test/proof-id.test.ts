@@ -14,7 +14,7 @@ test("proof ids never repeat within one process", () => {
 test("proof ids share one process prefix and advance monotonically", () => {
 	const parsed = Array.from({ length: 8 }, () => {
 		const id = nextProofId();
-		const match = /^([a-z]{3})(\d+)$/.exec(id);
+		const match = /^([A-Za-z0-9_-]{16})\.(\d+)$/.exec(id);
 		assert.ok(match, `unexpected proof id shape: ${id}`);
 		return { prefix: match[1]!, counter: Number(match[2]!) };
 	});

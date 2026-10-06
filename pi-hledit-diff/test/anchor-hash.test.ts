@@ -27,6 +27,33 @@ test("structural lines mix in the line number while significant lines do not", (
 	assert.equal(computeLineHash(5, "text"), computeLineHash(5, "text   \t"));
 });
 
+test("trailing whitespace preserves the exact v2 Unicode set", () => {
+	const whitespace = "\t\n\v\f\r \u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000";
+	for (const suffix of whitespace) {
+		for (const text of ["", "}", "text", "😀"]) {
+			assert.equal(computeLineHash(5, text + suffix), computeLineHash(5, text));
+		}
+	}
+	assert.equal(computeLineHash(5, whitespace), computeLineHash(5, ""));
+	for (const suffix of ["\uFEFF", "\u200b"]) {
+		assert.notEqual(computeLineHash(5, "text" + suffix), computeLineHash(5, "text"));
+	}
+});
+
+test("long internal whitespace does not stall anchor remapping", async () => {
+	// [喵喵喵]: 同步回溯会阻塞测试线程；子进程硬超时确保旧实现能被可靠终止。
+	const moduleUrl = new URL("../src/anchor-hash.ts", import.meta.url).href;
+	await execFileAsync(process.execPath, ["--input-type=module", "-e", `
+		import assert from "node:assert/strict";
+		import { computeAnchorTag } from ${JSON.stringify(moduleUrl)};
+		const line = " ".repeat(40_000) + "x";
+		for (let i = 0; i < 32; i++) {
+			assert.equal(computeAnchorTag(2, line), "2#NeH");
+			assert.equal(computeAnchorTag(2, line + "\\u0085\\u3000"), "2#NeH");
+		}
+	`], { timeout: 5_000 });
+});
+
 // golden 对拍：TS 复刻必须与 bundled CLI 对每一行输出完全一致的锚点。
 // hash 语义属于锚点协议；两侧任何不一致都必须视为协议破坏并在此失败。
 test("computeAnchorTag matches every anchor emitted by the bundled CLI", async () => {

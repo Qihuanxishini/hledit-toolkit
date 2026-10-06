@@ -226,10 +226,10 @@ test("every proof id issued for the current revision stays valid until the revis
 	const expired = store.selectProof(PATH, replaceRange("1#AAA", "1#AAA"), "page1");
 	assert.ok("failure" in expired);
 	assert.equal(expired.failure.code, "invalid_proof_id");
-	assert.equal(expired.failure.retryProofId, "fresh");
+	assert.equal("retryProofId" in expired.failure, false);
 	const guidance = formatReadProofFailure("target.txt", expired.failure);
-	assert.match(guidance, /Use proof_id: fresh/);
-	assert.doesNotMatch(guidance, /hledit_read_anchors|offset:/);
+	assert.match(guidance, /unknown or expired/);
+	assert.doesNotMatch(guidance, /Use proof_id: fresh|offset:/);
 	assertProofSelection(store.selectProof(PATH, replaceRange("1#AAA", "1#AAA"), "fresh"), {
 		proof: { revision: REVISION_B, anchors: ["1#AAA"] },
 	});
@@ -237,7 +237,7 @@ test("every proof id issued for the current revision stays valid until the revis
 
 test("oversized ranges fail without enumerating every requested line", () => {
 	const store = new ReadEvidenceStore();
-	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }]));
+	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }], { totalLines: Number.MAX_SAFE_INTEGER }));
 
 	const selection = store.selectProof(PATH, replaceRange("1#AAA", "9007199254740991#BBB"));
 	assert.ok("failure" in selection);
@@ -245,22 +245,22 @@ test("oversized ranges fail without enumerating every requested line", () => {
 	assert.deepEqual(selection.failure.reportedMissingLines, []);
 	assert.equal(selection.failure.proofGap, undefined);
 	const guidance = formatReadProofFailure("target.txt", selection.failure);
-	assert.match(guidance, /Reading more pages cannot make this batch fit/);
+	assert.match(guidance, /Reading more cannot make it fit/);
 	assert.match(guidance, /splitting forfeits whole-batch atomicity/);
 	assert.doesNotMatch(guidance, /hledit_read_anchors|offset:|nextOffset/);
 });
 
 
-test("an invalid proof id points to its distant missing target instead of the file start", () => {
+test("an unknown proof never turns unverified old coordinates into recovery instructions", () => {
 	const store = new ReadEvidenceStore();
 	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }]), "current");
 	const selection = store.selectProof(PATH, replaceRange("11000#BBB", "11000#BBB"), "expired");
 	assert.ok("failure" in selection);
 	assert.equal(selection.failure.code, "invalid_proof_id");
-	assert.equal(selection.failure.retryProofId, undefined);
+	assert.equal("retryProofId" in selection.failure, false);
 	const guidance = formatReadProofFailure("target.txt", selection.failure);
-	assert.match(guidance, /offset: 10998, limit: 12/);
-	assert.doesNotMatch(guidance, /offset: 1,|no additional read is required/);
+	assert.match(guidance, /unknown or expired/);
+	assert.doesNotMatch(guidance, /offset:|no additional read is required/);
 });
 
 test("capacity preflight counts merged consumed ranges, not distance between separate edits", () => {
@@ -291,7 +291,7 @@ test("evidence eviction is distinguished from an ordinary unread gap and survive
 
 test("proof failure guidance covers the complete first missing range", () => {
 	const store = new ReadEvidenceStore();
-	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 3, anchor: "3#AAA" }]));
+	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 3, anchor: "3#AAA" }], { totalLines: 500 }));
 
 	const selection = store.selectProof(PATH, [
 		{ operation: "replace_range", start_anchor: "3#AAA", end_anchor: "3#AAA", lines: ["three"] },
@@ -757,6 +757,7 @@ test("submitting a pre-edit anchor uses a verified rename without rereading", ()
 		{ line: 2, anchor: computeAnchorTag(2, "bravo"), text: "bravo" },
 		{ line: 3, anchor: computeAnchorTag(3, "charlie"), text: "charlie" },
 	]));
+	const oldProof = store.getProofId(PATH);
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 2, oldEnd: 2, delta: 1 }],
@@ -775,7 +776,7 @@ test("submitting a pre-edit anchor uses a verified rename without rereading", ()
 	// 模型提交编辑前的旧行 3 锚点：唯一更名且完整 proof 仍成立时直接规范化。
 	const staleAnchor = computeAnchorTag(3, "charlie");
 	const renamedAnchor = computeAnchorTag(4, "charlie");
-	const selection = store.selectProof(PATH, [{ operation: "insert_after", anchor: staleAnchor, lines: ["x"] }]);
+	const selection = store.selectProof(PATH, [{ operation: "insert_after", anchor: staleAnchor, lines: ["x"] }], oldProof);
 	assert.ok("proof" in selection);
 	assert.deepEqual(selection.proof, { revision: REVISION_B, anchors: [renamedAnchor] });
 	assert.deepEqual(selection.normalizedChanges, [{ operation: "insert_after", anchor: renamedAnchor, lines: ["x"] }]);
@@ -789,6 +790,7 @@ test("a rename hint does not hide an unrelated proof gap in the same batch", () 
 		{ line: 2, anchor: computeAnchorTag(2, "bravo"), text: "bravo" },
 		{ line: 3, anchor: computeAnchorTag(3, "charlie"), text: "charlie" },
 	]));
+	const oldProof = store.getProofId(PATH);
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 2, oldEnd: 2, delta: 1 }],
@@ -807,23 +809,15 @@ test("a rename hint does not hide an unrelated proof gap in the same batch", () 
 	// 同一批次：一个可由更名解释的旧锚点 + 一个从未读取的远端范围。
 	// 纯更名指引会诱导一次注定失败的重提交；必须同时给出剩余缺口的定向重读。
 	const staleAnchor = computeAnchorTag(3, "charlie");
-	const renamedAnchor = computeAnchorTag(4, "charlie");
 	const selection = store.selectProof(PATH, [
 		{ operation: "insert_after", anchor: staleAnchor, lines: ["x"] },
 		{ operation: "replace_range", start_anchor: computeAnchorTag(8, "hotel"), end_anchor: computeAnchorTag(9, "india"), lines: ["y"] },
-	]);
+	], oldProof);
 	assert.ok("failure" in selection);
-	assert.deepEqual(selection.failure.renamedAnchors, [{ requested: staleAnchor, current: renamedAnchor }]);
-	// 剩余缺口按更名替换后的坐标计算，不包含已被更名解释的旧区间。
-	assert.deepEqual(selection.failure.reportedMissingLines, [8, 9]);
-	assert.deepEqual(selection.failure.suggestedReadRange, { start: 8, end: 9 });
-
+	assert.equal(selection.failure.code, "proof_source_unavailable");
 	const formatted = formatReadProofFailure("target.txt", selection.failure);
-	assert.match(formatted, new RegExp(`${staleAnchor} -> ${renamedAnchor}`));
-	assert.match(formatted, /required but not sufficient/);
-	assert.match(formatted, /offset: 6, limit: 12/);
-	assert.doesNotMatch(formatted, /Resubmit after replacing every renamed anchor with its current form, or reread the range/);
-	assert.match(formatted, /proof_id from the latest successful read page and current anchors, apply every listed anchor rename/);
+	assert.doesNotMatch(formatted, /offset:/);
+	assert.match(formatted, /old coordinates will not be used/);
 });
 
 test("verified rename chains normalize to the latest anchor", () => {
@@ -834,6 +828,7 @@ test("verified rename chains normalize to the latest anchor", () => {
 		{ line: 2, anchor: computeAnchorTag(2, "bravo"), text: "bravo" },
 		{ line: 3, anchor: computeAnchorTag(3, "charlie"), text: "charlie" },
 	]));
+	const oldProof = store.getProofId(PATH);
 	// 编辑 1：第 2 行替换为两行（charlie 3 -> 4）。
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
@@ -865,7 +860,7 @@ test("verified rename chains normalize to the latest anchor", () => {
 	// 提交最早一轮读取的锚点：唯一更名链直接规范化到最新名字。
 	const oldestAnchor = computeAnchorTag(3, "charlie");
 	const latestAnchor = computeAnchorTag(5, "charlie");
-	const selection = store.selectProof(PATH, [{ operation: "insert_after", anchor: oldestAnchor, lines: ["x"] }]);
+	const selection = store.selectProof(PATH, [{ operation: "insert_after", anchor: oldestAnchor, lines: ["x"] }], oldProof);
 	assert.ok("proof" in selection);
 	assert.deepEqual(selection.proof, { revision: REVISION_C, anchors: [latestAnchor] });
 	assert.deepEqual(selection.normalizedChanges, [{ operation: "insert_after", anchor: latestAnchor, lines: ["x"] }]);
@@ -876,7 +871,7 @@ test("verified rename chains normalize to the latest anchor", () => {
 	});
 });
 
-test("consuming all observed lines preserves the proof generation in live and replayed state", () => {
+test("consumed and produced targets use distinct proof generations in live and replayed state", () => {
 	const proofId = "read-generation";
 	const oldAnchor = computeAnchorTag(2, "before");
 	const newAnchor = computeAnchorTag(2, "after");
@@ -899,26 +894,28 @@ test("consuming all observed lines preserves the proof generation in live and re
 	];
 	const live = new ReadEvidenceStore();
 	for (const event of events) live.updateFromToolResult(event.toolName, event.details, "/workspace");
+	const publishedProof = live.getProofId(PATH)!;
+	assert.notEqual(publishedProof, proofId);
 	const replay = new ReadEvidenceStore();
 	replay.restoreFromBranch({
 		cwd: "/workspace",
-		sessionManager: { getBranch: () => events.map((event) => ({ type: "message", message: { role: "toolResult", ...event } })) },
+		sessionManager: { getBranch: () => [...events].reverse().map((event) => ({ type: "message", message: { role: "toolResult", ...event } })) },
 	} as never);
 
 	for (const store of [live, replay]) {
-		assertProofSelection(store.selectProof(PATH, replaceRange(newAnchor, newAnchor), proofId), {
+		assertProofSelection(store.selectProof(PATH, replaceRange(newAnchor, newAnchor), publishedProof), {
 			proof: { revision: REVISION_B, anchors: [newAnchor] },
 		});
 		const consumed = store.selectProof(PATH, replaceRange(oldAnchor, oldAnchor), proofId);
 		assert.ok("failure" in consumed);
-		assert.match(consumed.failure.message, /lost its unique identity/);
+		assert.equal(consumed.failure.code, "target_consumed");
 		store.recordRead(PATH, readMetadata(REVISION_B, [{ line: 2, anchor: newAnchor, text: "after" }]), "next-read");
-		// 同 revision 的显式重读只追加 id，旧 generation 的 id 继续有效。
-		assertProofSelection(store.selectProof(PATH, replaceRange(newAnchor, newAnchor), proofId), {
+		// [喵喵喵]: 同代追加读取不改变旧代引用的含义。
+		assertProofSelection(store.selectProof(PATH, replaceRange(newAnchor, newAnchor), publishedProof), {
 			proof: { revision: REVISION_B, anchors: [newAnchor] },
 		});
 		store.recordRead(PATH, readMetadata(REVISION_C, [{ line: 2, anchor: newAnchor, text: "after" }]), "changed-read");
-		const expired = store.selectProof(PATH, replaceRange(newAnchor, newAnchor), proofId);
+		const expired = store.selectProof(PATH, replaceRange(newAnchor, newAnchor), publishedProof);
 		assert.ok("failure" in expired);
 		assert.equal(expired.failure.code, "invalid_proof_id");
 	}
@@ -972,7 +969,7 @@ test("a success without edit deltas falls back to window-only evidence", () => {
 });
 
 
-test("reused rename tokens are rejected until an explicit read establishes current identity", () => {
+test("same token in two proof generations selects distinct surviving targets", () => {
 	const store = new ReadEvidenceStore();
 	const beforeAnchor = computeAnchorTag(1, "before");
 	const reusedAnchor = computeAnchorTag(2, "needle");
@@ -983,6 +980,7 @@ test("reused rename tokens are rejected until an explicit read establishes curre
 		{ line: 2, anchor: reusedAnchor, text: "needle" },
 		{ line: 3, anchor: afterAnchor, text: "after" },
 	]));
+	const oldProof = store.getProofId(PATH);
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 2, oldEnd: 1, delta: 1 }],
@@ -998,11 +996,12 @@ test("reused rename tokens are rejected until an explicit read establishes curre
 		}],
 	}), "/workspace");
 
-	const ambiguous = store.selectProof(PATH, [{ operation: "insert_after", anchor: reusedAnchor, lines: ["x"] }]);
-	assert.ok("failure" in ambiguous);
-	assert.match(ambiguous.failure.message, /lost its unique identity after a verified edit/);
-	assert.equal(ambiguous.failure.renamedAnchors, undefined);
-	assert.match(formatReadProofFailure("target.txt", ambiguous.failure), /Explicitly reread the target/);
+	const oldTarget = store.selectProof(PATH, [{ operation: "insert_after", anchor: reusedAnchor, lines: ["x"] }], oldProof);
+	assert.ok("proof" in oldTarget);
+	assert.deepEqual(oldTarget.proof.anchors, [shiftedAnchor]);
+	assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: reusedAnchor, lines: ["x"] }]), {
+		proof: { revision: REVISION_B, anchors: [reusedAnchor] },
+	});
 	assertProofSelection(store.selectProof(PATH, [{ operation: "insert_after", anchor: shiftedAnchor, lines: ["x"] }]), {
 		proof: { revision: REVISION_B, anchors: [shiftedAnchor] },
 	});
@@ -1014,7 +1013,7 @@ test("reused rename tokens are rejected until an explicit read establishes curre
 });
 
 
-test("a consumed token reused by a shifted duplicate is rejected until reread", () => {
+test("a consumed target cannot claim a shifted duplicate through its old proof", () => {
 	const store = new ReadEvidenceStore();
 	const consumedAnchor = computeAnchorTag(2, "needle");
 	const duplicateAnchor = computeAnchorTag(3, "needle");
@@ -1022,6 +1021,7 @@ test("a consumed token reused by a shifted duplicate is rejected until reread", 
 		{ line: 2, anchor: consumedAnchor, text: "needle" },
 		{ line: 3, anchor: duplicateAnchor, text: "needle" },
 	]));
+	const oldProof = store.getProofId(PATH);
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 2, oldEnd: 2, delta: -1 }],
@@ -1034,16 +1034,17 @@ test("a consumed token reused by a shifted duplicate is rejected until reread", 
 		}],
 	}), "/workspace");
 
-	const ambiguous = store.selectProof(PATH, [{ operation: "insert_after", anchor: consumedAnchor, lines: ["x"] }]);
+	const ambiguous = store.selectProof(PATH, [{ operation: "insert_after", anchor: consumedAnchor, lines: ["x"] }], oldProof);
 	assert.ok("failure" in ambiguous);
-	assert.match(ambiguous.failure.message, /lost its unique identity after a verified edit/);
+	assert.equal(ambiguous.failure.code, "target_consumed");
+	assert.ok("proof" in store.selectProof(PATH, [{ operation: "insert_after", anchor: consumedAnchor, lines: ["x"] }]));
 
 	store.recordRead(PATH, readMetadata(REVISION_B, [{ line: 2, anchor: consumedAnchor, text: "needle" }]));
 	assert.ok("proof" in store.selectProof(PATH, [{ operation: "insert_after", anchor: consumedAnchor, lines: ["x"] }]));
 });
 
 
-test("a consumed rename alias stays ambiguous across delayed token reuse", () => {
+test("consumed historical identity stays revoked across delayed token reuse", () => {
 	const store = new ReadEvidenceStore();
 	const originalAnchor = computeAnchorTag(2, "needle");
 	const shiftedAnchor = computeAnchorTag(3, "needle");
@@ -1053,6 +1054,7 @@ test("a consumed rename alias stays ambiguous across delayed token reuse", () =>
 		{ line: 2, anchor: originalAnchor, text: "needle" },
 		{ line: 3, anchor: computeAnchorTag(3, "after"), text: "after" },
 	]));
+	const oldProof = store.getProofId(PATH);
 
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
@@ -1094,12 +1096,12 @@ test("a consumed rename alias stays ambiguous across delayed token reuse", () =>
 		}],
 	}), "/workspace");
 
-	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: originalAnchor, lines: ["x"] }]));
+	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: originalAnchor, lines: ["x"] }], oldProof));
 	store.recordRead(PATH, readMetadata(REVISION_D, [{ line: 2, anchor: originalAnchor, text: "needle" }]));
 	assert.ok("proof" in store.selectProof(PATH, [{ operation: "insert_after", anchor: originalAnchor, lines: ["x"] }]));
 });
 
-test("branch replay reconstructs reused-token ambiguity", () => {
+test("legacy apply history expires ambiguous proof instead of inventing new generations", () => {
 	const reusedAnchor = computeAnchorTag(2, "needle");
 	const shiftedAnchor = computeAnchorTag(3, "needle");
 	const read = readMetadata(REVISION_A, [
@@ -1134,7 +1136,7 @@ test("branch replay reconstructs reused-token ambiguity", () => {
 
 	const selection = store.selectProof(PATH, [{ operation: "insert_after", anchor: reusedAnchor, lines: ["x"] }]);
 	assert.ok("failure" in selection);
-	assert.match(selection.failure.message, /lost its unique identity after a verified edit/);
+	assert.equal(store.getProofId(PATH), undefined);
 });
 
 test("a differing currentRevision invalidates evidence while a same-revision rejection preserves it", () => {
@@ -1185,7 +1187,7 @@ test("per-file record overflow keeps only the triggering fresh window", () => {
 });
 
 
-test("updated-anchor overflow cannot erase a reused-token ambiguity", () => {
+test("capacity eviction expires old proofs while keeping the newly published window usable", () => {
 	const store = new ReadEvidenceStore();
 	const originalLine = MAX_EVIDENCE_RECORDS_PER_FILE - 1;
 	const lines = Array.from({ length: originalLine }, (_, index) => {
@@ -1196,6 +1198,7 @@ test("updated-anchor overflow cannot erase a reused-token ambiguity", () => {
 	const reusedAnchor = computeAnchorTag(originalLine, "needle");
 	const shiftedAnchor = computeAnchorTag(originalLine + 1, "needle");
 	store.recordRead(PATH, readMetadata(REVISION_A, lines));
+	const oldProof = store.getProofId(PATH);
 
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
@@ -1212,9 +1215,9 @@ test("updated-anchor overflow cannot erase a reused-token ambiguity", () => {
 		}],
 	}), "/workspace");
 
-	// 容量降级不能把 updatedAnchors 误当成显式重读，否则旧 token 会重新获得当前语义。
-	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: reusedAnchor, lines: ["x"] }]));
-	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: shiftedAnchor, lines: ["x"] }]));
+	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: reusedAnchor, lines: ["x"] }], oldProof));
+	assert.ok("proof" in store.selectProof(PATH, [{ operation: "insert_after", anchor: reusedAnchor, lines: ["x"] }]));
+	assert.ok("proof" in store.selectProof(PATH, [{ operation: "insert_after", anchor: shiftedAnchor, lines: ["x"] }]));
 
 	store.recordRead(PATH, readMetadata(REVISION_B, [
 		{ line: originalLine, anchor: reusedAnchor, text: "needle" },
@@ -1223,7 +1226,7 @@ test("updated-anchor overflow cannot erase a reused-token ambiguity", () => {
 });
 
 
-test("remap overflow cannot be repopulated from updated anchors", () => {
+test("historical remap capacity cannot evict a fitting current produced window", () => {
 	const store = new ReadEvidenceStore();
 	const lineCount = 6_000;
 	const lines = Array.from({ length: lineCount }, (_, index) => {
@@ -1233,6 +1236,7 @@ test("remap overflow cannot be repopulated from updated anchors", () => {
 	});
 	const insertedAnchor = computeAnchorTag(1, "header");
 	store.recordRead(PATH, readMetadata(REVISION_A, lines));
+	const oldProof = store.getProofId(PATH);
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
 		revision: REVISION_B,
 		editDeltas: [{ oldStart: 1, oldEnd: 0, delta: 1 }],
@@ -1245,7 +1249,8 @@ test("remap overflow cannot be repopulated from updated anchors", () => {
 		}],
 	}), "/workspace");
 
-	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: insertedAnchor, lines: ["x"] }]));
+	assert.ok("failure" in store.selectProof(PATH, [{ operation: "insert_after", anchor: lines[0]!.anchor, lines: ["x"] }], oldProof));
+	assert.ok("proof" in store.selectProof(PATH, [{ operation: "insert_after", anchor: insertedAnchor, lines: ["x"] }]));
 	store.recordRead(PATH, readMetadata(REVISION_B, [{ line: 1, anchor: insertedAnchor, text: "header" }]));
 	assert.ok("proof" in store.selectProof(PATH, [{ operation: "insert_after", anchor: insertedAnchor, lines: ["x"] }]));
 });
@@ -1333,4 +1338,53 @@ test("branch restoration starts session usage accounting from zero", () => {
 	} as never);
 
 	assert.ok("proof" in store.selectProof(restoredPath, [{ operation: "insert_after", anchor: "1#AAA", lines: ["x"] }]));
+});
+
+
+test("returning to an earlier byte revision never revives a consumed proof target", () => {
+	const store = new ReadEvidenceStore();
+	const anchor = computeAnchorTag(1, "original");
+	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor, text: "original" }], { totalLines: 1 }), "original-proof");
+	for (const [revision, text] of [[REVISION_B, "changed"], [REVISION_A, "original"]]) {
+		store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("succeeded", {
+			revision, contentChanged: true, editDeltas: [{ oldStart: 1, oldEnd: 1, delta: 0 }],
+			updatedAnchorSpans: [{ offset: 1, limit: 1, desiredLimit: 1, truncated: false,
+				lines: [{ line: 1, anchor: computeAnchorTag(1, text!), text, textTruncated: false }] }],
+		}), "/workspace");
+	}
+	const historical = store.selectProof(PATH, replaceRange(anchor, anchor), "original-proof");
+	assert.ok("failure" in historical);
+	assert.equal(historical.failure.code, "target_consumed");
+	assert.ok("proof" in store.selectProof(PATH, replaceRange(anchor, anchor), store.getProofId(PATH)));
+});
+
+test("recovery capacity prioritizes the entire requested target over unrelated cached lines", () => {
+	const store = new ReadEvidenceStore();
+	const row = (line: number) => ({ line, anchor: computeAnchorTag(line, "x"), text: "x" });
+	store.recordRead(PATH, readMetadata(REVISION_A, Array.from({ length: 9998 }, (_, i) => row(i + 1)), { totalLines: 11000 }), "before-recovery");
+	const reads = [readMetadata(REVISION_A, Array.from({ length: 12 }, (_, i) => row(i + 9999)), { totalLines: 11000, truncated: true })];
+	const ranges = [{ start: 9990, end: 10010 }];
+	assert.equal(store.canRetainRecovery(PATH, reads, "recovered", ranges), true);
+	assert.equal(store.getProofId(PATH), "before-recovery");
+	const event = applyDetails("rejected", { error: { code: "insufficient_read_proof", message: "gap" },
+		path: "target.txt", proofId: "recovered", recoveredReads: reads, recoveryRequiredRanges: ranges });
+	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, event, "/workspace");
+	assert.ok("proof" in store.selectProof(PATH, replaceRange(row(9990).anchor, row(10010).anchor), "recovered"));
+	assert.ok("failure" in store.selectProof(PATH, replaceRange(row(1).anchor, row(1).anchor), "recovered"));
+});
+
+test("recovery cannot claim readiness when complete required text exceeds the byte budget", () => {
+	const store = new ReadEvidenceStore();
+	const text = "x".repeat(40000);
+	const row = (line: number) => ({ line, anchor: computeAnchorTag(line, text), text });
+	store.recordRead(PATH, readMetadata(REVISION_A, Array.from({ length: 103 }, (_, i) => row(i + 1)), { totalLines: 105 }), "before-recovery");
+	const reads = [104, 105].map((line) => readMetadata(REVISION_A, [row(line)], { totalLines: 105, truncated: line < 105 }));
+	const ranges = [{ start: 1, end: 105 }];
+	assert.equal(store.canRetainRecovery(PATH, reads, "recovered", ranges), false);
+	assert.equal(store.getProofId(PATH), "before-recovery");
+	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("rejected", {
+		path: "target.txt", error: { code: "evidence_capacity_exceeded", message: "too much source" }, proofId: "recovered",
+		recoveredReads: reads, recoveryRequiredRanges: ranges,
+	}), "/workspace");
+	assert.ok("failure" in store.selectProof(PATH, replaceRange(row(1).anchor, row(105).anchor), "recovered"));
 });

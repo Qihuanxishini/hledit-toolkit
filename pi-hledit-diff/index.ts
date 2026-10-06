@@ -4,6 +4,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { lineFromAnchor } from "./src/anchor.ts";
 import {
 	HLEDIT_APPLY_FILE_CHANGES_TOOL,
 	HLEDIT_READ_ANCHORS_TOOL,
@@ -145,6 +146,7 @@ async function runFileChangesWithDiff(
 		if ("failure" in proofSelection) {
 			const { failure } = proofSelection;
 			if (failure.code === "insufficient_read_proof") {
+				const requiredRanges = evidence.recoveryRequirements(normalizedParams.changes);
 				const recovered = await recoverMissingReadProof({
 					failure,
 					path: normalizedPath,
@@ -152,6 +154,10 @@ async function runFileChangesWithDiff(
 					cwd: ctx.cwd,
 					signal,
 					run: runHledit,
+					requiredRanges,
+					canRetain: (reads, proofId) => evidence.canRetainRecovery(evidencePath, reads, proofId, requiredRanges),
+					requiredLastLine: Math.max(...normalizedParams.changes.map((change) =>
+						lineFromAnchor("end_anchor" in change ? change.end_anchor : change.anchor) ?? 0)),
 				});
 				if (recovered) return recovered;
 			}
@@ -211,8 +217,23 @@ async function runFileChangesWithDiff(
 	// D6：evidence 重映射/失效/记录属于同文件 mutation 的完整操作，必须在队列放行前
 	// 完成，保证同文件下一项排队调用的 selectProof 立即看到本次结果。
 	return withFileMutationQueue(evidencePath, async () => {
-		const result = await applyWithinQueue();
+		let result = await applyWithinQueue();
 		evidence.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, result.details, ctx.cwd);
+		if (result.details.disposition === "succeeded") {
+			const anchors = result.details.updatedAnchorSpans?.flatMap((span) => span.lines.map((line) => line.anchor)) ?? [];
+			const blocked = evidence.anchorsRequiringRead(evidencePath, anchors);
+			if (blocked.length > 0) {
+				const warning = `Preview-only anchors (NOT directly usable): ${blocked.join(", ")}. Complete evidence for these lines was not retained. Read the intended target before editing it; do not repeat the successful edit.`;
+				const blockedSet = new Set(blocked);
+				const content = result.content.map((block) => ({ ...block, text: block.text.split("\n").map((line) => {
+					const colon = line.indexOf(":");
+					const anchor = line.slice(0, colon);
+					return colon >= 0 && blockedSet.has(anchor) ? `[Preview only, line ${lineFromAnchor(anchor)}]${line.slice(colon)}` : line;
+				}).join("\n") }));
+				const warnings = Array.isArray(result.details.warnings) ? result.details.warnings : [];
+				result = { ...result, content: appendResultText({ ...result, content }, warning), details: { ...result.details, unprovenAnchors: blocked, warnings: [...warnings, warning] } };
+			}
+		}
 		return appendCurrentProofId(result, evidence.getProofId(evidencePath));
 	});
 }
@@ -288,7 +309,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		label: "Apply File Changes",
 		description: "Atomically edit one text file with non-overlapping inclusive ranges or before/after anchor inserts; requires complete read proof.",
 		promptGuidelines: [
-			"Use hledit_apply_file_changes with the latest proof_id returned for that path and current LN#HASH tokens; any proof_id issued for the file's current revision is accepted. A failed read creates no proof. A successful apply may return proof_id for further edits with verified updated anchors.",
+			"Use hledit_apply_file_changes with proof_id and LN#HASH tokens from the same evidence generation. Changed apply returns new proof + Updated anchors. Old pairs work only for verified surviving targets. Failed reads create no proof.",
 			"In hledit_apply_file_changes.lines, use raw text without LN#HASH prefixes: \\n separates lines; one trailing \\n terminates the last line, and an empty string writes one blank line. For targeted edits, do not use write to bypass read proof; use write only for a new/empty file or an intentional complete-file rewrite when the recovery guidance allows it.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,

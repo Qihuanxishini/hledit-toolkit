@@ -112,6 +112,8 @@ export type ReadProofFailure = {
 	proofGap?: ReadProofGap;
 	renamedAnchors?: RenamedAnchor[];
 	retryProofId?: string;
+	recoveryRanges?: ReadProofLineRange[];
+	recoveryRevision?: string;
 };
 
 // 本次修改实际消费或依附的、同 revision 完整读取行；只用于插件内部的护栏与
@@ -255,12 +257,48 @@ function collectProofCoverage(
 	return { coveredLines, reportedMissingLines: [], firstMissingRange: undefined };
 }
 
-// [喵喵喵]: 一次补读覆盖同一 change 从首个缺口到最后一个缺口的完整跨度；
-// 已知的连续尾部不重复读取，避免离散 evidence 触发多轮 apply → 补读。(2026-07-28)
+// [喵喵喵]: 保留首个受影响 change 的建议跨度供主诊断使用；实际自动补读采用整批 recoveryRanges。
 function unresolvedReadSpanForChange(gap: ReadProofGap, evidenceLines: Map<number, EvidenceLine>): ReadProofLineRange {
 	let lastMissingLine = gap.requiredEnd;
 	while (lastMissingLine > gap.end && evidenceLines.has(lastMissingLine)) lastMissingLine -= 1;
 	return { start: gap.start, end: Math.max(gap.end, lastMissingLine) };
+}
+
+// [喵喵喵]: 只在失败路径规划整批实际缺口；消费行总数已由 selectProof 的容量预检约束。
+// 已知但不匹配或有歧义的端点保留确认上下文，普通缺行仅合并近邻窗口。
+function recoveryRangesFor(
+	requested: RequestedChangeEvidence,
+	evidenceLines: Map<number, EvidenceLine>,
+	ambiguousTokens: ReadonlySet<string> = new Set(),
+): ReadProofLineRange[] {
+	const windows: ReadProofLineRange[] = [];
+	for (const range of requested.ranges) {
+		let start: number | undefined;
+		for (let line = range.start; line <= range.end; line += 1) {
+			if (!evidenceLines.has(line)) start ??= line;
+			else if (start !== undefined) {
+				windows.push({ start, end: line - 1 });
+				start = undefined;
+			}
+		}
+		if (start !== undefined) windows.push({ start, end: range.end });
+	}
+	for (const endpoint of requested.endpointAnchors) {
+		const known = evidenceLines.get(endpoint.line);
+		if (ambiguousTokens.has(endpoint.anchor) || (known && known.anchor !== endpoint.anchor)) {
+			const window = suggestedReadWindow(endpoint.line, endpoint.line);
+			windows.push({ start: window.offset, end: window.lastLine });
+		}
+	}
+	windows.sort((left, right) => left.start - right.start || left.end - right.end);
+	const merged: ReadProofLineRange[] = [];
+	for (const window of windows) {
+		const previous = merged.at(-1);
+		// [喵喵喵]: 至多跨接两行已知源码，沿用确认上下文的尺度，避免零碎缺口耗尽页数预算。
+		if (previous && window.start - previous.end - 1 <= 2) previous.end = Math.max(previous.end, window.end);
+		else merged.push({ ...window });
+	}
+	return merged;
 }
 
 export async function resolveReadEvidencePath(cwd: string, path: string): Promise<string> {
@@ -328,6 +366,7 @@ type EvidenceProofFailure = {
 	reportedMissingLines: number[];
 	suggestedReadRange?: ReadProofLineRange;
 	proofGap?: ReadProofGap;
+	recoveryRanges?: ReadProofLineRange[];
 };
 
 type EvidenceProofEvaluation =
@@ -366,6 +405,7 @@ function evaluateProofAgainstEvidence(
 					? formatProofGapMessage(proofGap)
 					: `Read proof is missing ${lineRangeDescription(coverage.firstMissingRange ?? { start: coverage.reportedMissingLines[0]!, end: coverage.reportedMissingLines.at(-1)! })}.`,
 				reportedMissingLines: coverage.reportedMissingLines,
+				recoveryRanges: recoveryRangesFor(requested, evidenceLines),
 				...(suggestedReadRange ? { suggestedReadRange } : {}),
 				...(proofGap ? { proofGap } : {}),
 			},
@@ -380,6 +420,7 @@ function evaluateProofAgainstEvidence(
 						: `Change ${endpoint.changeNumber} (${endpoint.operation}) submitted anchor for line ${endpoint.line} does not match the most recently read anchor on this branch.`,
 					reportedMissingLines: [endpoint.line],
 					suggestedReadRange: { start: endpoint.line, end: endpoint.line },
+					recoveryRanges: recoveryRangesFor(requested, evidenceLines),
 				},
 			};
 		}
@@ -816,6 +857,7 @@ export class ReadEvidenceStore {
 						? formatProofGapMessage(proofGap)
 						: "No current anchors have been read for the source lines required by this change.",
 					reportedMissingLines: coverage.reportedMissingLines,
+					recoveryRanges: recoveryRangesFor(requested, emptyEvidence),
 					...(suggestedReadRange ? { suggestedReadRange } : {}),
 					...(proofGap ? { proofGap } : {}),
 				},
@@ -830,6 +872,8 @@ export class ReadEvidenceStore {
 					message: `Change ${ambiguousEndpoint.changeNumber} (${ambiguousEndpoint.operation}) submitted anchor token ${ambiguousEndpoint.anchor}, but that token lost its unique identity after a verified edit. It may refer to a consumed or moved pre-edit target, or to a different current line. Explicitly reread the target before resubmitting; the plugin will not guess.`,
 					reportedMissingLines: [ambiguousEndpoint.line],
 					suggestedReadRange: { start: ambiguousEndpoint.line, end: ambiguousEndpoint.line },
+					recoveryRanges: recoveryRangesFor(requested, evidence.lines, evidence.ambiguousTokens),
+					recoveryRevision: evidence.revision,
 				},
 			};
 		}
@@ -845,6 +889,7 @@ export class ReadEvidenceStore {
 		const renamedAnchors = renamedEndpointAnchors(evidence.renames, requested.endpointAnchors);
 		const failureFor = (failure: EvidenceProofFailure, renames?: RenamedAnchor[]): ReadProofFailure => ({
 			...insufficientReadProof(failure, renames),
+			recoveryRevision: evidence.revision,
 			...(evidence.capacityEvicted && failure.proofGap ? {
 				code: "read_evidence_evicted" as const,
 				message: `Earlier evidence was evicted at the per-file limit (${MAX_EVIDENCE_RECORDS_PER_FILE} records / ${MAX_EVIDENCE_BYTES_PER_FILE / 1024 / 1024} MiB). ${failure.message}`,

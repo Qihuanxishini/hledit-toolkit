@@ -773,7 +773,7 @@ test("apply tool rejects an anchor that does not match its read proof before sta
 	assert.equal(applyResult.details.recoveredReads?.[0]?.lines.find((line) => line.line === 2)?.anchor, currentAnchor);
 	assert.equal((applyResult.details.error as Record<string, unknown> | undefined)?.recoveredReads, undefined);
 	assert.match(applyResult.content[0]?.text ?? "", /submitted anchor for line 2 does not match/);
-	assert.match(applyResult.content[0]?.text ?? "", /targeted missing range was read and recorded/);
+	assert.match(applyResult.content[0]?.text ?? "", /batch recovery plan was read and recorded/);
 	assert.match(applyResult.content[0]?.text ?? "", new RegExp(`${currentAnchor}:two`));
 	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /single_line_range_expansion|Current anchor snapshot/);
 	assert.equal(await readFile(target, "utf8"), original);
@@ -806,7 +806,7 @@ test("proof recovery stops on source-line truncation", async (t) => {
 	assert.equal(apply.details.error?.code, "source_line_truncated");
 	assert.equal(apply.details.recoveredReads, undefined);
 	assert.match(apply.content[0]?.text ?? "", /Do not resubmit this hledit_apply_file_changes call/);
-	assert.doesNotMatch(apply.content[0]?.text ?? "", /Review the current source.*resubmit the batch/);
+	assert.doesNotMatch(apply.content[0]?.text ?? "", /Review the displayed source.*resubmit the batch/);
 	assert.equal(await readFile(target, "utf8"), original);
 });
 
@@ -828,13 +828,13 @@ test("truncated recovery preserves its source budget and proof across session re
 	} as never, undefined, undefined, context);
 	assert.equal(apply.details.error?.code, "source_line_truncated");
 	assert.equal(apply.details.recoveredReads?.length, 1);
-	assert.deepEqual(apply.details.recoveredReads?.[0]?.lines.map((line) => line.line), [1, 2]);
+	assert.deepEqual(apply.details.recoveredReads?.[0]?.lines.map((line) => line.line), [2]);
 	const text = apply.content[0]!.text;
 	const proofId = /^proof_id: (\S+)$/m.exec(text)?.[1];
 	assert.ok(proofId);
 	assert.equal(proofId, apply.details.proofId);
 	assert.deepEqual(text.split("\n").filter((line) => line.startsWith("proof_id:")), [`proof_id: ${proofId}`]);
-	const sourceStart = text.indexOf(formatReadMetadata(apply.details.recoveredReads![0]!));
+	const sourceStart = text.indexOf(formatReadMetadata(apply.details.recoveredReads![0]!, undefined, "recovery"));
 	assert.ok(sourceStart >= 0);
 	assert.ok(Buffer.byteLength(text.slice(sourceStart), "utf8") <= MAX_RECOVERY_TEXT_BYTES);
 	assert.equal(Buffer.from(text, "utf8").toString("utf8"), text);
@@ -937,7 +937,7 @@ test("multi-page proof recovery completes internally before apply is retried", a
 	assert.equal(apply.details.recoveredReads?.at(-1)?.nextOffset, 1_100);
 	const recoveryText = apply.content[0]?.text ?? "";
 	assert.match(recoveryText, /read and recorded in \d+ page\(s\)/);
-	assert.match(recoveryText, /Review the current source.*resubmit the batch/);
+	assert.match(recoveryText, /Review the displayed source.*resubmit the batch/);
 	assert.doesNotMatch(recoveryText, /Do not resubmit apply before then/);
 	// 多页补读只有一个权威 proof id；逐页重复输出会让调用方抄到已经作废的那个。
 	const proofIdLines = recoveryText.split("\n").filter((line) => line.startsWith("proof_id:"));
@@ -977,7 +977,7 @@ test("an oversized proof gap is refused without reading anything back", async (t
 	assert.match(text, /spans 2998 lines, above the 1200-line automatic recovery budget/);
 	assert.match(text, /No recovery read was started/);
 	assert.match(text, /Call hledit_read_anchors\(\{ path: "target\.txt", offset: \d+, limit: \d+ \}\)/);
-	assert.match(text, /proof_id from the latest successful read page and current anchors/);
+	assert.match(text, /current anchors and the latest proof_id/);
 	// 关键：拒绝的正文里不得夹带任何源码行，否则预算就白设了。
 	assert.doesNotMatch(text, /^\d+#[A-Za-z0-9_-]{3}:/m);
 	assert.equal(await readFile(target, "utf8"), original);
@@ -1014,17 +1014,17 @@ test("proof recovery stops at its byte budget and keeps the pages it already rea
 	const pageCount = apply.details.recoveredReads?.length ?? 0;
 	assert.ok(pageCount > 0 && pageCount <= 4);
 	const renderedRecoveryBytes = (apply.details.recoveredReads ?? [])
-		.map((read) => formatReadMetadata(read))
+		.map((read) => formatReadMetadata(read, undefined, "recovery"))
 		.join("\n");
 	assert.ok(
 		Buffer.byteLength(renderedRecoveryBytes, "utf8") <= MAX_RECOVERY_TEXT_BYTES,
 		`recovered source must stay within ${MAX_RECOVERY_TEXT_BYTES}-byte budget`,
 	);
-	assert.match(apply.content[0]?.text ?? "", /Automatic recovery stopped at its budget/);
-	assert.match(apply.content[0]?.text ?? "", /page\(s\) already read are recorded below/);
+	assert.match(apply.content[0]?.text ?? "", /Automatic recovery stopped at its text budget/);
+	assert.match(apply.content[0]?.text ?? "", /retained page\(s\) are recorded below; recovery is incomplete/);
 	assert.ok(apply.details.proofId);
 	assert.equal(/^proof_id: (\S+)$/m.exec(apply.content[0]?.text ?? "")?.[1], apply.details.proofId);
-	assert.match(apply.content[0]?.text ?? "", /proof_id from the latest successful read page and current anchors/);
+	assert.match(apply.content[0]?.text ?? "", /current anchors and the latest proof_id/);
 	assert.equal(await readFile(target, "utf8"), original);
 });
 
@@ -1589,4 +1589,31 @@ test("text boundary rejections preserve the file and provide input-specific guid
 	assert.equal(bom.details.disposition, "rejected");
 	assert.match(bom.content[0]?.text ?? "", /reinterpret leading U\+FEFF text as a UTF-8 BOM/);
 	assert.equal(await readFile(target, "utf8"), "old\nkeep\n");
+});
+
+// [喵喵喵]: 两个远端 change 同时缺行；验证一次恢复后整批可重提，而非逐块拒绝。
+test("disjoint changes recover all missing ranges before an explicit batch retry", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const search = registeredTools.get(HLEDIT_SEARCH_ANCHORS_TOOL)!;
+	const apply = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
+	const directory = await mkdtemp(join(process.cwd(), ".batch-recovery-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const original = Array.from({ length: 1600 }, (_, i) => `row-${i + 1}`);
+	const target = join(directory, "target.txt");
+	await writeFile(target, original.join("\n") + "\n");
+	const context = { cwd: directory };
+	const read = await search.execute("search", { path: "target.txt", pattern: "^row-(1|3|4|1598|1600)$" } as never, undefined, undefined, context);
+	const anchor = (n: number) => read.details.read!.lines.find((line) => line.line === n)!.anchor;
+	const changes = [
+		{ operation: "replace_range", start_anchor: anchor(1), end_anchor: anchor(4), lines: "first" },
+		{ operation: "replace_range", start_anchor: anchor(1598), end_anchor: anchor(1600), lines: "last" },
+	];
+	const recovered = await apply.execute("recover", { path: "target.txt", proof_id: read.details.proofId, changes } as never, undefined, undefined, context);
+	assert.equal(recovered.details.disposition, "rejected");
+	assert.deepEqual(recovered.details.recoveredReads?.flatMap((page) => page.lines.map((line) => line.line)), [2, 1599]);
+	assert.doesNotMatch(recovered.content[0]!.text, /continue with offset/);
+	assert.equal(await readFile(target, "utf8"), original.join("\n") + "\n");
+	const result = await apply.execute("retry", { path: "target.txt", proof_id: recovered.details.proofId, changes } as never, undefined, undefined, context);
+	assert.equal(result.details.disposition, "succeeded");
+	assert.equal(await readFile(target, "utf8"), ["first", ...original.slice(4, 1597), "last"].join("\n") + "\n");
 });

@@ -272,13 +272,16 @@ function parseReadErrorMetadata(parsed: Record<string, unknown>): HleditErrorMet
 
 // 补读路径复用同一份渲染，但省略 proof_id：多页恢复只有一个权威 proof id，
 // 逐页重复输出会让调用方抄到已经作废的那个（见 read-recovery.ts）。
-export function formatReadMetadata(read: HleditReadMetadata, proofId?: string): string {
+export function formatReadMetadata(read: HleditReadMetadata, proofId?: string, mode: "read" | "recovery" = "read"): string {
 	const anchoredLines = read.lines.map((line) => `${line.anchor}:${line.text}`);
 	const { firstLine, lastLine, lineCount, totalLines } = read.actual;
 	const pattern = read.requested.pattern;
 	let notice: string;
 
-	if (read.textTruncated) {
+	// [喵喵喵]: 补读的下一步由整批协调器统一给出，不能沿用已经完成的中间页续读指令。
+	if (mode === "recovery") {
+		notice = `-- Recovery lines ${firstLine}-${lastLine}${read.textTruncated ? "; source text truncated, this page cannot establish proof" : ""} --`;
+	} else if (read.textTruncated) {
 		notice = `-- Source line text was truncated${lastLine !== undefined ? `; the last returned line is ${lastLine}` : ""} (${totalLines} lines total); rereading line ranges cannot recover the omitted in-line text. Truncated lines cannot establish edit proof; if the edit target includes such a line, rewrite the file with write instead.${read.nextOffset !== undefined ? ` To read later lines, continue with offset ${read.nextOffset}.` : ""} --`;
 	} else if (pattern !== undefined) {
 		if (lineCount === 0) {

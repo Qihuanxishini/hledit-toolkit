@@ -147,9 +147,10 @@ pi-hledit-diff/
 - batch stdin request 总大小限 8 MiB；`lines` 与 `proof.anchors` 的每个元素必须是 JSON 字符串，`null` 等类型会被拒绝；
 - CLI 的每个 `lines` 元素必须是一行逻辑文本，拒绝实际 NUL 和内嵌 LF；公开工具仍用换行分隔字符串，由插件拆分成行数组。拒绝携带具体 change 与内容原因，不引导调用方无效重读；
 - 公开 schema 要求 `proof_id`，但不暴露 raw revision 或 CLI `proof`；插件仅接受该 canonical path 当前 revision 内发出过的 id，再从 branch evidence 注入每个消费行或 insert 依附行的完整 hidden proof；
-- proof id 无效或跨路径使用时不启动 CLI；proof 行覆盖不完整时，apply 在同一 canonical file queue 内自动分页执行定向只读，直到完整覆盖目标缺口或触及恢复预算。成功恢复通过 `recoveredReads` 与新的 `proof_id` 返回当前证据，调用方审阅后显式重提 batch。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；插件不自动重放修改；
-- 定向补读有硬预算（`src/read-recovery.ts`）：缺口跨度 1,200 行、4 页、96 KiB 正文。补读会把读到的每一行原样回灌进模型上下文，所以跨度超限时一个子进程都不启动，直接返回 `proof_recovery_budget_exceeded` 与显式分块读取指令；页数或字节超限时保留已读页（仍是有效 proof）并返回同一 code。三个上限决定单次工具结果最多占多少上下文窗口，不是性能调优值；
-- 多页补读通过 `recoveredReads` 返回页面，正文与 `details.proofId` 使用同一个最终 proof id。补读函数只收集页面；调用方在 canonical file queue 放行前经 `updateFromToolResult` 统一登记，每页一次。实时执行与 branch replay 使用相同的登记顺序和容量淘汰规则；
+- proof id 无效或跨路径使用时不启动 CLI；proof 行覆盖不完整时，apply 在同一 canonical file queue 内规划整批实际缺口，合并相邻或重叠窗口，并允许跨接最多两行已知源码以避免零碎缺口耗尽页数预算，但不跨越大段已知源码。锚点不匹配或身份歧义的窗口保留确认上下文。补读经 `recoveredReads` 与最终 `proof_id` 返回源码，调用方审阅后显式重提 batch，不自动重放修改；
+- 定向补读共享硬预算（`src/read-recovery.ts`）：计划窗口累计 1,200 行（含确认上下文）、4 页、96 KiB 正文。累计行数超限时不启动子进程；页数或正文超限时保留已返回页面并列出剩余窗口，返回 `proof_recovery_budget_exceeded`。预算按整批计算，不按每个 change 重置，也不按远端窗口之间的距离计数；
+- 多页补读正文不带中间页续读指令，由最终结果统一给出下一步。正文与 `details.proofId` 使用同一个最终 proof id；调用方在队列放行前经 `updateFromToolResult` 按返回页面顺序登记。实时执行与 branch replay 使用相同的登记顺序和容量淘汰规则；
+- 补读 revision 与计划或先前页面不一致时，返回 `proof_recovery_source_changed`，丢弃此次所有补读页且不发出 proof id；错误携带 `currentRevision`，让实时状态和分支重放均失效旧 evidence，调用方必须重新确认目标。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；
 - 仅对命中 `single_line_range_expansion` 启发式的请求先执行一次 `batch --check`，用于确认当前 revision、hidden proof、全部锚点与操作冲突后再返回字段级指导；普通 apply 直接执行非 check `batch`，CLI 在同一路径完整验证并于原子替换前复检 raw-byte revision。
 
 内部请求：
@@ -173,7 +174,7 @@ Evidence 以 resolved canonical path 为 key，每个文件状态包含当前 `p
 - 任一结构化拒绝携带不同合法 `currentRevision` 时淘汰旧 state；同 revision 的确认零写入拒绝保留。`source_changed_before_commit` 与 `outcome_unknown` 总是失效；
 - 只有带合法 `currentRevision` 的完整未截断 `currentAnchors` 可建立新 revision evidence；stale 返回对应 `proof_id`，实时登记与 branch replay 保留同一 id；
 - read 与 apply 都持有 `withFileMutationQueue(canonical path)` 覆盖 CLI、校验和 evidence 更新。同文件串行、不同文件可并行；
-- branch/session 恢复只重放当前 branch 的结构化 tool-result details，包括经过完整 shape、path、proof usability 验证的被拒绝 apply `recoveredReads`，不解析聊天正文。可携带补读结果的拒绝码由 `read-result.ts` 的 `READ_PROOF_RECOVERY_CODES` 单点定义；恢复新增终止分支时必须同时登记，否则实时 evidence 与重放结果分歧。截断行既不进实时 evidence 也不进 `recoveredReads`，两侧保持逐行一致。
+- branch/session 恢复只重放当前 branch 的结构化 tool-result details，包括经过完整 shape、path、proof usability 验证的被拒绝 apply `recoveredReads`，不解析聊天正文。可携带补读结果的拒绝码由 `read-result.ts` 的 `READ_PROOF_RECOVERY_CODES` 单点定义；新增携带页面的终止分支时必须登记。`proof_recovery_source_changed` 不携带页面，只经 `currentRevision` 失效旧证据。截断页不进入补读的 `recoveredReads`，普通 read 的完整行仍可逐行贡献 evidence。
 
 容量限制：
 
@@ -229,7 +230,7 @@ Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标�
 ```
 
 - `findChangeShapeIssue` 在 `selectProof` 之前拦截仅凭请求即可判定的自相矛盾：区间锚点倒置（`reversed_anchor_range`）、`lines` 行首粘贴了本次提交过或当前证据中存在的锚点 token（`anchor_token_in_lines`，在 file queue 内对照 `anchorTokens(path)`）。这类问题重读文件无法修复，必须让模型改参数，因此不得落到 `insufficient_read_proof` 的补读指令上；正文明确声明重读无效并给出交换/删前缀的具体动作。检测即拒绝，不自动修正——与 `prepareArguments` 只服务 read 的约定一致；
-- 三个工具在 `execute()` 返回边界直接设置 Pi `isError`：插件侧 `insufficient_read_proof` 是可恢复补读结果，设为 `false`；其他非成功结果设为 `true`，包括三条恢复终止分支 `source_line_truncated`、`proof_recovery_read_failed` 与 `proof_recovery_budget_exceeded`——它们原样重发必然复现，必须由调用方改动作；
+- 三个工具在 `execute()` 返回边界直接设置 Pi `isError`：插件侧 `insufficient_read_proof` 是可恢复补读结果，设为 `false`；其他非成功结果设为 `true`，包括 `source_line_truncated`、`proof_recovery_read_failed`、`proof_recovery_budget_exceeded` 和 `proof_recovery_source_changed`，要求调用方按失败原因调整动作；
 - 读取错误码全集为 `range` / `binary` / `encoding` / `directory` / `io` / `pattern` / `broad_pattern`，每个码都必须有本地化 message，落到兜底分支等于只把错误码丢给模型；message 本身说不清下一步动作时再补 hint（`range` / `directory` / `pattern` / `broad_pattern`）。`pattern` 转发 CLI 的 RE2 编译原文（出错位置本身就是要改的东西）并点名 RE2 不支持 lookahead/lookbehind/backreference；`broad_pattern` 指向 `hledit_read_anchors`；
 - revision mismatch 仍为 `stale`，但 `failed:-1` 表示整批版本失效；CLI 从同一当前 snapshot 返回首项请求附近的有界 `currentAnchors`，不把版本变化说成端点锚点错误。完整 snapshot 供显式复核与续编，缺失或截断时按请求范围定向重读；stale remap 与 snapshot 均不触发自动修正或重试；
 - `source_changed_before_commit` 是确认零写入；CLI 从未启动使用 `unavailable`；
@@ -265,7 +266,7 @@ Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标�
 | `src/schema.ts` | 三工具的严格 schema 与参数类型。 |
 | `src/proof-id.ts` | 单调短 proof id 生成器。 |
 | `src/read-transaction.ts` | read/search CLI、结果校验和 evidence 更新的 canonical queue 事务。 |
-| `src/read-recovery.ts` | proof 缺口的定向分页补读、恢复预算与三条终止分支。 |
+| `src/read-recovery.ts` | 整批 proof 缺口分页补读、共享预算与 revision 变化处理。 |
 | `src/read-evidence.ts` | revision proof、rename/ambiguity、容量、重映射、失效与 branch replay。 |
 | `src/file-changes.ts` | 四种公开 change → CLI batch、请求护栏及其拒绝信息。 |
 | `src/cli.ts` | CLI 3.x capability 门禁、bounded output 和 exit-confirmed 进程终止。 |

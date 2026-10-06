@@ -24,7 +24,7 @@
 - 单次 batch 限 1–200 个 changes、1 MiB replacement UTF-8 bytes 和 20,000 个输出行。batch 是原子的：任一 change 非法、冲突、proof 不完整或 stale 时均不写入。
 - 无效 `proof_id` 按目标证据给出单一恢复动作：证据完整时换用当前 id；有缺口或身份不明时定向读取。revision 过期返回目标附近的当前快照，完整快照附带可续编的 `proof_id`；审阅后显式提交，插件不会自动重试。
 - `insufficient_read_proof` 会在同一 canonical file queue 内自动分页执行定向只读，直到目标缺口完整覆盖或触及恢复预算。结果返回全部 `recoveredReads`、最新 evidence 和一个权威 `proof_id`，但不会自动重放修改；审阅当前源码与端点锚点后再显式重提 apply。
-- 定向补读有硬预算：缺口跨度 1,200 行、4 页、96 KiB 正文。补读会把读到的每一行回灌进上下文，因此跨度超限时一个子进程都不启动，直接返回 `proof_recovery_budget_exceeded` 与显式分块读取指令；页数或字节超限时保留已读页并返回同一 code。source-line truncation 返回终止性指导，读取失败通过 `recoveryReadError` 暴露。
+- 定向补读按整批规划实际缺口，合并相邻窗口，不重复读取远端缺口之间的已知源码；锚点不匹配或身份歧义保留确认上下文。整批共享窗口累计 1,200 行、4 页、96 KiB 正文预算；累计行数超限时不启动读取，页数或正文超限时保留已返回页并列出剩余窗口，返回 `proof_recovery_budget_exceeded`。补读期间 revision 变化返回 `proof_recovery_source_changed`，丢弃本次补读页并失效旧证据；截断源码不可建立 proof，读取失败通过 `recoveryReadError` 暴露。补读不自动执行编辑，仍须审阅后显式重提。
 - 读取错误一律给出可操作正文：`pattern` 转发 RE2 编译原文并说明 RE2 不支持 lookahead/lookbehind/backreference（可改用 `literal:true`），`broad_pattern` 指向 `hledit_read_anchors`。
 - 超过单页预算的源行会标记 `textTruncated`，不能作为编辑 proof；若后面还有待读行或匹配，结果仍提供 `nextOffset` 和续读提示。
 - 单行 `replace_range` 输出多行且首行重复原行时，插件先用 `batch --check` 验证整个请求，再返回字段级范围修复指引，不自动扩大或执行范围。

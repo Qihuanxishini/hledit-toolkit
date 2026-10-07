@@ -7,7 +7,7 @@ use crate::{
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeSet,
+    borrow::Cow,
     io::{self, Read},
     path::Path,
 };
@@ -109,11 +109,13 @@ fn stale(
     }
     result
 }
-fn remap(lines: &[&str], requested: &str, number: usize) -> Option<Value> {
-    let current = lines
+fn line_anchor(lines: &[&str], number: usize) -> String {
+    lines
         .get(number - 1)
         .map(|line| tag(number, line))
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+fn remap(requested: &str, current: &str) -> Option<Value> {
     if current == requested {
         None
     } else {
@@ -214,6 +216,7 @@ fn validate<'a>(
         .enumerate()
         .map(|(i, e)| plan_edit(e, i))
         .collect::<Result<_, _>>()?;
+    let mut covered = Vec::new();
     if let Some(proof) = &request.proof.0 {
         let insufficient = |message: String, index: usize| {
             let mut e = rejected("insufficient_read_proof", message, index as isize);
@@ -223,7 +226,8 @@ fn validate<'a>(
         if proof.anchors.is_empty() {
             return Err(insufficient("read proof contains no anchors".into(), 0));
         }
-        let mut covered = BTreeSet::new();
+        // [喵喵喵]: proof 已要求严格递增，顺序保存坐标即可，无需再次建树或复制 token。
+        covered.reserve(proof.anchors.len());
         let mut previous = 0;
         let mut remaps = Vec::new();
         let mut first_stale = 0;
@@ -243,8 +247,8 @@ fn validate<'a>(
                 ));
             }
             previous = number;
-            covered.insert(number);
-            if let Some(remap) = remap(lines, token, number) {
+            covered.push(number);
+            if let Some(remap) = remap(token, &line_anchor(lines, number)) {
                 if first_stale == 0 {
                     first_stale = number;
                 }
@@ -269,8 +273,9 @@ fn validate<'a>(
         for edit in &edits {
             // [喵喵喵]: 通过已排序 proof 查首个缺口，不枚举请求可伪造的巨大行号区间。
             let mut expected = edit.start;
-            for &number in covered.range(edit.start..=edit.end) {
-                if number != expected {
+            let from = covered.partition_point(|&number| number < edit.start);
+            for &number in &covered[from..] {
+                if number > edit.end || number != expected {
                     break;
                 }
                 expected += 1;
@@ -286,18 +291,35 @@ fn validate<'a>(
             }
         }
     }
+    // [喵喵喵]: 只有整份 proof 的 hash 与覆盖校验通过后，才可把其中的 token 当作当前锚点复用。
+    let current_anchor = |number| -> Cow<'_, str> {
+        if let Some(proof) = &request.proof.0 {
+            let index = covered
+                .binary_search(&number)
+                .expect("validated proof covers edit endpoints");
+            Cow::Borrowed(proof.anchors[index].as_str())
+        } else {
+            Cow::Owned(line_anchor(lines, number))
+        }
+    };
     let mut remaps = Vec::new();
     let mut first = None;
     for edit in &edits {
-        if let Some(remap) = remap(lines, &edit.edit.pos, edit.start) {
+        let start = current_anchor(edit.start);
+        if let Some(remap) = remap(&edit.edit.pos, &start) {
             first.get_or_insert(edit);
             remaps.push(remap);
         }
-        if let Some(end) = &edit.edit.end_pos.0
-            && let Some(remap) = remap(lines, end, edit.end)
-        {
-            first.get_or_insert(edit);
-            remaps.push(remap);
+        if let Some(end) = &edit.edit.end_pos.0 {
+            let current = if edit.end == edit.start {
+                Cow::Borrowed(start.as_ref())
+            } else {
+                current_anchor(edit.end)
+            };
+            if let Some(remap) = remap(end, &current) {
+                first.get_or_insert(edit);
+                remaps.push(remap);
+            }
         }
     }
     if let Some(first) = first {

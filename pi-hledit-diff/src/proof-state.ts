@@ -1,4 +1,4 @@
-import { computeAnchorTag } from "./anchor-hash.ts";
+import { computeLineHashInfo, type ComputedLineHash } from "./anchor-hash.ts";
 import { nextProofId } from "./proof-id.ts";
 import type { HleditEditDelta, HleditReadLine } from "./result.ts";
 
@@ -7,7 +7,7 @@ export const MAX_EVIDENCE_BYTES_PER_FILE = 4 * 1024 * 1024;
 export const MAX_EVIDENCE_RECORDS_PER_SESSION = 50_000;
 export const MAX_EVIDENCE_BYTES_PER_SESSION = 16 * 1024 * 1024;
 
-export type EvidenceLine = { anchor: string; text: string };
+export type EvidenceLine = Readonly<{ anchor: string; text: string }>;
 export type ProofEpoch = {
 	revision: string;
 	proofId: string;
@@ -60,6 +60,7 @@ function usage(path: string, current: ProofEpoch, history: readonly HistoricalPr
 export class ProofState {
 	private readonly files = new Map<string, FileProofState>();
 	private readonly owners = new Map<string, string>();
+	private readonly verifiedHashes = new WeakMap<EvidenceLine, ComputedLineHash>();
 	private records = 0;
 	private bytes = 0;
 
@@ -94,6 +95,18 @@ export class ProofState {
 		if (state) { this.files.delete(path); this.files.set(path, state); }
 	}
 
+	private remapLine(oldLine: number, line: number, info: EvidenceLine): EvidenceLine | undefined {
+		// [喵喵喵]: 只缓存与旧 CLI 锚点一致的不可变内存行，不缓存正文副本；新读取/重放仍须首次自校验。
+		let computed = this.verifiedHashes.get(info) ?? computeLineHashInfo(oldLine, info.text);
+		if (`${oldLine}#${computed.hash}` !== info.anchor) return undefined;
+		this.verifiedHashes.set(info, computed);
+		if (line === oldLine) return info;
+		// [喵喵喵]: 普通文本 hash 与行号无关；结构行仍按新行号计算，不改变 Unicode 分类及 v2 协议。
+		if (computed.lineNumberDependent) computed = computeLineHashInfo(line, info.text);
+		const moved: EvidenceLine = { text: info.text, anchor: `${line}#${computed.hash}` };
+		this.verifiedHashes.set(moved, computed);
+		return moved;
+	}
 	private store(path: string, current: ProofEpoch, history: HistoricalProof[], fresh: Map<number, EvidenceLine>, evicted = false, priority?: ReadonlySet<number>): void {
 		// [喵喵喵]: 受控简化 — 最多保留 32 个旧坐标代，并同时受字节/记录预算约束；
 		// 边界：更早的 proof 明确过期；升级：真实连续编辑频繁命中历史淘汰 → 调整保留策略。
@@ -152,9 +165,11 @@ export class ProofState {
 		const positions = new Map<number, number>();
 		for (const [oldLine, info] of previous.current.lines) {
 			const line = transform(oldLine);
-			if (line === undefined || computeAnchorTag(oldLine, info.text) !== info.anchor) continue;
+			if (line === undefined) continue;
+			const moved = this.remapLine(oldLine, line, info);
+			if (!moved) continue;
 			positions.set(oldLine, line);
-			lines.set(line, line === oldLine ? info : { text: info.text, anchor: computeAnchorTag(line, info.text) });
+			lines.set(line, moved);
 		}
 		const history = previous.history.map((item) => ({
 			epoch: item.epoch,

@@ -1,6 +1,6 @@
 // CLI tag（cli/src/text.rs）的复刻，仅用于编辑成功后平移证据行号时重算锚点。
-// 契约：调用方必须先用旧行号重算并与 CLI 返回的旧锚点比对（自校验），一致才信任新行号
-// 的重算结果；任何不一致都丢弃该行证据，由 CLI 的 proof/revision 校验兜底。
+// 契约：先用旧行号计算并与 CLI 返回的旧锚点比对（自校验），一致才信任平移结果；
+// 已自校验的不可变证据行可复用计算结果。不一致则丢弃证据，由 CLI 的 proof/revision 校验兜底。
 // hash 语义变更属于锚点协议版本升级，必须与 CLI 同步修改并通过 golden 对拍测试。
 
 const ANCHOR_HASH_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -20,12 +20,15 @@ const utf8Encoder = new TextEncoder();
 const FNV_OFFSET_BASIS = 0x811c9dc5;
 const FNV_PRIME = 0x01000193;
 
-export function computeLineHash(lineNum: number, line: string): string {
+export type ComputedLineHash = Readonly<{ hash: string; lineNumberDependent: boolean }>;
+
+export function computeLineHashInfo(lineNum: number, line: string): ComputedLineHash {
 	// [喵喵喵]: 从末尾逐字符检查，避免长内部空白使未锚定的尾空白正则平方级回溯。
 	// White_Space 全部位于 BMP；按 UTF-16 code unit 扫描不会截断正文中的代理对。
 	let end = line.length;
 	while (end > 0 && WHITESPACE_CHARACTER.test(line[end - 1]!)) end -= 1;
 	const trimmed = line.slice(0, end);
+	const lineNumberDependent = !SIGNIFICANT_RUNE.test(trimmed);
 
 	let hash = FNV_OFFSET_BASIS;
 	const mix = (byte: number) => {
@@ -33,7 +36,7 @@ export function computeLineHash(lineNum: number, line: string): string {
 	};
 
 	// 结构行（无字母/数字）把行号按小端逐字节混入，与 CLI 保持一致。
-	if (!SIGNIFICANT_RUNE.test(trimmed)) {
+	if (lineNumberDependent) {
 		let n = lineNum;
 		while (n > 0) {
 			mix(n & 0xff);
@@ -45,7 +48,14 @@ export function computeLineHash(lineNum: number, line: string): string {
 		mix(byte);
 	}
 
-	return ANCHOR_HASH_ALPHABET[(hash >>> 12) & 0x3f]! + ANCHOR_HASH_ALPHABET[(hash >>> 6) & 0x3f]! + ANCHOR_HASH_ALPHABET[hash & 0x3f]!;
+	return {
+		hash: ANCHOR_HASH_ALPHABET[(hash >>> 12) & 0x3f]! + ANCHOR_HASH_ALPHABET[(hash >>> 6) & 0x3f]! + ANCHOR_HASH_ALPHABET[hash & 0x3f]!,
+		lineNumberDependent,
+	};
+}
+
+export function computeLineHash(lineNum: number, line: string): string {
+	return computeLineHashInfo(lineNum, line).hash;
 }
 
 export function computeAnchorTag(lineNum: number, line: string): string {

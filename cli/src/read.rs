@@ -20,14 +20,25 @@ pub struct Row {
     pub text_truncated: bool,
 }
 
+fn escaped_byte_size(byte: u8) -> usize {
+    match byte {
+        b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 8 | 12 => 2,
+        0..=31 => 6,
+        _ => 1,
+    }
+}
 fn escaped_size(text: &str) -> usize {
-    text.bytes()
-        .map(|byte| match byte {
-            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 8 | 12 => 2,
-            0..=31 => 6,
-            _ => 1,
-        })
-        .sum()
+    text.bytes().map(escaped_byte_size).sum()
+}
+fn escaped_size_within(text: &str, budget: usize) -> Option<usize> {
+    // [喵喵喵]: JSON 转义不会缩短 UTF-8；原文已超预算时无需扫描，否则计数到超限即停止。
+    if text.len() > budget {
+        return None;
+    }
+    text.bytes().try_fold(0, |used, byte| {
+        let size = used + escaped_byte_size(byte);
+        (size <= budget).then_some(size)
+    })
 }
 
 pub struct Page {
@@ -51,15 +62,20 @@ impl Page {
         let available = self.budget.saturating_sub(self.used + separator);
         let mut row = Row {
             line: number,
-            anchor: tag(number, text),
+            anchor: String::new(),
             text: String::new(),
             text_truncated: false,
         };
-        let base = serde_json::to_vec(&row).expect("row serialization").len();
-        let size = base + escaped_size(text);
-        if size <= available {
+        // [喵喵喵]: LN#HHH 无 JSON 转义；先为行号和固定 hash 长度计费，确定入页后才计算原文锚点。
+        let anchor_bytes = number.checked_ilog10().unwrap_or(0) as usize + 1 + "#HHH".len();
+        let base = serde_json::to_vec(&row).expect("row serialization").len() + anchor_bytes;
+        if let Some(size) = available
+            .checked_sub(base)
+            .and_then(|budget| escaped_size_within(text, budget))
+        {
+            row.anchor = tag(number, text);
             row.text.push_str(text);
-            self.used += separator + size;
+            self.used += separator + base + size;
             self.rows.push(row);
             return true;
         }
@@ -67,7 +83,7 @@ impl Page {
             return false;
         }
         row.text_truncated = true;
-        let base = serde_json::to_vec(&row).expect("row serialization").len();
+        let base = serde_json::to_vec(&row).expect("row serialization").len() + anchor_bytes;
         if base > available {
             return false;
         }
@@ -91,6 +107,7 @@ impl Page {
         row.text.push_str(&text[..end]);
         row.text.push_str(suffix);
         self.used += separator + base + escaped_size(&row.text);
+        row.anchor = tag(number, text);
         self.rows.push(row);
         true
     }

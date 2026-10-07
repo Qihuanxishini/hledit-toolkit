@@ -33,12 +33,39 @@ type PreviewBlock = {
 	newLines: string[];
 };
 
+// [喵喵喵]: 超限块只借用原始行数组；按首尾预算取行时才创建预览对象，不物化隐藏的中间行。
+type PreviewSegment =
+	| { lines: ChangePreviewLine[] }
+	| { texts: readonly string[]; kind: "remove" | "add"; start: number; changeIndex: number };
+
+function segmentLength(segment: PreviewSegment): number {
+	return "lines" in segment ? segment.lines.length : segment.texts.length;
+}
+
+function* iteratePreviewLines(segments: readonly PreviewSegment[], reversed = false): Generator<ChangePreviewLine> {
+	const step = reversed ? -1 : 1;
+	for (let index = reversed ? segments.length - 1 : 0; index >= 0 && index < segments.length; index += step) {
+		const segment = segments[index]!;
+		const length = segmentLength(segment);
+		for (let line = reversed ? length - 1 : 0; line >= 0 && line < length; line += step) {
+			if ("lines" in segment) {
+				yield segment.lines[line]!;
+			} else {
+				const text = segment.texts[line]!;
+				yield segment.kind === "remove"
+					? { kind: "remove", oldLine: segment.start + line, text, changeIndex: segment.changeIndex }
+					: { kind: "add", newLine: segment.start + line, text, changeIndex: segment.changeIndex };
+			}
+		}
+	}
+}
+
 const BLOCK_DIFF_LINE = /^([ +\-])\s*(\d+)\s(.*)$/s;
 
 // [喵喵喵]: 受控简化 — 每次 apply 的最小 diff 累计输入不超过 2000 行/256 KiB；
-// 超限块直接展开旧/新行，再按输出预算保留首尾。预算内仍出现卡顿时升级为可中断 diff。
-function appendBlockLines(
-	target: ChangePreviewLine[],
+// 超限块按输出预算惰性保留首尾。预算内仍出现卡顿时升级为可中断 diff。
+function appendBlockSegments(
+	target: PreviewSegment[],
 	block: PreviewBlock,
 	newStart: number,
 	remainingDiffInput: { lines: number; bytes: number },
@@ -50,24 +77,27 @@ function appendBlockLines(
 			+ block.newLines.reduce((bytes, text) => bytes + Buffer.byteLength(text, "utf8") + 1, 0)
 		: Infinity;
 	if (!isReplacement || inputLines > remainingDiffInput.lines || inputBytes > remainingDiffInput.bytes) {
-		block.oldLines.forEach((text, index) => target.push({ kind: "remove", oldLine: block.oldStart + index, text, changeIndex: block.changeIndex }));
-		block.newLines.forEach((text, index) => target.push({ kind: "add", newLine: newStart + index, text, changeIndex: block.changeIndex }));
+		target.push(
+			{ texts: block.oldLines, kind: "remove", start: block.oldStart, changeIndex: block.changeIndex },
+			{ texts: block.newLines, kind: "add", start: newStart, changeIndex: block.changeIndex },
+		);
 		return isReplacement;
 	}
 	remainingDiffInput.lines -= inputLines;
 	remainingDiffInput.bytes -= inputBytes;
 	const blockDiff = generateDiffString(`${block.oldLines.join("\n")}\n`, `${block.newLines.join("\n")}\n`, 0).diff;
+	const lines: ChangePreviewLine[] = [];
 	for (const rawLine of blockDiff.split("\n")) {
 		const match = BLOCK_DIFF_LINE.exec(rawLine);
 		if (!match) continue; // 折叠占位（"..."）不进入结构化 preview
 		const relativeLine = Number.parseInt(match[2]!, 10);
 		if (!Number.isSafeInteger(relativeLine) || relativeLine < 1) continue;
 		if (match[1] === "-") {
-			target.push({ kind: "remove", oldLine: block.oldStart + relativeLine - 1, text: match[3] ?? "", changeIndex: block.changeIndex });
+			lines.push({ kind: "remove", oldLine: block.oldStart + relativeLine - 1, text: match[3] ?? "", changeIndex: block.changeIndex });
 		} else if (match[1] === "+") {
-			target.push({ kind: "add", newLine: newStart + relativeLine - 1, text: match[3] ?? "", changeIndex: block.changeIndex });
+			lines.push({ kind: "add", newLine: newStart + relativeLine - 1, text: match[3] ?? "", changeIndex: block.changeIndex });
 		} else {
-			target.push({
+			lines.push({
 				kind: "context",
 				oldLine: block.oldStart + relativeLine - 1,
 				newLine: newStart + relativeLine - 1,
@@ -76,6 +106,7 @@ function appendBlockLines(
 			});
 		}
 	}
+	target.push({ lines });
 	return false;
 }
 
@@ -83,10 +114,6 @@ const PREVIEW_LINE_TRUNCATION_MARKER = " … [preview line truncated] … ";
 
 function previewLineBytes(line: ChangePreviewLine): number {
 	return Buffer.byteLength(line.text, "utf8") + 1;
-}
-
-function previewTextBytes(lines: ChangePreviewLine[]): number {
-	return lines.reduce((total, line) => total + previewLineBytes(line), 0);
 }
 
 function utf8Prefix(text: string, maxBytes: number): string {
@@ -127,15 +154,23 @@ function fitPreviewLine(line: ChangePreviewLine, maxBytes: number): ChangePrevie
 
 // 超限时保留首尾片段并标记 truncated；单个超长行也在 UTF-8 byte budget 内保留首尾。
 // 完整变更统计始终由 CLI summary 提供，不依赖局部 preview。
-function capPreviewLines(lines: ChangePreviewLine[]): VerifiedChangePreview {
-	if (lines.length <= MAX_PREVIEW_LINES && previewTextBytes(lines) <= MAX_PREVIEW_BYTES) {
-		return { lines, truncated: false };
+function capPreviewLines(segments: readonly PreviewSegment[]): VerifiedChangePreview {
+	const totalLines = segments.reduce((total, segment) => total + segmentLength(segment), 0);
+	if (totalLines <= MAX_PREVIEW_LINES) {
+		const lines: ChangePreviewLine[] = [];
+		let bytes = 0;
+		for (const line of iteratePreviewLines(segments)) {
+			bytes += previewLineBytes(line);
+			if (bytes > MAX_PREVIEW_BYTES) break;
+			lines.push(line);
+		}
+		if (lines.length === totalLines) return { lines, truncated: false };
 	}
 	const headBudgetLines = Math.floor(MAX_PREVIEW_LINES / 2);
 	const headBudgetBytes = Math.floor(MAX_PREVIEW_BYTES / 2);
 	const head: ChangePreviewLine[] = [];
 	let headBytes = 0;
-	for (const line of lines) {
+	for (const line of iteratePreviewLines(segments)) {
 		if (head.length >= headBudgetLines) break;
 		const fitted = fitPreviewLine(line, headBudgetBytes - headBytes);
 		if (!fitted) break;
@@ -145,16 +180,16 @@ function capPreviewLines(lines: ChangePreviewLine[]): VerifiedChangePreview {
 	}
 	const tail: ChangePreviewLine[] = [];
 	let tailBytes = 0;
-	for (let index = lines.length - 1; index > head.length - 1; index -= 1) {
-		if (head.length + tail.length >= MAX_PREVIEW_LINES) break;
-		const line = lines[index]!;
+	let index = totalLines;
+	for (const line of iteratePreviewLines(segments, true)) {
+		if (--index < head.length || head.length + tail.length >= MAX_PREVIEW_LINES) break;
 		const fitted = fitPreviewLine(line, MAX_PREVIEW_BYTES - headBytes - tailBytes);
 		if (!fitted) break;
-		tail.unshift(fitted);
+		tail.push(fitted);
 		tailBytes += previewLineBytes(fitted);
 		if (fitted.textTruncated) break;
 	}
-	return { lines: [...head, ...tail], truncated: true };
+	return { lines: [...head, ...tail.reverse()], truncated: true };
 }
 
 function previewFromBlocks(blocks: PreviewBlock[]): VerifiedChangePreview {
@@ -162,15 +197,15 @@ function previewFromBlocks(blocks: PreviewBlock[]): VerifiedChangePreview {
 		left.oldStart - right.oldStart ||
 		(left.oldStart + left.oldLines.length) - (right.oldStart + right.oldLines.length),
 	);
-	const lines: ChangePreviewLine[] = [];
+	const segments: PreviewSegment[] = [];
 	const remainingDiffInput = { lines: MAX_PREVIEW_LINES, bytes: MAX_PREVIEW_BYTES };
 	let truncated = false;
 	let shift = 0;
 	for (const block of ordered) {
-		if (appendBlockLines(lines, block, block.oldStart + shift, remainingDiffInput)) truncated = true;
+		if (appendBlockSegments(segments, block, block.oldStart + shift, remainingDiffInput)) truncated = true;
 		shift += block.newLines.length - block.oldLines.length;
 	}
-	const preview = capPreviewLines(lines);
+	const preview = capPreviewLines(segments);
 	return truncated ? { ...preview, truncated: true } : preview;
 }
 

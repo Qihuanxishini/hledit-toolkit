@@ -149,21 +149,26 @@ function parsedLineKey(line: DiffLine): string {
 
 function attachStructuredGroups(entries: DiffEntry[], lines: readonly StructuredDiffLine[]): DiffEntry[] | undefined {
 	if (!lines.some((line) => line.changeIndex !== undefined)) return undefined;
-	const candidates = new Map<string, StructuredDiffLine[]>();
+	const candidates = new Map<string, { lines: StructuredDiffLine[]; next: number }>();
+	const seen = new Set<StructuredDiffLine>();
 	for (const line of lines) {
+		// [喵喵喵]: 同一对象最多消费一次；桶内游标保留首个未消费候选的顺序，避免重复扫描。
+		if (seen.has(line)) continue;
+		seen.add(line);
 		const key = structuredLineKey(line);
-		candidates.set(key, [...(candidates.get(key) ?? []), line]);
+		const bucket = candidates.get(key);
+		if (bucket) bucket.lines.push(line);
+		else candidates.set(key, { lines: [line], next: 0 });
 	}
-	const used = new Set<StructuredDiffLine>();
 	const mapped: DiffEntry[] = [];
 	for (const entry of entries) {
 		if (entry.kind === "meta") {
 			mapped.push(entry);
 			continue;
 		}
-		const candidate = candidates.get(parsedLineKey(entry))?.find((line) => !used.has(line));
+		const bucket = candidates.get(parsedLineKey(entry));
+		const candidate = bucket?.lines[bucket.next++];
 		if (!candidate) return undefined;
-		used.add(candidate);
 		mapped.push(candidate.changeIndex === undefined ? entry : { ...entry, changeIndex: candidate.changeIndex });
 	}
 	return mapped;
@@ -174,15 +179,19 @@ function alignChangeRun(entries: DiffLine[]): PairedDiffRow[] {
 	const adds = entries.filter((entry) => entry.kind === "add");
 	const pairedRemove = new Map<DiffLine, DiffLine>();
 	const pairedAdd = new Map<DiffLine, DiffLine>();
-	const groups = new Set<number>();
+	const groups = new Map<number, { removes: DiffLine[]; adds: DiffLine[] }>();
 	for (const entry of entries) {
-		if (entry.changeIndex !== undefined) groups.add(entry.changeIndex);
+		if (entry.changeIndex === undefined) continue;
+		let group = groups.get(entry.changeIndex);
+		if (!group) {
+			group = { removes: [], adds: [] };
+			groups.set(entry.changeIndex, group);
+		}
+		(entry.kind === "remove" ? group.removes : group.adds).push(entry);
 	}
 
 	// 同一操作内仍按原有顺序配对：replace_range 的删除/新增是明确的替换关系。
-	for (const changeIndex of groups) {
-		const groupRemoves = removes.filter((entry) => entry.changeIndex === changeIndex);
-		const groupAdds = adds.filter((entry) => entry.changeIndex === changeIndex);
+	for (const { removes: groupRemoves, adds: groupAdds } of groups.values()) {
 		const pairCount = Math.min(groupRemoves.length, groupAdds.length);
 		for (let index = 0; index < pairCount; index += 1) {
 			const remove = groupRemoves[index]!;
@@ -195,16 +204,14 @@ function alignChangeRun(entries: DiffLine[]): PairedDiffRow[] {
 	// 不同操作之间只把“文本唯一相同”的删除/新增视觉配对；重复项保守地保持单侧。
 	const unmatchedRemoves = removes.filter((entry) => !pairedRemove.has(entry));
 	const unmatchedAdds = adds.filter((entry) => !pairedAdd.has(entry));
-	const removeByText = new Map<string, DiffLine[]>();
-	const addByText = new Map<string, DiffLine[]>();
-	for (const entry of unmatchedRemoves) removeByText.set(entry.content, [...(removeByText.get(entry.content) ?? []), entry]);
-	for (const entry of unmatchedAdds) addByText.set(entry.content, [...(addByText.get(entry.content) ?? []), entry]);
-	for (const [text, textRemoves] of removeByText) {
-		const textAdds = addByText.get(text);
-		if (textRemoves.length !== 1 || textAdds?.length !== 1) continue;
-		const remove = textRemoves[0]!;
-		const add = textAdds[0]!;
-		if (remove.changeIndex === add.changeIndex) continue;
+	const removeByText = new Map<string, DiffLine | undefined>();
+	const addByText = new Map<string, DiffLine | undefined>();
+	// [喵喵喵]: 重复文本永久标记为非唯一，不保留或反复复制无法用于跨操作配对的数组。
+	for (const entry of unmatchedRemoves) removeByText.set(entry.content, removeByText.has(entry.content) ? undefined : entry);
+	for (const entry of unmatchedAdds) addByText.set(entry.content, addByText.has(entry.content) ? undefined : entry);
+	for (const [text, remove] of removeByText) {
+		const add = addByText.get(text);
+		if (!remove || !add || remove.changeIndex === add.changeIndex) continue;
 		pairedRemove.set(remove, add);
 		pairedAdd.set(add, remove);
 	}

@@ -191,19 +191,22 @@ pub fn compile(pattern: &str, literal: bool, ignore_case: bool) -> Result<Matche
     } else {
         re2_expression(pattern)?
     };
-    let ast = regex_syntax::ast::parse::ParserBuilder::new()
-        .octal(true)
-        .build()
-        .parse(&expression)
-        .map_err(|e| e.to_string())?;
-    validate_repetitions(&ast, 1)?;
+    // [喵喵喵]: 转义后的字面量没有重复算子或宽匹配结构；仍由同一 RegexBuilder 保留匹配与编译限制。
+    let broad = if literal {
+        false
+    } else {
+        let ast = regex_syntax::ast::parse::ParserBuilder::new()
+            .octal(true)
+            .build()
+            .parse(&expression)
+            .map_err(|e| e.to_string())?;
+        validate_repetitions(&ast, 1)?;
+        properties(&ast).broad
+    };
     let regex = RegexBuilder::new(&expression)
         .case_insensitive(ignore_case)
         .octal(true)
         .build()
         .map_err(|e| e.to_string())?;
-    Ok(Matcher {
-        regex,
-        broad: !literal && properties(&ast).broad,
-    })
+    Ok(Matcher { regex, broad })
 }

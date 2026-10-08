@@ -289,42 +289,16 @@ export function parseChangePreview(value: unknown): VerifiedChangePreview | unde
 	return { lines, truncated: record.truncated };
 }
 
-function uniqueCrossChangeMatches(lines: ChangePreviewLine[]): Map<ChangePreviewLine, ChangePreviewLine> {
-	const removes = new Map<string, ChangePreviewLine[]>();
-	const adds = new Map<string, ChangePreviewLine[]>();
-	for (const line of lines) {
-		if (line.changeIndex === undefined || line.textTruncated === true) continue;
-		const target = line.kind === "remove" ? removes : line.kind === "add" ? adds : undefined;
-		if (!target) continue;
-		const matching = target.get(line.text) ?? [];
-		matching.push(line);
-		target.set(line.text, matching);
-	}
-
-	const matches = new Map<ChangePreviewLine, ChangePreviewLine>();
-	for (const [text, removed] of removes) {
-		const added = adds.get(text);
-		if (removed?.length !== 1 || added?.length !== 1) continue;
-		const remove = removed[0]!;
-		const add = added[0]!;
-		if (remove.changeIndex === add.changeIndex) continue;
-		matches.set(remove, add);
-		matches.set(add, remove);
-	}
-	return matches;
-}
-
 // TUI 渲染桥：把结构化 preview 转成 renderStandaloneDiff 消费的行号 diff 文本。
-// 不同编辑操作之间不再按数组下标强行配对；唯一相同文本只做视觉配对，剩余项分开显示。
+// lines 已按原文件位置排列；渲染桥只添加分隔，不按增删类型或跨操作相同文本重排。
 export function changePreviewDiffText(preview: VerifiedChangePreview): string {
 	const rendered: string[] = [];
-	const matches = uniqueCrossChangeMatches(preview.lines);
 	let previousOld: number | undefined;
 	let previousNew: number | undefined;
 	let previousKind: ChangePreviewLine["kind"] | undefined;
 	let previousChangeIndex: number | undefined;
 
-	const appendLine = (line: ChangePreviewLine, forceAdjacent = false): void => {
+	for (const line of preview.lines) {
 		const oldLine = line.kind === "add" ? undefined : line.oldLine;
 		const newLine = line.kind === "remove" ? undefined : line.newLine;
 		const continuesOld = oldLine !== undefined && previousOld !== undefined && oldLine <= previousOld + 1;
@@ -334,7 +308,7 @@ export function changePreviewDiffText(preview: VerifiedChangePreview): string {
 		const continuesSameChange = sameChange && (continuesOld || continuesNew || (previousKind === "remove" && line.kind === "add"));
 		const continuesLegacyHunk = !hasChangeIndex && previousChangeIndex === undefined &&
 			(continuesOld || continuesNew || (previousKind === "remove" && line.kind === "add"));
-		if (rendered.length > 0 && !forceAdjacent && !continuesSameChange && !continuesLegacyHunk) {
+		if (rendered.length > 0 && !continuesSameChange && !continuesLegacyHunk) {
 			// [喵喵喵]: 操作边界只留空行；同一侧行号确实向前跳跃时才表示省略。
 			const skipsOld = oldLine !== undefined && previousOld !== undefined && oldLine > previousOld + 1;
 			const skipsNew = newLine !== undefined && previousNew !== undefined && newLine > previousNew + 1;
@@ -346,38 +320,6 @@ export function changePreviewDiffText(preview: VerifiedChangePreview): string {
 		if (newLine !== undefined) previousNew = newLine;
 		previousKind = line.kind;
 		previousChangeIndex = line.changeIndex;
-	};
-
-	for (let index = 0; index < preview.lines.length; index += 1) {
-		const line = preview.lines[index]!;
-		const match = matches.get(line);
-		if (line.kind === "add" && match) continue;
-		if (line.kind !== "remove" || !match) {
-			appendLine(line);
-			continue;
-		}
-
-		// 连续相同文本按“旧块后新块”输出：统一栏更易读，双栏再将两块横向配对。
-		const removedBlock = [line];
-		const addedBlock = [match];
-		while (index + 1 < preview.lines.length) {
-			const nextRemove = preview.lines[index + 1]!;
-			const nextAdd = matches.get(nextRemove);
-			const previousRemove = removedBlock.at(-1)!;
-			const previousAdd = addedBlock.at(-1)!;
-			if (
-				nextRemove.kind !== "remove" || !nextAdd ||
-				nextRemove.changeIndex !== previousRemove.changeIndex ||
-				nextAdd.changeIndex !== previousAdd.changeIndex ||
-				nextRemove.oldLine !== (previousRemove.oldLine ?? 0) + 1 ||
-				nextAdd.newLine !== (previousAdd.newLine ?? 0) + 1
-			) break;
-			removedBlock.push(nextRemove);
-			addedBlock.push(nextAdd);
-			index += 1;
-		}
-		for (const removed of removedBlock) appendLine(removed);
-		for (const added of addedBlock) appendLine(added, true);
 	}
 	if (preview.truncated) {
 		rendered.push("   … preview truncated …");

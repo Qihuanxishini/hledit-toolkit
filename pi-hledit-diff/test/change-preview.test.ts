@@ -190,7 +190,7 @@ test("changePreviewDiffText renders line-numbered hunks with fold markers", () =
 	assert.match(changePreviewDiffText({ lines: [{ kind: "add", newLine: 1, text: "x" }], truncated: true }), /preview truncated/);
 
 
-test("changePreviewDiffText pairs unique identical text and separates unrelated changes", () => {
+test("changePreviewDiffText preserves source order when separate edits contain identical text", () => {
 	const preview = buildAnchoredChangePreview(
 		[
 			{ operation: "delete_range", start_anchor: "2#AAA", end_anchor: "3#BBB" },
@@ -202,7 +202,7 @@ test("changePreviewDiffText pairs unique identical text and separates unrelated 
 	assert.ok(preview);
 	assert.equal(
 		changePreviewDiffText(preview),
-		["-2 same", "+3 same", "", "-3 removed", "", "+4 added"].join("\n"),
+		["-2 same", "-3 removed", "", "+3 same", "+4 added"].join("\n"),
 	);
 });
 });

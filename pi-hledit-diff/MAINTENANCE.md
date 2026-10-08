@@ -234,8 +234,9 @@ Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标�
 - 失败 TUI 区分待复核（未写入）、未写入、未执行与结果未知；只有已返回可用 proof 的恢复结果标为待复核。展开错误正文使用终端换行，保留完整路径与指令；折叠摘要仍有单行宽度限制，模型正文不受影响；
 - 模型正文展示产出窗口的 Updated anchors，完整且保留的行配合新 proof 可继续编辑；区间外存续目标由历史 proof/token 对迁移，CLI 不额外返回。纯删除没有窗口，不输出 anchor 块。截断或容量导致证据不完整时明确说明后续可用性，不能把展示当作完整 proof，也不能改报提交失败；
 - expanded updated-anchor rows 只来自 `details.updatedAnchorSpans`，不解析模型正文；
-- diff 在 120 列切换 split/unified，主题色、布局和高亮缓存必须在 `invalidate()` 正确清理；
-- 差异底色使用 `theme.colors`、Pi TUI `mixColors()` 和 `theme.style()`，从当前宿主主题派生；终端默认颜色解析与 truecolor/256-color 输出由 Pi 处理；
+- diff 按组件净宽扣除行号、标记和中缝后，每侧至少保留 60 列代码才切为 split；两位行号时需 141 列，行号更宽时相应提高。纯单侧或缺少操作关联的旧预览保持 unified；双栏左旧右新并保留独立行号与续行对齐；
+- 两种布局沿用 `changePreview.lines` 的原文件操作位置顺序，只配对同一 `changeIndex` 的连续片段；单栏按每对旧行、新行依次展开，上下文仅显示一次，多出的行单独显示。双栏复用同一配对；不跨操作同文匹配，也不把 `oldLine` / `newLine` 混为同一套坐标排序。缺少操作关联的旧预览保持原始顺序；
+- 差异使用按深浅主题和 truecolor/256-color 模式选择的独立整行红绿底色，保留语法高亮，不叠加字词级底色；摘要、上下文、空栏、中缝、省略行、边框和折叠提示固定使用 `#283228` 并填满宽度（取自 `pi-tool-display` 使用的 `classic-dark.toolSuccessBg`，256 色模式由宿主量化）。续行留空标记与行号，不显示箭头。`theme.style()` 处理内部 reset，单元格末尾恢复工具容器背景；主题色、布局和高亮缓存必须在 `invalidate()` 正确清理；
 - `session_before_compact` 从三个工具的结构化结果补充 fileOps：read/search 成功 → read；带严格验证 `recoveredReads` 的零写入 apply → read；apply content change → modified；apply no-op → read；`outcome_unknown` → modified；其余确认零写入结果不记录。
 
 ## 源码结构

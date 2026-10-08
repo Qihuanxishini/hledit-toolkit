@@ -420,7 +420,7 @@ function parseApplySuccess(
 	if (parsed?.ok !== true || !isRawRevision(parsed.revision)) return undefined;
 	if (typeof parsed.editsApplied !== "number" || !Number.isSafeInteger(parsed.editsApplied) || parsed.editsApplied < 0) return undefined;
 	if (context.changes && parsed.editsApplied !== context.changes.length) return undefined;
-	if (parsed.contentChanged !== undefined && typeof parsed.contentChanged !== "boolean") return undefined;
+	if (typeof parsed.contentChanged !== "boolean") return undefined;
 	if (parsed.warnings !== undefined && (!Array.isArray(parsed.warnings) || !parsed.warnings.every((warning) => typeof warning === "string"))) return undefined;
 	// bundled CLI 恒输出 linesAdded/linesDeleted（无 omitempty）；delta 总和是同一份
 	// 统计的另一投影，二者不一致即内部矛盾。
@@ -458,8 +458,8 @@ function invalidFileChangeCheckText(): string {
 	return "hledit returned an incompatible --check response, so no write was attempted. Call hledit_read_anchors to inspect the target before retrying.";
 }
 
-function invalidApplySuccessText(): string {
-	return `The bundled hledit returned an incompatible success response. The file may have changed; call hledit_read_anchors before retrying. Expected ok:true, a valid revision, editsApplied and editDeltas consistent with the request, line-count statistics, and updatedAnchorSpans matching the produced ranges.\n\n${HLEDIT_INSTALL_HINT}`;
+function invalidApplyResponseText(): string {
+	return `The bundled hledit returned an incompatible batch response. The write outcome is unknown; the file may have changed. Do not retry the original request; call hledit_read_anchors first. Expected a complete rejection response or ok:true, a valid revision, boolean contentChanged, editsApplied and editDeltas consistent with the request, line-count statistics, and updatedAnchorSpans matching the produced ranges.\n\n${HLEDIT_INSTALL_HINT}`;
 }
 
 function outcomeUnknownText(run: HleditRun): string {
@@ -492,12 +492,12 @@ function formatApplyRunText(
 		return run.started === false ? text || HLEDIT_INSTALL_HINT : outcomeUnknownText(run);
 	}
 	if (!text || !parsed) {
-		return invalidApplySuccessText();
+		return invalidApplyResponseText();
 	}
 	if (parsed.ok === false) {
-		return applyError ? formatApplyFailureResult(parsed, context, applyError) : invalidApplySuccessText();
+		return applyError ? formatApplyFailureResult(parsed, context, applyError) : invalidApplyResponseText();
 	}
-	return applySuccessValid ? formatApplyResult(parsed) : invalidApplySuccessText();
+	return applySuccessValid ? formatApplyResult(parsed) : invalidApplyResponseText();
 }
 
 export function extractCliSummary(parsed: Record<string, unknown> | null): Record<string, unknown> {
@@ -525,18 +525,17 @@ export function applyFileChangesResult(run: HleditRun, context: ApplyResultConte
 	const parsed = parseRunObject(run);
 	const success = run.exitCode === 0 ? parseApplySuccess(parsed, context) : undefined;
 	const applyError = parsed ? parseApplyErrorMetadata(parsed, context) : undefined;
+	// [喵喵喵]: 退出码 0 不证明零写入；只有完整拒绝回包才能保留旧 proof，其余异常回包必须失效证据。
 	const disposition: HleditDisposition =
 		run.exitCode !== 0
 			? run.started === false
 				? "unavailable"
 				: "outcome_unknown"
-			: parsed?.ok === false
-				? applyError
+			: success
+				? "succeeded"
+				: applyError
 					? "rejected"
-					: "unavailable"
-				: !success
-					? "outcome_unknown"
-					: "succeeded";
+					: "outcome_unknown";
 	// [喵喵喵]: 已验证的 span 同时生成正文和持久化 details；入口无需重新解析 CLI 输出。
 	const postEditContext = success ? formatUpdatedAnchorSpans(success.updatedAnchorSpans) : undefined;
 	const text = formatApplyRunText(run, context, parsed, success !== undefined, applyError);
@@ -563,8 +562,9 @@ export function fileChangeCheckFailure(run: HleditRun, context: ApplyResultConte
 		const text = run.stdout.trimEnd() || run.stderr.trimEnd() || HLEDIT_INSTALL_HINT;
 		return unavailableToolResult(text);
 	}
-	if (parsed?.ok === true) {
-		return unavailableToolResult(invalidFileChangeCheckText());
-	}
-	return applyFileChangesResult(run, context);
+	// [喵喵喵]: --check 没有写入路径；仅复用已验证的拒绝诊断，不把解析失败升级为未知写入。
+	const result = applyFileChangesResult(run, context);
+	return result.details.disposition === "rejected"
+		? result
+		: unavailableToolResult(invalidFileChangeCheckText());
 }

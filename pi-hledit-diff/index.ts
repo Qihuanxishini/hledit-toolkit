@@ -137,8 +137,10 @@ async function runFileChangesWithDiff(
 	const applyWithinQueue = async (): Promise<TextResult> => {
 		// 请求层自洽性先于 evidence 校验：它不依赖文件状态，且重读无法修复，
 		// 不能让它落到 insufficient_read_proof 的"去重读"指令上。锚点前缀检查
-		// 对照当前证据里的全部 token，因此放在队列内读取。
-		const shapeIssue = findChangeShapeIssue(normalizedParams, evidence.anchorTokens(evidencePath));
+		// 只在疑似误贴的行首 token 出现时查询当前证据，因此仍放在队列内。
+		const shapeIssue = findChangeShapeIssue(normalizedParams, {
+			has: (anchor) => evidence.anchorsRequiringRead(evidencePath, [anchor]).length === 0,
+		});
 		if (shapeIssue) {
 			return attachEvidencePath(changeShapeIssueResult(shapeIssue), normalizedPath, evidencePath);
 		}

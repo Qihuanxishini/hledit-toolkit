@@ -85,12 +85,17 @@ fn re2_expression(pattern: &str) -> Result<String, String> {
             } else if c == '[' || c == '&' || c == '~' || (c == ']' && class_first) {
                 out.push('\\');
             }
-            if c != '^' || !class_first {
-                class_first = false;
-            }
+            class_first = false;
         } else if c == '[' {
             in_class = true;
             class_first = true;
+            // [喵喵喵]: 否定前缀只消费一次且不计入首个类字符；后续 '^' 必须作为字面量推进状态。
+            out.push(c);
+            if chars.peek() == Some(&'^') {
+                out.push('^');
+                chars.next();
+            }
+            continue;
         }
         out.push(c);
     }
@@ -209,4 +214,24 @@ pub fn compile(pattern: &str, literal: bool, ignore_case: bool) -> Result<Matche
         .build()
         .map_err(|e| e.to_string())?;
     Ok(Matcher { regex, broad })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compile;
+
+    #[test]
+    fn character_class_negation_does_not_consume_literal_carets() {
+        for (pattern, included, excluded) in [
+            ("[^^]", "a", "^"),
+            ("[^^^]", "]", "^"),
+            (r"[^\^]", "[", "^"),
+            ("[^]]", "^", "]"),
+            ("[]^]", "^", "a"),
+        ] {
+            let matcher = compile(pattern, false, false).unwrap();
+            assert!(matcher.regex.is_match(included), "{pattern}");
+            assert!(!matcher.regex.is_match(excluded), "{pattern}");
+        }
+    }
 }

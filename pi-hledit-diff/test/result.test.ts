@@ -241,16 +241,27 @@ test("applyFileChangesResult localizes unknown warnings with a generic durabilit
 	assert.deepEqual(result.details.rawWarnings, [rawWarning]);
 });
 
-test("applyFileChangesResult warns that an unverified success may have changed the file", () => {
+test("applyFileChangesResult warns that an unverified response may have changed the file", () => {
 	const result = applyFileChangesResult({ stdout: "unexpected output", stderr: "", exitCode: 0 });
 	const text = result.content[0]?.text ?? "";
 
-	assert.match(text, /incompatible success response/);
+	assert.match(text, /incompatible batch response/);
 	assert.match(text, /file may have changed/);
 	assert.match(text, /call hledit_read_anchors/);
 	assert.doesNotMatch(text, /^No write was attempted/);
     assert.deepEqual(result.details, { disposition: "outcome_unknown" });
 	assert.equal(isFailedHleditResult(result.details), true);
+});
+
+test("applyFileChangesResult treats incomplete rejections as outcome unknown", () => {
+	for (const payload of [{ ok: false }, { ok: false, error: "io" }, { ok: false, message: "failed" }]) {
+		const result = applyFileChangesResult({ stdout: JSON.stringify(payload), stderr: "", exitCode: 0, started: true });
+
+		assert.deepEqual(result.details, { disposition: "outcome_unknown" });
+		assert.match(result.content[0]?.text ?? "", /file may have changed/);
+		assert.match(result.content[0]?.text ?? "", /Do not retry/);
+		assert.doesNotMatch(result.content[0]?.text ?? "", /no content was written|No write was attempted/);
+	}
 });
 
 test("applyFileChangesResult marks a started failed batch as outcome unknown", () => {
@@ -275,6 +286,23 @@ test("applyFileChangesResult requires editsApplied and updatedAnchorSpans", () =
     assert.deepEqual(invalid.details, { disposition: "outcome_unknown", editsApplied: -1 });
     assert.deepEqual(missingAnchors.details, { disposition: "outcome_unknown", editsApplied: 1 });
     assert.match(missingAnchors.content[0]?.text ?? "", /updatedAnchorSpans matching/);
+});
+
+test("applyFileChangesResult requires contentChanged before publishing anchors", () => {
+	const result = applyFileChangesResult({
+		stdout: JSON.stringify({
+			ok: true, revision: REVISION, editsApplied: 1, linesAdded: 1, linesDeleted: 1,
+			editDeltas: [{ oldStart: 1, oldEnd: 1, delta: 0 }],
+			updatedAnchorSpans: [{ lines: [{ line: 1, anchor: "1#BHJ", text: "changed" }], offset: 1, limit: 1, desiredLimit: 1, truncated: false }],
+		}),
+		stderr: "", exitCode: 0, started: true,
+	});
+
+	assert.equal(result.details.disposition, "outcome_unknown");
+	assert.equal(result.details.editDeltas, undefined);
+	assert.equal(result.details.updatedAnchorSpans, undefined);
+	assert.doesNotMatch(result.content[0]?.text ?? "", /Updated anchors:/);
+	assert.match(result.content[0]?.text ?? "", /boolean contentChanged/);
 });
 
 test("applyFileChangesResult rejects internally inconsistent editDeltas", () => {
@@ -381,6 +409,17 @@ test("applyFileChangesResult verifies editDeltas against the anchored batch requ
 	assert.equal(missingChange.details.disposition, "outcome_unknown");
 });
 
+
+test("fileChangeCheckFailure keeps malformed responses in the zero-write path", () => {
+	for (const stdout of ["unexpected output", '{"ok":false}', '{"ok":false,"error":"io"}']) {
+		const result = fileChangeCheckFailure({ stdout, stderr: "", exitCode: 0, started: true });
+
+		assert.equal(result?.details.disposition, "unavailable");
+		assert.match(result?.content[0]?.text ?? "", /incompatible --check response/);
+		assert.match(result?.content[0]?.text ?? "", /no write was attempted/);
+		assert.doesNotMatch(result?.content[0]?.text ?? "", /file may have changed|outcome is unknown/);
+	}
+});
 
 test("fileChangeCheckFailure accepts only an explicit validate-only success", () => {
 	const valid = fileChangeCheckFailure({

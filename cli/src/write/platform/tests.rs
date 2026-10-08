@@ -33,9 +33,12 @@ fn dacl(path: &Path) -> String {
         },
         0
     );
-    let result = String::from_utf16_lossy(unsafe {
-        std::slice::from_raw_parts(output, length.saturating_sub(1) as usize)
-    });
+    // [喵喵喵]: length 是缓冲区容量，不是文本长度；按首个 NUL 截断，避免比较分配余量。
+    let mut end = 0;
+    while end < length as usize && unsafe { *output.add(end) } != 0 {
+        end += 1;
+    }
+    let result = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(output, end) });
     unsafe {
         LocalFree(output.cast());
     }
@@ -78,6 +81,7 @@ fn restrict(path: &Path) {
         ERROR_SUCCESS
     );
 }
+// [喵喵喵]: Windows 可规范化 AI/AR 标记；仍完整比较保护位与每条 ACE（包括继承标志）。
 fn comparable(dacl: &str) -> String {
     match dacl.find('(') {
         Some(index) => format!(
@@ -118,6 +122,76 @@ fn lock(path: &Path) -> File {
 }
 
 #[test]
+fn creation_descriptor_omits_owner_and_group_without_changing_dacl() {
+    for (flags, inheritance) in [
+        ("", 0),
+        (
+            "PAIAR",
+            SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED | SE_DACL_AUTO_INHERIT_REQ,
+        ),
+    ] {
+        let sddl: Vec<u16> = format!("O:BAG:BAD:{flags}(A;;FA;;;AU)")
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let mut source = null_mut();
+        assert_ne!(
+            unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    sddl.as_ptr(),
+                    1,
+                    &mut source,
+                    null_mut(),
+                )
+            },
+            0
+        );
+        let source = Descriptor(source);
+        let mut creation = dacl_only_descriptor(&source).unwrap();
+        assert!(creation.Owner.is_null());
+        assert!(creation.Group.is_null());
+        assert!(creation.Sacl.is_null());
+        assert_eq!(creation.Control, SE_DACL_PRESENT | inheritance);
+        let mut dacl = null_mut();
+        let mut present = 0;
+        let mut defaulted = 0;
+        assert_ne!(
+            unsafe { GetSecurityDescriptorDacl(source.0, &mut present, &mut dacl, &mut defaulted) },
+            0
+        );
+        assert_ne!(present, 0);
+        assert!(!dacl.is_null());
+        assert_eq!(creation.Dacl, dacl);
+
+        // [喵喵喵]: 不仅检查描述符字段；实际创建可验证普通令牌不再因原 Owner/Group 被拒绝。
+        let dir = tempfile::tempdir().unwrap();
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: (&mut creation as *mut SECURITY_DESCRIPTOR).cast(),
+            bInheritHandle: 0,
+        };
+        let handle = unsafe {
+            CreateFileW(
+                wide(&dir.path().join("candidate.txt")).as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                &attributes,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                null_mut(),
+            )
+        };
+        assert_ne!(
+            handle,
+            INVALID_HANDLE_VALUE,
+            "{}",
+            io::Error::last_os_error()
+        );
+        drop(unsafe { File::from_raw_handle(handle) });
+    }
+}
+
+#[test]
 fn preserves_target_and_temporary_dacl_and_ads() {
     for protected in [false, true] {
         let (dir, target) = fixture();
@@ -134,7 +208,7 @@ fn preserves_target_and_temporary_dacl_and_ads() {
         );
         prepared.commit().unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"new");
-        assert_eq!(dacl(&target), before);
+        assert_eq!(comparable(&dacl(&target)), comparable(&before));
         assert_eq!(fs::read(stream).unwrap(), b"sentinel");
         only_target(dir.path());
     }

@@ -34,7 +34,7 @@
 - 读取、proof 选择、CLI mutation 与 evidence 更新按 canonical real path 使用同一 file mutation queue。同文件状态事务串行，不同文件仍可并行。
 - evidence 有界：单文件 10,000 records / 4 MiB 计费额度，session 50,000 records / 16 MiB；历史坐标、proof 与行证据共同计费，最多保留 32 个历史代。优先淘汰历史，其次保留当前发布窗口或恢复目标。整批必需证据无法容纳时终止为 `evidence_capacity_exceeded`，不让补读循环；拆分写入必须接受失去整批原子性的代价。重放使用记录的发布顺序，而不是 Pi 并行结果的请求顺序。
 - 仅接受有效 UTF-8 且不含 NUL 的文本；revision 基于原始字节。非空结果保留既有 BOM，拒绝会把首字符 U+FEFF 重新解释为 BOM 的修改。孤立 CR 作为正文保留；空末行必要地补行尾，其余按局部规则保留行尾与末尾换行状态。
-- Windows 写入保留目标 DACL、继承状态和 NTFS 附加流。替换中途失败时先以不覆盖方式移回原文件，成功即为零写入失败；无法移回时返回 `outcome_unknown` 并保留、报告恢复文件，须先检查文件状态；已成功写入但恢复副本清理失败则返回成功及含路径的 warning。
+- Windows 写入保留目标 DACL、继承状态和 NTFS 附加流；Owner 和 primary group 不保证保持原值。替换中途失败时先以不覆盖方式移回原文件，成功即为零写入失败；无法移回时返回 `outcome_unknown` 并保留、报告恢复文件，须先检查文件状态；已成功写入但恢复副本清理失败则返回成功及含路径的 warning。
 
 CLI 3.x capability 健康时，插件始终启用这三个专用工具并替换 Pi 内置 `edit`。`session_tree` 重建当前 branch evidence，但不隐藏工具。若 bundled CLI 缺失、版本不在 3.x、缺少正 capability、残留已删除的 `contentReplaceOnce` 字段或响应 malformed，则恢复内置 `edit`。
 

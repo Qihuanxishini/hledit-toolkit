@@ -199,7 +199,7 @@ Batch wire v3 是唯一 canonical 形状：`replace` 必须带 `lines`（可为�
 
 CLI 写入保留非空结果的 BOM 与未修改行尾，真实空末行必要地补 terminator；正文以 CR 结尾的已终止行使用 CRLF，避免丢失正文 CR。会把首字符 U+FEFF 重新解释为 BOM 的修改在 check/apply 共同入口零写入拒绝，删除全部逻辑行则生成真正空文件。CLI 拒绝 multi-hardlink target，保留 symlink entry，并在 temp sync 后、atomic replace 前复检原始字节 revision。recheck 与 rename 之间仍有极短外部竞态，不宣称线性化 CAS。
 
-Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标权限与继承状态；已有目标由 `ReplaceFileW` 保留附加流，flags 为 0，不忽略权限或元数据合并失败。每次事务预留唯一恢复路径：成功后仅清理本次文件，清理失败以含路径的成功 warning 返回；1177 部分替换失败时以不覆盖方式把原文件移回目标路径，成功即为零写入 `io` 错误。移回失败，或文档外错误后目标缺失时，保留候选与恢复文件，CLI 非零退出并输出路径，使插件走 `outcome_unknown` 失效旧 proof，并指示模型不要重建或覆盖目标、把路径交给用户处理。未知结果必须禁用候选 TempPath 的 RAII 清理；禁止覆盖式回滚或按名称、时间清理其他文件。
+Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标权限与继承状态。创建描述符只包含 DACL 及其继承控制标志，不直接复用查询返回的完整安全描述符；Owner/primary group 使用创建令牌默认值，替换不保证保留原值。已有目标由 `ReplaceFileW` 保留附加流，flags 为 0，不忽略权限或元数据合并失败。每次事务预留唯一恢复路径：成功后仅清理本次文件，清理失败以含路径的成功 warning 返回；1177 部分替换失败时以不覆盖方式把原文件移回目标路径，成功即为零写入 `io` 错误。移回失败，或文档外错误后目标缺失时，保留候选与恢复文件，CLI 非零退出并输出路径，使插件走 `outcome_unknown` 失效旧 proof，并指示模型不要重建或覆盖目标、把路径交给用户处理。未知结果必须禁用候选 TempPath 的 RAII 清理；禁止覆盖式回滚或按名称、时间清理其他文件。
 
 ## 失败与子进程语义
 
@@ -212,6 +212,7 @@ Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标�
 - `findChangeShapeIssue` 在 `selectProof` 之前拦截仅凭请求即可判定的自相矛盾：区间锚点倒置（`reversed_anchor_range`）、`lines` 行首粘贴了本次提交过或当前证据中存在的锚点 token（`anchor_token_in_lines`，在 file queue 内对照 `anchorTokens(path)`）。这类问题重读文件无法修复，必须让模型改参数，因此不得落到 `insufficient_read_proof` 的补读指令上；正文明确声明重读无效并给出交换/删前缀的具体动作。检测即拒绝，不自动修正——与 `prepareArguments` 只服务 read 的约定一致；
 - 三个工具在 `execute()` 返回边界直接设置 Pi `isError`：插件侧 `insufficient_read_proof` 是可恢复补读结果，设为 `false`；其他非成功结果设为 `true`，包括 `source_line_truncated`、`proof_recovery_read_failed`、`proof_recovery_budget_exceeded` 和 `proof_recovery_source_changed`，要求调用方按失败原因调整动作；
 - 读取错误码全集为 `range` / `binary` / `encoding` / `directory` / `io` / `pattern` / `broad_pattern`，每个码都必须有本地化 message，落到兜底分支等于只把错误码丢给模型；message 本身说不清下一步动作时再补 hint（`range` / `directory` / `pattern` / `broad_pattern`）。`pattern` 转发 CLI 的 RE2 编译原文（出错位置本身就是要改的东西）并点名 RE2 不支持 lookahead/lookbehind/backreference；`broad_pattern` 指向 `hledit_read_anchors`；
+- 读取和写入的 `io` 拒绝保留简洁英文摘要，并在正文追加 `Diagnostic: <rawMessage>`，原样保留操作阶段、系统原文与错误码；`details.error.rawMessage` 和 disposition 不变，不自动重试；
 - revision mismatch 仍为 `stale`，但 `failed:-1` 表示整批版本失效；CLI 从同一当前 snapshot 返回首项请求附近的有界 `currentAnchors`，不把版本变化说成端点锚点错误。完整 snapshot 供显式复核与续编，缺失或截断时按请求范围定向重读；stale remap 与 snapshot 均不触发自动修正或重试；
 - `source_changed_before_commit` 是确认零写入；CLI 从未启动使用 `unavailable`；
 - 已启动进程的取消、超时、输出超限、stdin 错误、非零退出或响应不完整按 `outcome_unknown`，先重读，禁止原样重试。

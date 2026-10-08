@@ -641,6 +641,23 @@ test("applyFileChangesResult surfaces the hardlink rejection reason", () => {
 	});
 });
 
+for (const [tool, rawMessage] of [
+	["apply", "create temporary sibling: 这个安全 ID 不能分配为此对象的所有者。 (os error 1307)"],
+	["read", "file could not be read: 拒绝访问。 (os error 5)"],
+] as const) {
+	test(`${tool} I/O diagnostics preserve the native cause in the model body`, () => {
+		const run = { stdout: JSON.stringify({ ok: false, error: "io", message: rawMessage }), stderr: "", exitCode: 0 };
+		const result = tool === "apply"
+			? applyFileChangesResult(run)
+			: readAnchorsResult(run, { path: "target.txt", offset: 1, limit: 1 });
+
+		assert.equal(result.details.disposition, "rejected");
+		assert.equal(result.details.error?.code, "io");
+		assert.equal(result.details.error?.rawMessage, rawMessage);
+		assert.ok(result.content[0]?.text.includes(`Diagnostic: ${rawMessage}`));
+	});
+}
+
 test("applyFileChangesResult localizes unknown batch fields", () => {
 	const rawMessage = 'invalid batch request: json: unknown field "linez"';
 	const result = applyFileChangesResult({

@@ -123,6 +123,31 @@ mod platform {
             }
         }
     }
+    fn dacl_only_descriptor(source: &Descriptor) -> io::Result<SECURITY_DESCRIPTOR> {
+        let mut dacl = null_mut();
+        let mut present = 0;
+        let mut defaulted = 0;
+        let mut control = 0;
+        let mut revision = 0;
+        if unsafe {
+            GetSecurityDescriptorDacl(source.0, &mut present, &mut dacl, &mut defaulted) == 0
+                || GetSecurityDescriptorControl(source.0, &mut control, &mut revision) == 0
+        } {
+            return Err(io::Error::last_os_error());
+        }
+        // [喵喵喵]: DACL-only 查询仍可能附带 Owner/Group；不能把它们用于创建，否则普通令牌可能触发 1307。
+        let mut descriptor = SECURITY_DESCRIPTOR::default();
+        let pointer = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
+        let inheritance = SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED | SE_DACL_AUTO_INHERIT_REQ;
+        if unsafe {
+            InitializeSecurityDescriptor(pointer, revision) == 0
+                || SetSecurityDescriptorDacl(pointer, present, dacl, defaulted) == 0
+                || SetSecurityDescriptorControl(pointer, inheritance, control & inheritance) == 0
+        } {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(descriptor)
+    }
     pub fn temporary(
         target: &Path,
         metadata: &fs::Metadata,
@@ -150,9 +175,11 @@ mod platform {
             return Err(io::Error::from_raw_os_error(code as i32));
         }
         let descriptor = Descriptor(descriptor);
+        // [喵喵喵]: creation 只借用 descriptor 中的 DACL 内存，两者均须存续至 CreateFileW 完成。
+        let mut creation = dacl_only_descriptor(&descriptor)?;
         let attributes = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: descriptor.0,
+            lpSecurityDescriptor: (&mut creation as *mut SECURITY_DESCRIPTOR).cast(),
             bInheritHandle: 0,
         };
         // [喵喵喵]: 创建时即传入目标 DACL，正文落盘前不暴露宽权限窗口；不能先创建再收紧 ACL。

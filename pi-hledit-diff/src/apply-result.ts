@@ -329,6 +329,10 @@ function formatApplyFailureResult(
 		`Reason: ${error.message}`,
 		`Error code: ${error.code}`,
 	];
+	// [喵喵喵]: I/O 原文含操作阶段与系统错误码，不能只存 details 或被通用摘要替代。
+	if (error.code === "io" && error.rawMessage) {
+		lines.push(`Diagnostic: ${error.rawMessage}`);
+	}
 	if (isIntegerAtLeast(result.failed, 0)) {
 		lines.push(`Failed change: ${result.failed + 1}`);
 	}

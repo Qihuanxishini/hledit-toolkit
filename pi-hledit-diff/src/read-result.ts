@@ -195,7 +195,7 @@ type ReadErrorFacts = {
 };
 
 // RE2 编译错误的可操作内容就是出错位置本身，没有稳定可本地化的形状，直接转发 CLI 原文；
-// 其余错误码只用结构化字段重述，不暴露 raw message。
+// 其余错误摘要按结构化字段重述；I/O 原文由 formatReadError 单独显示，避免丢失系统原因。
 function searchPatternCompileDetail(rawMessage: string): string | undefined {
 	const compileFailure = /^invalid search pattern:\s*(.+)$/s.exec(rawMessage);
 	return compileFailure?.[1];
@@ -310,6 +310,7 @@ function formatReadError(error: HleditErrorMetadata): string {
 	const lines = [error.message];
 	if (error.hint) lines.push(`Suggestion: ${error.hint}`);
 	lines.push(`Error code: ${error.code}`);
+	if (error.code === "io" && error.rawMessage) lines.push(`Diagnostic: ${error.rawMessage}`);
 	return lines.join("\n");
 }
 

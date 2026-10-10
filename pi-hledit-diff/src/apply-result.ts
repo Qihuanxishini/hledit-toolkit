@@ -9,7 +9,6 @@ import {
 	parseEditDeltas,
 	parseRunObject,
 	producedLineRangesFromEditDeltas,
-	unavailableToolResult,
 	type FileChangeAnchorField,
 	type HleditDisposition,
 	type HleditEditDelta,
@@ -19,7 +18,7 @@ import {
 } from "./result.ts";
 import type { FileChangeParams } from "./schema.ts";
 
-// batch apply/--check 响应的严格校验、错误本地化与模型正文排版。
+// batch apply 响应的严格校验、错误本地化与模型正文排版。
 
 export type ApplyResultContext = {
 	path?: string;
@@ -198,7 +197,11 @@ function localizeInvalidApplyMessage(rawMessage: string, failedChange: number | 
 	if (rawMessage.includes("insert requires non-empty content")) return `${prefix} is an insert and lines must contain at least one line.`;
 	if (rawMessage.includes("unknown op")) return `${prefix} uses an unsupported operation.`;
 	if (rawMessage.includes("overlaps") || rawMessage.includes("conflicts") || rawMessage.includes("already consumed range")) {
-		return `${prefix} overlaps another change in the same batch. Merge them or make the changes non-overlapping.`;
+		// [喵喵喵]: CLI 使用零基下标；保留冲突双方并转换为公开 change 编号，避免调用方盲查或无效重读。
+		const conflict = /^edit (\d+) overlaps edit (\d+):/.exec(rawMessage);
+		const changes = conflict?.slice(1).map((index) => Number(index) + 1);
+		const subject = changes?.every(Number.isSafeInteger) ? `Changes ${changes[0]} and ${changes[1]} conflict` : `${prefix} conflicts with another change`;
+		return `${subject}: overlapping source ranges or insertion boundaries. Merge them or make them non-overlapping; rereading cannot resolve this conflict.`;
 	}
 	return `${prefix} is invalid. Check operation, anchors, range order, and lines.`;
 }
@@ -442,22 +445,6 @@ function parseApplySuccess(
 	return { editDeltas, updatedAnchorSpans: spans };
 }
 
-function isValidFileChangeCheckSuccess(parsed: Record<string, unknown> | null): boolean {
-	return (
-		parsed?.ok === true &&
-		parsed.checked === true &&
-		typeof parsed.editsApplied === "number" &&
-		Number.isInteger(parsed.editsApplied) &&
-		parsed.editsApplied >= 0 &&
-		typeof parsed.contentChanged === "boolean"
-		&& isRawRevision(parsed.revision)
-	);
-}
-
-function invalidFileChangeCheckText(): string {
-	return "hledit returned an incompatible --check response, so no write was attempted. Call hledit_read_anchors to inspect the target before retrying.";
-}
-
 function invalidApplyResponseText(): string {
 	return `The bundled hledit returned an incompatible batch response. The write outcome is unknown; the file may have changed. Do not retry the original request; call hledit_read_anchors first. Expected a complete rejection response or ok:true, a valid revision, boolean contentChanged, editsApplied and editDeltas consistent with the request, line-count statistics, and updatedAnchorSpans matching the produced ranges.\n\n${HLEDIT_INSTALL_HINT}`;
 }
@@ -551,20 +538,4 @@ export function applyFileChangesResult(run: HleditRun, context: ApplyResultConte
 			...(applyError ? { error: applyError } : {}),
 		},
 	};
-}
-
-export function fileChangeCheckFailure(run: HleditRun, context: ApplyResultContext = {}): TextResult | undefined {
-	const parsed = parseRunObject(run);
-	if (run.exitCode === 0 && isValidFileChangeCheckSuccess(parsed)) {
-		return undefined;
-	}
-	if (run.exitCode !== 0) {
-		const text = run.stdout.trimEnd() || run.stderr.trimEnd() || HLEDIT_INSTALL_HINT;
-		return unavailableToolResult(text);
-	}
-	// [喵喵喵]: --check 没有写入路径；仅复用已验证的拒绝诊断，不把解析失败升级为未知写入。
-	const result = applyFileChangesResult(run, context);
-	return result.details.disposition === "rejected"
-		? result
-		: unavailableToolResult(invalidFileChangeCheckText());
 }

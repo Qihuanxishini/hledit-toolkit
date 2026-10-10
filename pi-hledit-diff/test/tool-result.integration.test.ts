@@ -184,13 +184,13 @@ test("registered tool metadata stays concise and names each flattened guideline"
 	assert.match(searchTool.description, /literal text[\s\S]*RE2 matches/);
 	assert.match(searchGuidelines, /locate matching lines[\s\S]*not to inspect broad contiguous text[\s\S]*hledit_read_anchors/);
 	assert.match(searchGuidelines, /Only returned complete, non-truncated lines provide proof[\s\S]*read any range gaps/);
-	assert.match(applyTool.description, /non-overlapping inclusive ranges[\s\S]*complete read proof/);
+	assert.match(applyTool.description, /non-overlapping inclusive ranges[\s\S]*complete read proof[\s\S]*retain source lines[\s\S]*change the line count/);
 	assert.match(applyGuidelines, /proof_id and LN#HASH tokens from the same evidence generation[\s\S]*Old pairs work only for verified surviving targets/);
 	assert.match(applyGuidelines, /Failed reads create no proof/);
 	assert.match(applyGuidelines, /raw text without LN#HASH prefixes[\s\S]*\\n separates lines[\s\S]*one blank line/);
 	assert.match(applyGuidelines, /For targeted edits[\s\S]*write only for a new\/empty file[\s\S]*complete-file rewrite/);
 	const applySchema = JSON.stringify(applyTool.parameters);
-	assert.match(applySchema, /submitted anchors' generation[\s\S]*new proof with its Updated anchors[\s\S]*do not mix generations/);
+	assert.match(applySchema, /anchors' file and generation[\s\S]*Do not mix generations/);
 	assert.ok(applySchema.includes(JSON.stringify("Raw text; \\n separates lines; no LN#HASH prefixes.")));
 
 	assert.match(searchTool.description, /one text file[\s\S]*not a directory/i);
@@ -533,49 +533,51 @@ test("apply tool deleting the only line leaves an empty file", async (t) => {
 	assert.equal(await readFile(target, "utf8"), "");
 });
 
-test("apply tool rejects accidental single-line range expansion with actionable details", async (t) => {
+test("apply tool accepts batched single-line expansions with replacement semantics", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
 
-	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-"));
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-expansion-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
 	const target = join(directory, "target.txt");
-	await writeFile(target, "one\ntwo\nthree\n", "utf8");
+	await writeFile(target, "one\ntwo\nthree\nfour\nfive\n", "utf8");
 	const context = { cwd: directory };
+	const readResult = await readTool.execute("read", { path: "target.txt", offset: 2, limit: 3 } as never, undefined, undefined, context);
+	const first = readResult.details.read?.lines[0]?.anchor;
+	const second = readResult.details.read?.lines[2]?.anchor;
+	assert.ok(first && second);
 
-	const readResult = await readTool.execute("read", { path: "target.txt", offset: 2, limit: 1 } as never, undefined, undefined, context);
-	const anchor = readResult.details.read?.lines[0]?.anchor;
-	assert.ok(anchor);
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: readResult.details.proofId, changes: [{ operation: "replace_range", start_anchor: anchor, end_anchor: anchor, lines: "two\ninserted" }] } as never,
+		{
+			path: "target.txt",
+			proof_id: readResult.details.proofId,
+			changes: [
+				{ operation: "replace_range", start_anchor: first, end_anchor: first, lines: "two\ninserted-after-two" },
+				{ operation: "replace_range", start_anchor: second, end_anchor: second, lines: "four\ninserted-after-four" },
+			],
+		} as never,
 		undefined,
 		undefined,
 		context,
 	);
 
-	assert.equal(applyResult.details.disposition, "rejected");
-	assert.equal(applyResult.isError, true);
-	assert.deepEqual(applyResult.details.error, {
-		code: "single_line_range_expansion",
-		message: "Change 1 uses replace_range for one source line while repeating that source line. Expand end_anchor or use insert_after; do not retry the same request.",
-		hint: "replace_range must cover the complete old code block. For an append-only change, use insert_after and omit the repeated anchor line.",
-		changeNumber: 1,
-		operation: "replace_range",
-		anchor,
-		outputLineCount: 2,
-	});
-	const text = applyResult.content[0]?.text ?? "";
-	assert.match(text, /The atomic batch was rejected; no content was written/);
-	assert.match(text, /Received: replace_range .* through .*; 2 output lines/);
-	assert.match(text, /Do not retry with the same parameters/);
-	assert.match(text, /No safe placeholder end anchor is available/);
-	assert.match(text, /change operation to insert_after/);
-	assert.match(text, /remove the first line from lines/);
-	assert.doesNotMatch(text, /"lines"/);
-	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
+	assert.equal(applyResult.details.disposition, "succeeded");
+	assert.equal(applyResult.isError, false);
+	assert.equal(applyResult.details.error, undefined);
+	assert.equal(applyResult.details.editsApplied, 2);
+	assert.deepEqual(applyResult.details.editDeltas, [
+		{ oldStart: 2, oldEnd: 2, delta: 1 },
+		{ oldStart: 4, oldEnd: 4, delta: 1 },
+	]);
+	assert.ok(applyResult.details.proofId);
+	assert.notEqual(applyResult.details.proofId, readResult.details.proofId);
+	assert.deepEqual(applyResult.details.updatedAnchorSpans?.flatMap((span) => span.lines.map((line) => line.text)), [
+		"two", "inserted-after-two", "four", "inserted-after-four",
+	]);
+	assert.equal(await readFile(target, "utf8"), "one\ntwo\ninserted-after-two\nthree\nfour\ninserted-after-four\nfive\n");
 });
 
 test("apply tool rejects an anchor token pasted into lines instead of writing it to disk", async (t) => {
@@ -850,7 +852,7 @@ test("apply tool rejects an anchor that does not match its read proof before sta
 	assert.match(applyResult.content[0]?.text ?? "", /submitted anchor for line 2 does not match/);
 	assert.match(applyResult.content[0]?.text ?? "", /batch recovery plan was read and recorded/);
 	assert.match(applyResult.content[0]?.text ?? "", new RegExp(`${currentAnchor}:two`));
-	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /single_line_range_expansion|Current anchor snapshot/);
+	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /Current anchor snapshot/);
 	assert.equal(await readFile(target, "utf8"), original);
 });
 
@@ -1164,13 +1166,13 @@ test("multi-page proof continuation completes without rereading the payload", as
 	assert.equal(await readFile(target, "utf8"), "replacement\n");
 });
 
-test("apply tool suggests merging a nearby delete range without writing", async (t) => {
+test("apply tool preserves unselected lines between an expansion and a separate delete", async (t) => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
 
-	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-range-hint-"));
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-extension-disjoint-ranges-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
 	const target = join(directory, "target.txt");
 	const original = "one\ntwo\nthree\nfour\nfive\nsix\n";
@@ -1198,14 +1200,12 @@ test("apply tool suggests merging a nearby delete range without writing", async 
 		context,
 	);
 
-	assert.equal(applyResult.details.disposition, "rejected");
-	assert.equal(applyResult.details.error?.relatedChangeNumber, 2);
-	assert.equal(applyResult.details.error?.candidateEndAnchor, deleteEndAnchor);
-	assert.match(applyResult.content[0]?.text ?? "", /Change 2 is a delete_range from/);
-	assert.match(applyResult.content[0]?.text ?? "", new RegExp(`set change 1 end_anchor to ${deleteEndAnchor.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
-	assert.match(applyResult.content[0]?.text ?? "", /remove change 2/);
-	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /"lines"/);
-	assert.equal(await readFile(target, "utf8"), original);
+	assert.equal(applyResult.details.disposition, "succeeded");
+	assert.deepEqual(applyResult.details.editDeltas, [
+		{ oldStart: 2, oldEnd: 2, delta: 1 },
+		{ oldStart: 4, oldEnd: 6, delta: -3 },
+	]);
+	assert.equal(await readFile(target, "utf8"), "one\ntwo\nreplacement\nthree\n");
 });
 
 

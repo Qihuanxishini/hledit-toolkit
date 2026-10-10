@@ -13,7 +13,7 @@ import { fileChangeLineRanges } from "./file-changes.ts";
 import { DEFAULT_READ_LIMIT, normalizeToolPath } from "./read-args.ts";
 import { parseUpdatedAnchorSpans } from "./post-edit-context.ts";
 import { createHighlightedTextCache, escapeTerminalControls } from "./syntax-highlight.ts";
-import type { HleditToolKind, TextResult } from "./result.ts";
+import type { HleditErrorMetadata, HleditToolKind, TextResult } from "./result.ts";
 
 export type RenderComponent = HleditRenderComponent;
 export type RenderTheme = HleditRenderTheme;
@@ -135,25 +135,37 @@ function createAnchoredSourceRowsComponent(
 	});
 }
 
-function renderFailure(result: RenderResult, expanded: boolean, theme: RenderTheme): RenderComponent {
+function failureReason(error: HleditErrorMetadata | undefined): string | undefined {
+	// [喵喵喵]: I/O 的通用说明不足以区分缺失文件、权限拒绝等原因；仅显示层优先采用原始诊断。
+	return (error?.code === "io" ? error.rawMessage?.trim() : undefined) || error?.message?.trim() || undefined;
+}
+
+function renderFailure(kind: "read" | "apply", result: RenderResult, expanded: boolean, theme: RenderTheme): RenderComponent {
 	const rawLines = getText(result).split(/\r?\n/).filter(Boolean);
 	const first = rawLines[0] ?? "Tool execution failed.";
-	const structuredMessage = result.details.error?.message;
+	const { disposition, error, recoveredReads, recoveryReadError, proofId } = result.details;
+	// [喵喵喵]: 补读失败的直接原因在内层；通用 proof 说明保留在展开正文，不遮住读取故障。
+	const recoveryReason = error?.code === "proof_recovery_read_failed" ? failureReason(recoveryReadError?.error) : undefined;
+	const structuredMessage = recoveryReason ? `补读失败：${recoveryReason}` : failureReason(error);
 	const reasonLine = rawLines.find((line) => line.startsWith("Reason:") || line.startsWith("Message:"));
-	const fallbackReason = reasonLine?.replace(/^(?:Reason:|Message:\s*)/, "") ?? rawLines[1];
+	const fallbackReason = reasonLine?.replace(/^(?:Reason|Message):\s*/, "") ?? rawLines[1];
 	const summary = escapeTerminalControls(structuredMessage ?? (fallbackReason ? `${first} ${fallbackReason}` : first));
-	const { disposition, error, recoveredReads, proofId } = result.details;
-	const reviewReady = disposition === "rejected" && proofId && (
+	const reviewReady = kind === "apply" && disposition === "rejected" && proofId && (
 		(error?.code === "insufficient_read_proof" && recoveredReads?.length) ||
 		(error?.code === "stale" && error.currentAnchors && !error.currentAnchors.truncated && error.currentAnchors.lines.every((line) => !line.textTruncated))
 	);
-	const label = disposition === "outcome_unknown" ? "! 结果未知"
+	// [喵喵喵]: 只有编辑工具能声明写入状态；成功回包与宿主错误标记冲突时，不推断“未写入”。
+	const statusConflict = disposition === "succeeded";
+	const writeOutcomeUnknown = kind === "apply" && disposition === "outcome_unknown";
+	const label = statusConflict ? "! 状态不一致"
+		: kind === "read" ? "× 读取失败"
+		: writeOutcomeUnknown ? "! 结果未知"
 		: reviewReady ? "↳ 待复核（未写入）"
 		: disposition === "unavailable" ? "× 未执行" : "× 未写入";
-	const color = disposition === "outcome_unknown" || reviewReady ? "warning" : "error";
+	const color = statusConflict || writeOutcomeUnknown || reviewReady ? "warning" : "error";
 	return component((width) => {
 		if (width <= 0) return [];
-		if (!expanded) return [truncateToWidth(theme.fg(color, `${label} · ${summary}`), width, "")];
+		if (!expanded) return [truncateToWidth(theme.fg(color, `${label} · ${summary}`), width, "…")];
 		return rawLines.flatMap((line, index) => wrapTextWithAnsi(
 			theme.fg(index === 0 ? color : "muted", `${index === 0 ? label + " ·" : " "} ${escapeTerminalControls(line)}`), width,
 		));
@@ -209,7 +221,7 @@ export function renderReadAnchorsResult(
 		return component((width) => [truncateToWidth(theme.fg("warning", "正在读取锚点…"), width, "")]);
 	}
 	if (result.details.disposition !== "succeeded" || context.isError) {
-		return renderFailure(result, options.expanded, theme);
+		return renderFailure("read", result, options.expanded, theme);
 	}
 
 	const read = result.details.read;
@@ -294,7 +306,7 @@ export function renderFileChangesResult(
 		return component((width) => [truncateToWidth(theme.fg("warning", "正在应用锚点修改…"), width, "")]);
 	}
 	if (result.details.disposition !== "succeeded" || context.isError) {
-		return renderFailure(result, options.expanded, theme);
+		return renderFailure("apply", result, options.expanded, theme);
 	}
 
 	const path = pathFromContext(context);

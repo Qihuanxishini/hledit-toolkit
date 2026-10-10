@@ -107,10 +107,6 @@ export type HleditErrorMetadata = {
 	totalLines?: number;
 	changeNumber?: number;
 	operation?: "replace_range" | "delete_range" | "insert_before" | "insert_after";
-	anchor?: string;
-	outputLineCount?: number;
-	relatedChangeNumber?: number;
-	candidateEndAnchor?: string;
 	staleAnchors?: HleditStaleAnchor[];
 	currentAnchors?: BatchAnchorContext;
 	currentRevision?: string;

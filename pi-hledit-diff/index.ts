@@ -20,12 +20,9 @@ import {
 } from "./src/change-preview.ts";
 import { recordAnchoredFileOperations } from "./src/compaction-files.ts";
 import {
-	buildFileChangeCheckRequest,
 	buildFileChangeRequest,
 	changeShapeIssueResult,
 	findChangeShapeIssue,
-	findSingleLineRangeExpansionIssue,
-	singleLineRangeExpansionResult,
 } from "./src/file-changes.ts";
 import { decodeFileChangeInput, prepareReadAnchorsArguments, prepareSearchAnchorsArguments } from "./src/prepare-arguments.ts";
 import {
@@ -37,7 +34,7 @@ import {
 import { recoverMissingReadProof } from "./src/read-recovery.ts";
 import { normalizeToolPath } from "./src/read-args.ts";
 import { runReadAnchorsTransaction, runSearchAnchorsTransaction } from "./src/read-transaction.ts";
-import { applyFileChangesResult, fileChangeCheckFailure } from "./src/apply-result.ts";
+import { applyFileChangesResult } from "./src/apply-result.ts";
 import {
 	attachEvidencePath,
 	rejectedToolResult,
@@ -174,29 +171,13 @@ async function runFileChangesWithDiff(
 			);
 		}
 
-		// selectProof 只在唯一、非歧义且替换后完整 proof 再次成立时返回规范化参数。
-		// CLI 仍会验证当前 raw revision、proof 与全部 anchors。
+		// selectProof 只迁移可验证存续的目标，不改操作种类、消费范围或输出内容。
+		// CLI 统一验证当前 raw revision、完整 proof、全部 anchors 与冲突，再原子提交。
 		const effectiveParams = proofSelection.normalizedChanges
 			? { ...normalizedParams, changes: proofSelection.normalizedChanges }
 			: normalizedParams;
 		const applyContext = { path: normalizedPath, changes: effectiveParams.changes };
 		const request = buildFileChangeRequest(effectiveParams, proofSelection.proof);
-		const singleLineRangeExpansionIssue = findSingleLineRangeExpansionIssue(effectiveParams, proofSelection.consumedLines);
-
-		if (singleLineRangeExpansionIssue) {
-			const checkRequest = buildFileChangeCheckRequest(effectiveParams, proofSelection.proof);
-			const checkRun = await runHledit(checkRequest.args, checkRequest.stdin, ctx.cwd, signal);
-			const checkFailure = fileChangeCheckFailure(checkRun, applyContext);
-			if (checkFailure) {
-				return attachEvidencePath(checkFailure, normalizedPath, evidencePath);
-			}
-			return attachEvidencePath(
-				singleLineRangeExpansionResult({ ...singleLineRangeExpansionIssue, anchorsVerified: true }),
-				normalizedPath,
-				evidencePath,
-			);
-		}
-
 		const run = await runHledit(request.args, request.stdin, ctx.cwd, signal);
 		const result = applyFileChangesResult(run, applyContext);
 		if (result.details.disposition !== "succeeded") {
@@ -309,10 +290,10 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		exposure: "model-only",
 		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
 		label: "Apply File Changes",
-		description: "Atomically edit one text file with non-overlapping inclusive ranges or before/after anchor inserts; requires complete read proof.",
+		description: "Atomic, non-overlapping inclusive ranges or anchor inserts on one file; requires complete read proof. Replacements may retain source lines and change the line count.",
 		promptGuidelines: [
 			"Use hledit_apply_file_changes with proof_id and LN#HASH tokens from the same evidence generation. Changed apply returns new proof + Updated anchors. Old pairs work only for verified surviving targets. Failed reads create no proof.",
-			"In hledit_apply_file_changes.lines, use raw text without LN#HASH prefixes: \\n separates lines; one trailing \\n terminates the last line, and an empty string writes one blank line. For targeted edits, do not use write to bypass read proof; use write only for a new/empty file or an intentional complete-file rewrite when the recovery guidance allows it.",
+			"In hledit_apply_file_changes.lines, use raw text without LN#HASH prefixes. \\n separates lines; one trailing \\n terminates the last line; \"\" writes one blank line. For targeted edits, use write only for a new/empty file or an intentional complete-file rewrite allowed by recovery guidance; never bypass proof.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 		constrainedSampling: { type: "json_schema", strict: "prefer" },

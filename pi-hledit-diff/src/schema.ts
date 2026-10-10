@@ -71,13 +71,13 @@ export const HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA = Type.Object(
 export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 	{
 		path: PATH_SCHEMA,
-		proof_id: Type.String({ minLength: 1, description: "Use submitted anchors' generation for this path; new proof with its Updated anchors; do not mix generations." }),
+		proof_id: Type.String({ minLength: 1, description: "Proof for these anchors' file and generation. Do not mix generations." }),
 		changes: Type.Array(
 			Type.Union([REPLACE_RANGE_CHANGE_SCHEMA, DELETE_RANGE_CHANGE_SCHEMA, INSERT_CHANGE_SCHEMA]),
 			{
 				minItems: 1,
 				maxItems: MAX_FILE_CHANGE_COUNT,
-				description: "Complete non-overlapping atomic batch for one file.",
+				description: "One atomic, non-overlapping batch; all anchors use the pre-edit snapshot.",
 			},
 		),
 	},

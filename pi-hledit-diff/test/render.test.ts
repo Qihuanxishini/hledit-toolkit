@@ -5,6 +5,9 @@ import { Theme, type ToolRenderResultOptions } from "@earendil-works/pi-coding-a
 import { backgroundAnsi, Box, getCapabilities, parseColor, setCapabilities, visibleWidth, type TerminalColorMode } from "@earendil-works/pi-tui";
 import { renderStandaloneDiff, type StructuredDiffLine } from "../src/diff-renderer.ts";
 import { renderFileChangesResult, renderHleditCall, renderReadAnchorsResult, type RenderTheme } from "../src/render.ts";
+import { applyFileChangesResult } from "../src/apply-result.ts";
+import { recoverMissingReadProof } from "../src/read-recovery.ts";
+import { readAnchorsResult } from "../src/read-result.ts";
 import type { TextResult } from "../src/result.ts";
 
 function createNativeTheme(mode: TerminalColorMode, background = "", appearance: "dark" | "light" = "dark"): Theme {
@@ -269,7 +272,7 @@ test("renderReadAnchorsResult folds structured errors to the actionable message"
         },
     };
 
-    assert.deepEqual(render(renderReadAnchorsResult(result, options(), theme, { isError: true })), ["× 未写入 · 起始行 600 超出文件范围（文件共 599 行）。"]);
+    assert.deepEqual(render(renderReadAnchorsResult(result, options(), theme, { isError: true })), ["× 读取失败 · 起始行 600 超出文件范围（文件共 599 行）。"]);
     assert.ok(render(renderReadAnchorsResult(result, options(true), theme, { isError: true })).some((line) => line.includes("请将 offset 设为 1 到 599")));
 });
 
@@ -608,19 +611,72 @@ test("renderFileChangesResult folds failures unless expanded", () => {
 	assert.ok(render(renderFileChangesResult(result, options(true), theme, {})).some((line) => line.includes("错误代码：io")));
 });
 
-test("failure rendering distinguishes review-ready, zero-write and unknown outcomes", () => {
+test("failure rendering distinguishes read errors, write outcomes and conflicting status", () => {
 	const cases: Array<[TextResult["details"], string]> = [
 		[{ disposition: "rejected", error: { code: "invalid", message: "bad request" } }, "× 未写入"],
 		[{ disposition: "unavailable" }, "× 未执行"],
 		[{ disposition: "outcome_unknown" }, "! 结果未知"],
+		[{ disposition: "succeeded", contentChanged: true }, "! 状态不一致"],
 		[{ disposition: "rejected", proofId: "current", recoveredReads: [{} as never], error: { code: "insufficient_read_proof", message: "review source" } }, "↳ 待复核（未写入）"],
 		[{ disposition: "rejected", proofId: "current", recoveredReads: [{} as never], error: { code: "proof_recovery_budget_exceeded", message: "incomplete" } }, "× 未写入"],
 		[{ disposition: "rejected", proofId: "current", error: { code: "stale", message: "review source", currentAnchors: { offset: 1, limit: 1, desiredLimit: 1, truncated: false, lines: [{ line: 1, anchor: "1#AAA", text: "current", textTruncated: false }] } } }, "↳ 待复核（未写入）"],
 	];
 	for (const [details, label] of cases) {
 		const result: TextResult = { content: [{ type: "text", text: "Diagnostic" }], details };
-		assert.ok(render(renderFileChangesResult(result, options(), theme, {}))[0]!.startsWith(label));
+		for (const expanded of [false, true]) {
+			assert.ok(render(renderFileChangesResult(result, options(expanded), theme, { isError: true }))[0]!.startsWith(label));
+			const readLabel = details.disposition === "succeeded" ? "! 状态不一致" : "× 读取失败";
+			assert.ok(render(renderReadAnchorsResult(result, options(expanded), theme, { isError: true }))[0]!.startsWith(readLabel));
+		}
 	}
+});
+
+for (const [operation, rawMessage] of [
+	["read", "系统找不到指定的文件。 (os error 2)"],
+	["apply", "create temporary sibling: 这个安全 ID 不能分配为此对象的所有者。 (os error 1307)"],
+	["recovery", "拒绝访问。 (os error 5)"],
+] as const) {
+	test(`collapsed ${operation} I/O errors show the native cause without changing the result`, () => {
+		const run = { stdout: JSON.stringify({ ok: false, error: "io", message: rawMessage }), stderr: "", exitCode: 0 };
+		const read = readAnchorsResult(run, { path: "target.txt", offset: 1, limit: 70 });
+		const result: TextResult = operation === "apply" ? applyFileChangesResult(run)
+			: operation === "read" ? read : {
+				content: read.content,
+				details: {
+					disposition: "rejected",
+					error: { code: "proof_recovery_read_failed", message: "The targeted recovery read failed before edit proof could be established." },
+					recoveryReadError: read.details,
+				},
+			};
+		const original = JSON.stringify(result);
+		const renderer = operation === "read" ? renderReadAnchorsResult : renderFileChangesResult;
+		const component = renderer(result, options(), theme, {});
+		const prefix = operation === "read" ? "× 读取失败 · " : operation === "apply" ? "× 未写入 · " : "× 未写入 · 补读失败：";
+		assert.deepEqual(component.render(180), [prefix + rawMessage]);
+		for (const width of [0, 16, 40, 80]) {
+			assert.ok(component.render(width).every((line) => visibleWidth(line) <= width));
+		}
+		assert.ok(render(renderer(result, options(true), theme, {}), 180).some((line) => line.includes(`Diagnostic: ${rawMessage}`)));
+		assert.equal(JSON.stringify(result), original);
+	});
+}
+
+test("collapsed recovery process failures retain the unstructured diagnostic", async () => {
+	const diagnostic = "hledit timed out after 30000ms";
+	const result = await recoverMissingReadProof({
+		failure: { code: "insufficient_read_proof", message: "Missing source lines.", reportedMissingLines: [1], recoveryRanges: [{ start: 1, end: 1 }] },
+		path: "target.txt", evidencePath: "target.txt", cwd: process.cwd(), signal: undefined,
+		run: async () => ({ stdout: "", stderr: diagnostic, exitCode: 1 }),
+	});
+	assert.ok(result);
+	assert.equal(result.details.disposition, "rejected");
+	assert.equal(result.details.error?.code, "proof_recovery_read_failed");
+	assert.equal(result.details.recoveryReadError?.disposition, "unavailable");
+	assert.equal(result.details.proofId, undefined);
+	assert.ok(result.content[0]!.text.includes(diagnostic));
+	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {}), 180), [
+		`× 未写入 · 补读失败：${diagnostic}`,
+	]);
 });
 
 test("expanded failure details wrap long recovery paths and retain every character", () => {
@@ -636,25 +692,6 @@ test("expanded failure details wrap long recovery paths and retain every charact
 		assert.ok(plain.includes(path), plain);
 	}
 	assert.deepEqual(render(renderFileChangesResult(result, options(true), theme, {}), 0), []);
-});
-
-test("renderFileChangesResult folds single-line range failures to the corrective action", () => {
-	const result: TextResult = {
-		content: [{ type: "text", text: "原子批次已拒绝，未写入任何内容。\n第 1 项修改被拒绝。\n禁止使用相同参数重试。" }],
-		details: {
-			disposition: "rejected",
-			error: {
-				code: "single_line_range_expansion",
-				message: "第 1 项 replace_range 仅覆盖一行且重复原行；请扩大 end_anchor 或改用 insert_after，禁止原样重试。",
-				hint: "replace_range 必须完整覆盖待替换旧代码。",
-			},
-		},
-	};
-
-	assert.deepEqual(render(renderFileChangesResult(result, options(), theme, {}), 180), [
-		"× 未写入 · 第 1 项 replace_range 仅覆盖一行且重复原行；请扩大 end_anchor 或改用 insert_after，禁止原样重试。",
-	]);
-	assert.ok(render(renderFileChangesResult(result, options(true), theme, {})).some((line) => line.includes("禁止使用相同参数重试")));
 });
 
 test("renderFileChangesResult summarizes success without a diff", () => {
@@ -788,7 +825,7 @@ test("terminal controls are escaped in paths, patterns, errors, warnings and dif
 	const payload = "\x1b[2J\x1b]52;c;VEVTVA==\x07\x9b2J";
 	const failure: TextResult = {
 		content: [{ type: "text", text: payload }],
-		details: { disposition: "rejected", error: { code: "io", message: payload } },
+		details: { disposition: "rejected", error: { code: "io", message: "The file could not be read.", rawMessage: payload } },
 	};
 	const success: TextResult = {
 		content: [{ type: "text", text: "Changes applied." }],

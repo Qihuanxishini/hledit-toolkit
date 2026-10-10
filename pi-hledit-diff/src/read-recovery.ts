@@ -121,7 +121,13 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 			const message = "The targeted recovery read failed before edit proof could be established.";
 			return recoveryResult("proof_recovery_read_failed", message,
 				[`${message} Resolve the read error below before resubmitting.`, readResult.content[0]?.text ?? "", remainingInstruction()],
-				"resolve_read_error", { recoveryReadError: readResult.details });
+				"resolve_read_error", {
+					recoveryReadError: {
+						...readResult.details,
+						// [喵喵喵]: 进程或协议失败没有结构化 error；复用现有字段保留诊断，避免被外层 proof 说明遮住。
+						error: readResult.details.error ?? { code: "read_unavailable", message: readResult.content[0]?.text || message },
+					},
+				});
 		}
 
 		const recoveredRead = readResult.details.read;

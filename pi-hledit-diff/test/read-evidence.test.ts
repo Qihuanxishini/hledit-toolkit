@@ -449,7 +449,7 @@ test("uncertain apply invalidates evidence while a local rejection preserves it"
 	const store = new ReadEvidenceStore();
 	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 1, anchor: "1#AAA" }]));
 	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("rejected", {
-		error: { code: "single_line_range_expansion", message: "local guard" },
+		error: { code: "reversed_anchor_range", message: "local request error" },
 	}), "/workspace");
 	assert.ok("proof" in store.selectProof(PATH, [{ operation: "insert_after", anchor: "1#AAA", lines: ["next"] }]));
 

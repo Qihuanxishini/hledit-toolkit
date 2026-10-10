@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { HLEDIT_INSTALL_HINT } from "../src/cli.ts";
-import { applyFileChangesResult, fileChangeCheckFailure } from "../src/apply-result.ts";
+import { applyFileChangesResult } from "../src/apply-result.ts";
 import { readAnchorsResult } from "../src/read-result.ts";
 import {
     isFailedHleditResult,
@@ -409,34 +409,19 @@ test("applyFileChangesResult verifies editDeltas against the anchored batch requ
 	assert.equal(missingChange.details.disposition, "outcome_unknown");
 });
 
-
-test("fileChangeCheckFailure keeps malformed responses in the zero-write path", () => {
-	for (const stdout of ["unexpected output", '{"ok":false}', '{"ok":false,"error":"io"}']) {
-		const result = fileChangeCheckFailure({ stdout, stderr: "", exitCode: 0, started: true });
-
-		assert.equal(result?.details.disposition, "unavailable");
-		assert.match(result?.content[0]?.text ?? "", /incompatible --check response/);
-		assert.match(result?.content[0]?.text ?? "", /no write was attempted/);
-		assert.doesNotMatch(result?.content[0]?.text ?? "", /file may have changed|outcome is unknown/);
-	}
-});
-
-test("fileChangeCheckFailure accepts only an explicit validate-only success", () => {
-	const valid = fileChangeCheckFailure({
-		stdout: JSON.stringify({ ok: true, revision: REVISION, checked: true, editsApplied: 1, contentChanged: true }),
+test("applyFileChangesResult identifies both conflicting changes without requesting rereads", () => {
+	const rawMessage = "edit 1 overlaps edit 0: conflicting physical ranges or insert boundaries";
+	const result = applyFileChangesResult({
+		stdout: JSON.stringify({ ok: false, error: "invalid", message: rawMessage, failed: 1 }),
 		stderr: "",
 		exitCode: 0,
 	});
-	const incompatible = fileChangeCheckFailure({
-		stdout: JSON.stringify({ ok: true, revision: REVISION, editsApplied: 1, contentChanged: true }),
-		stderr: "",
-		exitCode: 0,
-	});
-
-	assert.equal(valid, undefined);
-	assert.equal(incompatible?.details.disposition, "unavailable");
-	assert.match(incompatible?.content[0]?.text ?? "", /incompatible --check response/);
-	assert.match(incompatible?.content[0]?.text ?? "", /hledit_read_anchors/);
+	assert.equal(result.details.disposition, "rejected");
+	assert.match(result.content[0]?.text ?? "", /Failed change: 2/);
+	assert.equal(result.details.error?.rawMessage, rawMessage);
+	assert.match(result.details.error?.message ?? "", /^Changes 2 and 1 conflict/);
+	assert.match(result.content[0]?.text ?? "", /Merge them or make them non-overlapping; rereading cannot resolve this conflict/);
+	assert.doesNotMatch(result.content[0]?.text ?? "", /call hledit_read_anchors/i);
 });
 
 test("applyFileChangesResult localizes proof and pre-commit revision rejections", () => {
@@ -725,23 +710,19 @@ test("readAnchorsResult identifies unavailable CLI runs", () => {
 
 test("failure result constructors preserve disposition and structured errors", () => {
 	const rejected = rejectedToolResult("修改未执行：请求无效", {
-		code: "single_line_range_expansion",
-		message: "单行 replace_range 可能保留旧代码。",
+		code: "reversed_anchor_range",
+		message: "start_anchor must not be below end_anchor.",
 		changeNumber: 1,
 		operation: "replace_range",
-		anchor: "2#BHJ",
-		outputLineCount: 2,
 	});
 
 	assert.deepEqual(rejected.details, {
 		disposition: "rejected",
 		error: {
-			code: "single_line_range_expansion",
-			message: "单行 replace_range 可能保留旧代码。",
+			code: "reversed_anchor_range",
+			message: "start_anchor must not be below end_anchor.",
 			changeNumber: 1,
 			operation: "replace_range",
-			anchor: "2#BHJ",
-			outputLineCount: 2,
 		},
 	});
 	assert.equal(isFailedHleditResult(rejected.details), true);

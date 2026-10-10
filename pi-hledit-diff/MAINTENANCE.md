@@ -119,8 +119,8 @@ pi-hledit-diff/
 
 规则：
 
-- 一次调用只修改一个文件，并包含该文件全部非冲突 change；
-- 范围包含首尾，单行范围复制同一锚点两次；insert 只复制依附行锚点；
+- 一次调用只修改一个文件，并包含该文件全部非冲突 change；所有锚点基于同一批编辑前的快照，不按前项修改后的行号重新计算；
+- 范围包含首尾，单行范围复制同一锚点两次。`replace_range` 按指定范围消费原行，允许一行变多行及在输出中保留原行；`delete_range` 删除指定范围，insert 不消费依附行。不猜测业务代码块，不自动扩大范围或转换操作；
 - `lines` 只接受换行分隔字符串；一个末尾换行只终止末行，空字符串代表一行空文本；`delete_range` 不接受 `lines`；
 - apply 不接受数组 `lines`、序列化 `changes`、单 change 自动包装或带源码后缀的 anchor；旧 operation、别名和字段不迁移，object 使用严格额外字段拒绝；
 - 单次 batch 限 1–200 个 changes，replacement 总量限 1 MiB UTF-8，输出总量限 20,000 行；
@@ -131,7 +131,7 @@ pi-hledit-diff/
 - 定向补读共享硬预算（`src/read-recovery.ts`）：计划窗口累计 1,200 行（含确认上下文）、4 页、96 KiB 正文。累计行数超限时不启动子进程；页数或正文超限时保留已返回页面并列出剩余窗口，返回 `proof_recovery_budget_exceeded`。预算按整批计算，不按每个 change 重置，也不按远端窗口之间的距离计数；
 - 多页补读正文不带中间页续读指令，由最终结果统一给出下一步。正文与 `details.proofId` 使用同一个最终 proof id；调用方在队列放行前经 `updateFromToolResult` 按返回页面顺序登记。实时执行与 branch replay 使用相同的登记顺序和容量淘汰规则；
 - 补读 revision 与计划或先前页面不一致时，返回 `proof_recovery_source_changed`，丢弃此次所有补读页且不发出 proof id；错误携带 `currentRevision`，让实时状态和分支重放均失效旧 evidence，调用方必须重新确认目标。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；
-- 仅对命中 `single_line_range_expansion` 启发式的请求先执行一次 `batch --check`，用于确认当前 revision、hidden proof、全部锚点与操作冲突后再返回字段级指导；普通 apply 直接执行非 check `batch`，CLI 在同一路径完整验证并于原子替换前复检 raw-byte revision。
+- proof 选择成功后统一执行 `batch`；CLI 在同一路径完整验证当前 revision、hidden proof、全部锚点与操作冲突，并于原子替换前复检 raw-byte revision。
 
 内部请求：
 
@@ -210,6 +210,7 @@ Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标�
 ```
 
 - `findChangeShapeIssue` 在 `selectProof` 之前拦截仅凭请求即可判定的自相矛盾：区间锚点倒置（`reversed_anchor_range`）、`lines` 行首粘贴了本次提交过或当前证据中存在的锚点 token（`anchor_token_in_lines`，在 file queue 内通过 `anchorsRequiringRead(path, [anchor])` 按需查询，不构造或复制全文件锚点集合）。这类问题重读文件无法修复，必须让模型改参数，因此不得落到 `insufficient_read_proof` 的补读指令上；正文明确声明重读无效并给出交换/删前缀的具体动作。检测即拒绝，不自动修正——与 `prepareArguments` 只服务 read 的约定一致；
+- CLI 冲突诊断中的零基 edit 下标转换为公开的一基 change 编号，保留冲突双方及范围/插入边界原因；指示合并或消除重叠，不引导调用方用重读修复参数冲突；
 - 三个工具在 `execute()` 返回边界直接设置 Pi `isError`：插件侧 `insufficient_read_proof` 是可恢复补读结果，设为 `false`；其他非成功结果设为 `true`，包括 `source_line_truncated`、`proof_recovery_read_failed`、`proof_recovery_budget_exceeded` 和 `proof_recovery_source_changed`，要求调用方按失败原因调整动作；
 - 读取错误码全集为 `range` / `binary` / `encoding` / `directory` / `io` / `pattern` / `broad_pattern`，每个码都必须有本地化 message，落到兜底分支等于只把错误码丢给模型；message 本身说不清下一步动作时再补 hint（`range` / `directory` / `pattern` / `broad_pattern`）。`pattern` 转发 CLI 的 RE2 编译原文（出错位置本身就是要改的东西）并点名 RE2 不支持 lookahead/lookbehind/backreference；`broad_pattern` 指向 `hledit_read_anchors`；
 - 读取和写入的 `io` 拒绝保留简洁英文摘要，并在正文追加 `Diagnostic: <rawMessage>`，原样保留操作阶段、系统原文与错误码；`details.error.rawMessage` 和 disposition 不变，不自动重试；
@@ -232,7 +233,7 @@ Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标�
 - `details.changePreview` 只由同 revision 消费行 evidence、请求 payload 和已验证 delta 构成；不读取全文件 before/after snapshot，也不注入模型正文；
 - preview 上限 2000 行 / 256 KiB，所有计数使用 UTF-8 bytes。超长单行保留首尾及 `textTruncated:true`；
 - TUI 从 `details.read`、`details.changePreview` 与 `details.updatedAnchorSpans` 渲染读取、差异和更新锚点；preview 截断或没有可渲染 change 行时使用 CLI `linesAdded` / `linesDeleted`，不显示局部推导的完整 hunk 数；
-- 失败 TUI 区分待复核（未写入）、未写入、未执行与结果未知；只有已返回可用 proof 的恢复结果标为待复核。展开错误正文使用终端换行，保留完整路径与指令；折叠摘要仍有单行宽度限制，模型正文不受影响；
+- 只读失败显示“读取失败”；编辑失败区分待复核（未写入）、未写入、未执行与结果未知，只有已返回可用 proof 的恢复结果标为待复核。I/O 优先展示原始诊断，补读失败优先展示内层读取原因；宿主错误标记与已确认成功回包冲突时显示“状态不一致”，不推翻已确认的写入状态。展开正文保留完整路径与指令；折叠摘要仍有单行宽度限制，模型正文不受影响；
 - 模型正文展示产出窗口的 Updated anchors，完整且保留的行配合新 proof 可继续编辑；区间外存续目标由历史 proof/token 对迁移，CLI 不额外返回。纯删除没有窗口，不输出 anchor 块。截断或容量导致证据不完整时明确说明后续可用性，不能把展示当作完整 proof，也不能改报提交失败；
 - expanded updated-anchor rows 只来自 `details.updatedAnchorSpans`，不解析模型正文；
 - diff 按组件净宽扣除行号、标记和中缝后，每侧至少保留 60 列代码才切为 split；两位行号时需 141 列，行号更宽时相应提高。纯单侧或缺少操作关联的旧预览保持 unified；双栏左旧右新并保留独立行号与续行对齐；

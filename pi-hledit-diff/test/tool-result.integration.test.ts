@@ -149,7 +149,7 @@ test("apply returns native errors for invalid input and missing proof", async ()
 	}
 });
 
-test("registered tool metadata stays concise and names each flattened guideline", () => {
+test("registered tool metadata explains the contract within its budget and names each flattened guideline", () => {
 	const { registeredTools } = registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const searchTool = registeredTools.get(HLEDIT_SEARCH_ANCHORS_TOOL);
@@ -160,8 +160,8 @@ test("registered tool metadata stays concise and names each flattened guideline"
 
 	assert.equal(readTool.label, "Read for Edit");
 	assert.equal(readTool.promptGuidelines.length, 2);
-	assert.equal(searchTool.promptGuidelines.length, 1);
-	assert.equal(applyTool.promptGuidelines.length, 2);
+	assert.equal(searchTool.promptGuidelines.length, 2);
+	assert.equal(applyTool.promptGuidelines.length, 4);
 	for (const [tool, toolName] of [
 		[readTool, HLEDIT_READ_ANCHORS_TOOL],
 		[searchTool, HLEDIT_SEARCH_ANCHORS_TOOL],
@@ -203,7 +203,7 @@ test("registered tool metadata stays concise and names each flattened guideline"
 			+ (tool.promptGuidelines ?? []).join("").length,
 		0,
 	);
-	assert.ok(protocolCharacters <= 4400, `registered hledit protocol uses ${protocolCharacters} characters; expected at most 4400`);
+	assert.ok(protocolCharacters <= 6_000, `registered hledit protocol uses ${protocolCharacters} characters; expected at most 6000`);
 });
 
 

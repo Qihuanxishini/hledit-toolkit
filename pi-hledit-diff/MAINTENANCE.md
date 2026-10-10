@@ -48,7 +48,7 @@ pi-hledit-diff/
 
 宿主基线为 Pi 0.99.0。三个工具均声明 `exposure: "model-only"`，保证读写结果进入模型转录并可按 branch 重放；Pi 的嵌套调用记录不保存完整工具结果，不能用于恢复 proof。read/search 的 annotations 声明本地只读，apply 声明本地破坏性写入；权限判断仍由宿主及权限扩展执行。
 
-当前公开协议按 `JSON.stringify(parameters) + description + promptGuidelines` 计量，回归上限为 4,400 characters；精确值由测试输出和最终验证记录，不在文档中固化。
+当前公开协议按 `JSON.stringify(parameters) + description + promptGuidelines` 计量，回归上限为 6,000 characters。只保留操作边界、必要字段语义、proof 与失败恢复规则，不加入示例或重复展开次要细节；精确值由测试和最终验证计量，不在文档中固化。
 
 三个工具的路径在进入 CLI 与 canonical queue 前统一经 `normalizeToolPath` 处理：展开 `~` / `~/`（Windows 也支持 `~\`）、去除 `@` 前缀并转换 Windows MSYS 盘符。
 

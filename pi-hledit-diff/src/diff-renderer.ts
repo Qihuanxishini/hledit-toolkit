@@ -71,6 +71,7 @@ const GENERATED_DIFF_LINE = /^([ +\-])(\s*\d+)\s(.*)$/s;
 const COLLAPSED_DIFF_LINES = 24;
 const MAX_EXPANDED_DIFF_LINES = 2000;
 const DIFF_GUTTER_COLUMNS = 7;
+const SPLIT_GUTTER_COLUMNS = 5;
 const MIN_SPLIT_CODE_COLUMNS = 60;
 const SPLIT_SEPARATOR = " │ ";
 const SPLIT_SEPARATOR_COLUMNS = 3;
@@ -305,7 +306,7 @@ function renderDiffLineRows(
 	const lineNumber = side === "left" ? line.oldLine ?? line.lineNumber
 		: side === "right" ? line.newLine ?? line.lineNumber : line.lineNumber;
 	const plainNumber = String(lineNumber).padStart(numberWidth, " ");
-	const prefixWidth = DIFF_GUTTER_COLUMNS + numberWidth;
+	const prefixWidth = (side ? SPLIT_GUTTER_COLUMNS : DIFF_GUTTER_COLUMNS) + numberWidth;
 	const contentWidth = Math.max(1, width - prefixWidth);
 	const wrapped = wrapHighlightedLine(highlightLine(line), contentWidth, maxRows);
 	const rows = wrapped.length > 0 ? wrapped : [{ text: "", width: 0 }];
@@ -314,8 +315,9 @@ function renderDiffLineRows(
 	return rows.map((content, index) => {
 		const marker = index === 0 ? markerFor(line.kind) : " ";
 		const number = index === 0 ? plainNumber : " ".repeat(numberWidth);
-		const stripe = line.kind === "context" ? " " : "▎";
-		const label = `${stripe} ${marker} ${number}`;
+		const stripe = line.kind === "context" ? " " : "▌";
+		// [喵喵喵]: 双栏由 old/new 侧位表达增删，单栏仍保留 +/-，不只依赖颜色。
+		const label = side ? `${stripe} ${number}` : `${stripe} ${marker} ${number}`;
 		const gutter = palette && line.kind !== "context" ? palette.gutter(label, line.kind) : theme.fg(color, label);
 		const prefix = `${gutter}${theme.fg("dim", " │ ")}`;
 		const paddedContent = `${content.text}${" ".repeat(Math.max(0, contentWidth - content.width))}`;
@@ -360,15 +362,44 @@ function renderUnified(
 function splitColumnWidths(width: number, numberWidth: number): SplitColumnWidths | undefined {
 	const left = Math.floor((width - SPLIT_SEPARATOR_COLUMNS) / 2);
 	const right = width - SPLIT_SEPARATOR_COLUMNS - left;
-	// [喵喵喵]: 使用组件净宽，扣除两侧行号和中缝后各留 60 列代码，避免过早切双栏。
+	// [喵喵喵]: 保留原净宽断点，不因行标记变紧凑而提前分栏；每侧仍至少保留 60 列代码。
 	if (left - numberWidth - DIFF_GUTTER_COLUMNS < MIN_SPLIT_CODE_COLUMNS) return undefined;
 	return { left, right };
 }
 
-function renderSplitHeader(columns: SplitColumnWidths, theme: HleditRenderTheme, palette: DiffBackgroundPalette | undefined): string {
-	const left = truncateToWidth("修改前", columns.left, "", true);
-	const right = truncateToWidth("修改后", columns.right, "", true);
-	return applyChangeBackground(theme.fg("muted", `${left}${SPLIT_SEPARATOR}${right}`), "context", palette);
+function renderSplitTopBorder(
+	columns: SplitColumnWidths,
+	numberWidth: number,
+	theme: HleditRenderTheme,
+	palette: DiffBackgroundPalette | undefined,
+): string {
+	const dividerColumn = numberWidth + SPLIT_GUTTER_COLUMNS - 2;
+	const cell = (width: number) => `${"─".repeat(dividerColumn)}┬${"─".repeat(width - dividerColumn - 1)}`;
+	const border = `${cell(columns.left)}─┬─${cell(columns.right)}`;
+	return renderBaseRow(theme.fg("dim", border), columns.left + SPLIT_SEPARATOR_COLUMNS + columns.right, palette);
+}
+
+function renderSplitHeader(
+	columns: SplitColumnWidths,
+	numberWidth: number,
+	theme: HleditRenderTheme,
+	palette: DiffBackgroundPalette | undefined,
+): string {
+	const cell = (label: string, width: number) => {
+		const gutter = `${theme.fg("muted", `  ${label.padEnd(numberWidth, " ")}`)}${theme.fg("dim", " │ ")}`;
+		return `${gutter}${" ".repeat(width - numberWidth - SPLIT_GUTTER_COLUMNS)}`;
+	};
+	return applyChangeBackground(`${cell("old", columns.left)}${theme.fg("dim", SPLIT_SEPARATOR)}${cell("new", columns.right)}`, "context", palette);
+}
+
+function renderSplitBlankCell(
+	width: number,
+	numberWidth: number,
+	theme: HleditRenderTheme,
+	palette: DiffBackgroundPalette | undefined,
+): string {
+	// [喵喵喵]: 缺行和换行补位仍保留行号分隔线，让整张双栏表格连续对齐。
+	return renderBaseRow(`${" ".repeat(numberWidth + 2)}${theme.fg("dim", " │ ")}`, width, palette);
 }
 
 function renderSplit(
@@ -383,8 +414,8 @@ function renderSplit(
 	const rows: string[] = [];
 	const width = columns.left + SPLIT_SEPARATOR_COLUMNS + columns.right;
 	const separator = applyChangeBackground(theme.fg("dim", SPLIT_SEPARATOR), "context", palette);
-	const emptyLeft = applyChangeBackground(" ".repeat(columns.left), "context", palette);
-	const emptyRight = applyChangeBackground(" ".repeat(columns.right), "context", palette);
+	const emptyLeft = renderSplitBlankCell(columns.left, numberWidth, theme, palette);
+	const emptyRight = renderSplitBlankCell(columns.right, numberWidth, theme, palette);
 	for (const pair of pairedRows) {
 		if (rows.length >= maxRows) break;
 		if (pair.meta !== undefined) {
@@ -403,21 +434,41 @@ function renderSplit(
 	return rows;
 }
 
+function renderDiffStatBar(added: number, removed: number, width: number, theme: HleditRenderTheme): string | undefined {
+	const total = added + removed;
+	if (total === 0 || width < 20) return undefined;
+	const slots = Math.max(8, Math.min(24, Math.floor(width / 12)));
+	let addedSlots = Math.max(0, Math.min(slots, Math.round(added / total * slots)));
+	// [喵喵喵]: 色条表示增删比例而非进度；两类变更都有时各留至少一格，避免少量变更消失。
+	if (added > 0 && addedSlots === 0) addedSlots = 1;
+	if (removed > 0 && addedSlots === slots) addedSlots = slots - 1;
+	const removedSlots = slots - addedSlots;
+	const addedBar = addedSlots > 0 ? theme.fg("toolDiffAdded", "━".repeat(addedSlots)) : "";
+	const removedBar = removedSlots > 0 ? theme.fg("toolDiffRemoved", "━".repeat(removedSlots)) : "";
+	return `${theme.fg("dim", "[")}${addedBar}${removedBar}${theme.fg("dim", "]")}`;
+}
+
 function diffSummary(
 	parsed: ParsedDiff,
+	width: number,
+	mode: "split" | "unified" | undefined,
 	theme: HleditRenderTheme,
 	summaryStats?: DiffSummaryStats,
 ): string {
 	const added = summaryStats?.added ?? parsed.added;
 	const removed = summaryStats?.removed ?? parsed.removed;
 	const pieces = [
-		theme.fg("toolOutput", `↳ ${theme.bold("差异")}`),
+		theme.fg("toolOutput", `↳ ${theme.bold("diff")}`),
 		theme.fg("toolDiffAdded", `+${added}`),
 		theme.fg("toolDiffRemoved", `-${removed}`),
 	];
-	if (summaryStats?.completeHunks !== false) pieces.push(theme.fg("muted", `• ${parsed.hunks} 个变更块`));
-	else pieces.push(theme.fg("muted", "• 局部预览"));
-	return pieces.join(" ");
+	if (summaryStats?.completeHunks === false) pieces.push(theme.fg("muted", "• 局部预览"));
+	else if (mode === "unified") pieces.push(theme.fg("muted", `• ${parsed.hunks} 个变更块`));
+	if (mode) pieces.push(theme.fg("muted", mode));
+	const summary = pieces.join(" ");
+	const meter = mode ? renderDiffStatBar(added, removed, width, theme) : undefined;
+	// [喵喵喵]: 窄屏优先保留行数、布局及局部预览提示，不为色条挤掉真实状态。
+	return meter && visibleWidth(summary) + 1 + visibleWidth(meter) <= width ? `${summary} ${meter}` : summary;
 }
 
 function applyLineLimit(
@@ -480,24 +531,28 @@ export function renderStandaloneDiff(
 			if (cachedLines && cachedWidth === safeWidth) return cachedLines;
 			if (safeWidth === 0) return storeRenderedLines(safeWidth, []);
 			const colors = currentPalette();
-			const summary = renderBaseRow(diffSummary(parsed, theme, summaryStats), safeWidth, colors);
+			// [喵喵喵]: 纯单侧变更与缺少操作关系的旧预览保持单栏，不猜测替换对应关系。
+			const columns = structuredRows && parsed.added > 0 && parsed.removed > 0 ? splitColumnWidths(safeWidth, numberWidth) : undefined;
+			const mode = safeWidth < 24 ? undefined : columns ? "split" : "unified";
+			const summary = renderBaseRow(diffSummary(parsed, safeWidth, mode, theme, summaryStats), safeWidth, colors);
 			if (safeWidth < 24) return storeRenderedLines(safeWidth, [summary]);
 
 			// [喵喵喵]: 只布局显示上限加一行哨兵；摘要保留全量统计，
 			// 不为隐藏行的精确换行数触发高亮和着色。(2026-09-05)
 			const maxRows = (expanded ? MAX_EXPANDED_DIFF_LINES : COLLAPSED_DIFF_LINES) + 1;
-			// [喵喵喵]: 纯单侧变更与缺少操作关系的旧预览保持单栏，不猜测替换对应关系。
-			const columns = structuredRows && parsed.added > 0 && parsed.removed > 0 ? splitColumnWidths(safeWidth, numberWidth) : undefined;
+			const splitNumberWidth = Math.max(3, numberWidth);
 			const body = columns && structuredRows
-				? renderSplit(structuredRows, columns, numberWidth, highlightLine, theme, colors, maxRows)
+				? renderSplit(structuredRows, columns, splitNumberWidth, highlightLine, theme, colors, maxRows)
 				: renderUnified(structuredRows ? iterateUnifiedPairs(structuredRows) : entries, safeWidth, numberWidth, highlightLine, theme, colors, maxRows);
-			const frame = renderBaseRow(theme.fg("dim", "─".repeat(safeWidth)), safeWidth, colors);
+			const frame = columns
+				? renderSplitTopBorder(columns, splitNumberWidth, theme, colors)
+				: renderBaseRow(theme.fg("dim", "─".repeat(safeWidth)), safeWidth, colors);
 			return storeRenderedLines(safeWidth, [
 				summary,
 				frame,
-				...(columns ? [renderSplitHeader(columns, theme, colors)] : []),
+				...(columns ? [renderSplitHeader(columns, splitNumberWidth, theme, colors)] : []),
 				...applyLineLimit(body, expanded, safeWidth, theme, colors),
-				frame,
+				...(columns ? [] : [frame]),
 			]);
 		},
 		invalidate(): void {

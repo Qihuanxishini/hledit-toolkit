@@ -65,14 +65,14 @@ for (const mode of ["truecolor", "256color"] as const) {
 			for (const background of ["", light ? "#fafafa" : "#283228", "#282828"]) {
 				const nativeTheme = createNativeTheme(mode, background, appearance);
 				const containerBg = nativeTheme.getBgAnsi("toolSuccessBg");
-				const addedGutter = nativeTheme.style("▎ +  2", { fg: parseColor(light ? "#116329" : "#B5BD68") });
-				const removedGutter = nativeTheme.style("▎ -  2", { fg: parseColor(light ? "#82071E" : "#CC6666") });
 				const component = renderStandaloneDiff(" 1 context\n-2 beta\n+2 BETA\n   ...\n+9 tail", "notes.txt", false, nativeTheme, undefined, [
 					{ kind: "context", oldLine: 1, newLine: 1, text: "context" },
 					...replacementPreview.lines,
 					{ kind: "add", newLine: 9, text: "tail", changeIndex: 1 },
 				])!;
 				for (const width of [72, 160]) {
+					const addedGutter = nativeTheme.style(width === 160 ? "▌   2" : "▌ +  2", { fg: parseColor(light ? "#116329" : "#B5BD68") });
+					const removedGutter = nativeTheme.style(width === 160 ? "▌   2" : "▌ -  2", { fg: parseColor(light ? "#82071E" : "#CC6666") });
 					const output = component.render(width);
 					assert.ok(output.some((line) => line.includes(addedBg) && line.includes(addedGutter) && line.includes("BETA")));
 					assert.ok(output.some((line) => line.includes(removedBg) && line.includes(removedGutter) && line.includes("beta")));
@@ -326,9 +326,9 @@ test("renderFileChangesResult renders a unified diff", () => {
 	};
 	const output = render(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }), 72);
 
-	assert.equal(output[0]!.trimEnd(), "↳ 差异 +2 -1 • 1 个变更块");
-	assert.ok(output.some((line) => /^▎ -\s+2\s+│/.test(line) && line.includes("beta")));
-	assert.ok(output.some((line) => /^▎ \+\s+2\s+│/.test(line) && line.includes("BETA")));
+	assert.equal(output[0]!.trimEnd(), "↳ diff +2 -1 • 1 个变更块 unified [━━━━━━━━]");
+	assert.ok(output.some((line) => /^▌ -\s+2\s+│/.test(line) && line.includes("beta")));
+	assert.ok(output.some((line) => /^▌ \+\s+2\s+│/.test(line) && line.includes("BETA")));
 	assert.ok(output.every((line) => visibleWidth(line) <= 72));
 });
 
@@ -353,13 +353,13 @@ test("renderFileChangesResult keeps old and new line numbers visible when change
 
 	const unifiedRows = render(component, 80).filter((line) => line.includes(text));
 	assert.equal(unifiedRows.length, 2);
-	assert.match(unifiedRows[0] ?? "", /^▎ -\s+30\s+│/);
-	assert.match(unifiedRows[1] ?? "", /^▎ \+\s+50\s+│/);
+	assert.match(unifiedRows[0] ?? "", /^▌ -\s+30\s+│/);
+	assert.match(unifiedRows[1] ?? "", /^▌ \+\s+50\s+│/);
 
 	const wideRows = render(component, 160).filter((line) => line.includes(text));
 	assert.equal(wideRows.length, 2);
-	assert.match(wideRows[0]!, /^▎ -\s+30\s+│ const value = 1;\s+│\s*$/);
-	assert.match(wideRows[1]!, /^\s+│ ▎ \+\s+50\s+│ const value = 1;/);
+	assert.match(wideRows[0]!, /^▌\s+30\s+│ const value = 1;\s+│\s+│\s*$/);
+	assert.match(wideRows[1]!, /^\s+│\s+│ ▌\s+50\s+│ const value = 1;/);
 
 	const coloredRows = render(
 		renderFileChangesResult(result, options(), coloredTheme, { args: { path: "sample.ts" } }),
@@ -392,17 +392,17 @@ test("renderFileChangesResult keeps separate operations in source order even whe
 
 	const unifiedRows = render(component, 80).filter((line) => line.includes(text) || line.includes("delete only") || line.includes("add only"));
 	assert.equal(unifiedRows.length, 4);
-	assert.match(unifiedRows[0] ?? "", /^▎ -\s+2\s+│/);
-	assert.match(unifiedRows[1] ?? "", /^▎ -\s+3\s+│/);
-	assert.match(unifiedRows[2] ?? "", /^▎ \+\s+3\s+│/);
-	assert.match(unifiedRows[3] ?? "", /^▎ \+\s+4\s+│/);
+	assert.match(unifiedRows[0] ?? "", /^▌ -\s+2\s+│/);
+	assert.match(unifiedRows[1] ?? "", /^▌ -\s+3\s+│/);
+	assert.match(unifiedRows[2] ?? "", /^▌ \+\s+3\s+│/);
+	assert.match(unifiedRows[3] ?? "", /^▌ \+\s+4\s+│/);
 
 	const wideRows = render(component, 160).filter((line) => line.includes(text) || line.includes("delete only") || line.includes("add only"));
 	assert.equal(wideRows.length, 4);
-	assert.match(wideRows[0]!, /^▎ -\s+2\s+│ same text\s+│\s*$/);
-	assert.match(wideRows[1]!, /^▎ -\s+3\s+│ delete only\s+│\s*$/);
-	assert.match(wideRows[2]!, /^\s+│ ▎ \+\s+3\s+│ same text/);
-	assert.match(wideRows[3]!, /^\s+│ ▎ \+\s+4\s+│ add only/);
+	assert.match(wideRows[0]!, /^▌\s+2\s+│ same text\s+│\s+│\s*$/);
+	assert.match(wideRows[1]!, /^▌\s+3\s+│ delete only\s+│\s+│\s*$/);
+	assert.match(wideRows[2]!, /^\s+│\s+│ ▌\s+3\s+│ same text/);
+	assert.match(wideRows[3]!, /^\s+│\s+│ ▌\s+4\s+│ add only/);
 });
 
 test("unified pairs replacement lines while keeping adjacent operations in source order", () => {
@@ -436,13 +436,14 @@ test("renderFileChangesResult switches between paired unified and split layouts"
 	const component = renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } });
 	for (const width of [40, 80, 139, 140, 141, 200, 80]) {
 		const output = render(component, width);
-		assert.equal(output[0]!.trimEnd(), "↳ 差异 +1 -1 • 1 个变更块");
 		if (width >= 141) {
-			assert.match(output[2]!, /^修改前\s+│ 修改后/);
-			assert.match(output[3]!, /^▎ -\s+2\s+│ beta\s+│ ▎ \+\s+2\s+│ BETA/);
+			assert.match(output[0]!.trimEnd(), /^↳ diff \+1 -1 split \[━+\]$/);
+			assert.match(output[2]!, /^  old │\s+│   new │/);
+			assert.match(output[3]!, /^▌\s+2\s+│ beta\s+│ ▌\s+2\s+│ BETA/);
 		} else {
-			assert.match(output[2]!, /^▎ -\s+2\s+│ beta/);
-			assert.match(output[3]!, /^▎ \+\s+2\s+│ BETA/);
+			assert.match(output[0]!.trimEnd(), /^↳ diff \+1 -1 • 1 个变更块 unified(?: \[━+\])?$/);
+			assert.match(output[2]!, /^▌ -\s+2\s+│ beta/);
+			assert.match(output[3]!, /^▌ \+\s+2\s+│ BETA/);
 		}
 		assert.ok(output.every((line) => visibleWidth(line) <= width));
 	}
@@ -455,8 +456,8 @@ test("unified diff uses full width and preserves wrapped Unicode source", () => 
 		const output = component.render(width);
 		const rows = output.slice(2, -1);
 		assert.ok(output.every((line) => visibleWidth(line) <= width));
-		assert.match(rows[0]!, /^▎ \+ 100 │ /);
-		assert.ok(rows.slice(1).every((line) => line.startsWith("▎       │ ")));
+		assert.match(rows[0]!, /^▌ \+ 100 │ /);
+		assert.ok(rows.slice(1).every((line) => line.startsWith("▌       │ ")));
 		assert.equal(rows.map((line) => line.slice(10).trimEnd()).join(""), text);
 		if (width >= 119) assert.equal(rows.length, 1);
 		else assert.ok(rows.length > 1);
@@ -485,9 +486,9 @@ test("default Pi tool box preserves responsive reflow", () => {
 
 	for (const width of [82, 142, 143, 202]) {
 		const output = box.render(width);
-		assert.ok(output.some((line) => line.includes("↳ 差异 +1 -1 • 1 个变更块")));
+		assert.ok(output.some((line) => line.includes("↳ diff +1 -1")));
 		assert.ok(output.every((line) => visibleWidth(line) <= width));
-		assert.equal(output.some((line) => line.includes("修改前") && line.includes("修改后")), width >= 143);
+		assert.equal(output.some((line) => line.includes("  old │") && line.includes("  new │")), width >= 143);
 	}
 });
 
@@ -594,7 +595,7 @@ test("renderFileChangesResult uses CLI counts for a truncated structured preview
 	};
 	const output = render(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }), 72);
 
-	assert.equal(output[0]!.trimEnd(), "↳ 差异 +12 -7 • 局部预览");
+	assert.equal(output[0]!.trimEnd(), "↳ diff +12 -7 • 局部预览 unified [━━━━━━━━]");
 	assert.doesNotMatch(output[0] ?? "", /变更块/);
 });
 

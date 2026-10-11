@@ -232,6 +232,8 @@ function parseApplyErrorMetadata(result: Record<string, unknown>, context: Apply
 	const currentAnchors = result.error === "stale" ? parseAnchorContext(result.currentAnchors) : undefined;
 	const staleAnchors = result.error === "stale" ? parseStaleAnchors(result, currentAnchors, context) : undefined;
 	const currentRevision = isRawRevision(result.currentRevision) ? result.currentRevision : undefined;
+	// [喵喵喵]: stale 快照带的 totalLines 让 evidence 在该代上恢复越界预检；旧 CLI 缺字段时保持 undefined。
+	const staleTotalLines = result.error === "stale" && isIntegerAtLeast(result.totalLines, 0) ? result.totalLines : undefined;
 	let message: string;
 	switch (result.error) {
 		case "stale":
@@ -269,6 +271,7 @@ function parseApplyErrorMetadata(result: Record<string, unknown>, context: Apply
 		rawMessage: result.message,
 		...(staleAnchors ? { staleAnchors } : {}),
 		...(currentAnchors ? { currentAnchors } : {}),
+	...(staleTotalLines !== undefined ? { totalLines: staleTotalLines } : {}),
 		...(currentRevision ? { currentRevision } : {}),
 	};
 }

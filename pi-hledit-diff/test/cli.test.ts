@@ -172,6 +172,7 @@ test("bundled batch is atomic when a later anchor is stale", async (t) => {
 	const parsed = JSON.parse(rejected.stdout) as Record<string, unknown>;
 	assert.equal(parsed.ok, false);
 	assert.equal(parsed.error, "stale");
+	assert.equal(parsed.totalLines, 3);
 	assert.equal(await readFile(target, "utf8"), original);
 });
 

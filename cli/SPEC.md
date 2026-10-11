@@ -197,7 +197,7 @@ Success includes `revision`, `contentChanged`, aggregate edit statistics, one `e
 }
 ```
 
-A stale response may include `remaps`, `currentRevision`, and a bounded same-snapshot `currentAnchors` window (the requested lines plus two lines of context on each side, capped at 20 lines / 4 KiB). Its `truncated` flag is true only when that budget shortened the window, not merely because the file continues after it. These are diagnostic data only: the caller must explicitly re-read and submit a new batch.
+A stale response may include `remaps`, `currentRevision`, the snapshot's `totalLines`, and a bounded same-snapshot `currentAnchors` window (the requested lines plus two lines of context on each side, capped at 20 lines / 4 KiB). Its `truncated` flag is true only when that budget shortened the window, not merely because the file continues after it. These are diagnostic data only: the caller must explicitly re-read and submit a new batch.
 
 ## 5. Hashes, revisions, and writes
 

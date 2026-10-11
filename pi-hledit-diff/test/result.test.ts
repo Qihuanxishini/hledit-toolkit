@@ -467,7 +467,7 @@ test("applyFileChangesResult falls back to rereading when a stale snapshot is un
 test("revision failures without a complete snapshot direct rereads to the requested range", () => {
 	for (const currentAnchors of [undefined, { offset: 11000, limit: 1, desiredLimit: 80, truncated: true, lines: [{ line: 11000, anchor: "11000#AAA", text: "partial", textTruncated: true }] }]) {
 		const result = applyFileChangesResult({
-			stdout: JSON.stringify({ ok: false, error: "stale", message: "read proof revision does not match the current file", failed: -1, currentRevision: REVISION, currentAnchors }),
+			stdout: JSON.stringify({ ok: false, error: "stale", message: "read proof revision does not match the current file", failed: -1, currentRevision: REVISION, totalLines: 20000, currentAnchors }),
 			stderr: "", exitCode: 0,
 		}, { path: "src/a.ts", changes: [{ operation: "delete_range", start_anchor: "11000#AAA", end_anchor: "14000#BBB" }] });
 		const text = result.content[0]!.text;
@@ -475,6 +475,7 @@ test("revision failures without a complete snapshot direct rereads to the reques
 		assert.match(text, /offset: 10998, limit: 2000/);
 		assert.match(text, /continue with nextOffset through line 14000/);
 		assert.doesNotMatch(text, /Change 1 uses a stale anchor|use the returned proof_id|offset: 1,/);
+		assert.equal(result.details.error?.totalLines, 20000);
 	}
 });
 

@@ -542,6 +542,33 @@ test("complete stale context becomes evidence for its current revision", () => {
 	});
 });
 
+test("stale snapshot totalLines restores the out-of-range precheck on its generation", () => {
+	const store = new ReadEvidenceStore();
+	store.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, applyDetails("rejected", {
+		proofId: "stale-proof",
+		error: {
+			code: "stale",
+			message: "stale",
+			currentRevision: REVISION_B,
+			totalLines: 3,
+			currentAnchors: {
+				lines: [
+					{ line: 2, anchor: "2#BBB", text: "changed", textTruncated: false },
+					{ line: 3, anchor: "3#BBC", text: "three", textTruncated: false },
+				],
+				offset: 2,
+				limit: 2,
+				desiredLimit: 2,
+				truncated: false,
+			},
+		},
+	}), "/workspace");
+
+	const selection = store.selectProof(PATH, replaceRange("5#BBE", "6#BBF"));
+	assert.ok("failure" in selection);
+	assert.equal(selection.failure.code, "invalid_anchor_range");
+});
+
 
 test("a same-revision stale rejection preserves existing evidence when its snapshot is truncated", () => {
 	const store = new ReadEvidenceStore();

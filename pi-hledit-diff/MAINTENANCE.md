@@ -218,7 +218,7 @@ Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标�
 - 三个工具在 `execute()` 返回边界直接设置 Pi `isError`：插件侧 `insufficient_read_proof` 是可恢复补读结果，设为 `false`；其他非成功结果设为 `true`，包括 `source_line_truncated`、`proof_recovery_read_failed`、`proof_recovery_budget_exceeded` 和 `proof_recovery_source_changed`，要求调用方按失败原因调整动作；
 - 读取错误码全集为 `range` / `binary` / `encoding` / `directory` / `io` / `pattern` / `broad_pattern`，每个码都必须有本地化 message，落到兜底分支等于只把错误码丢给模型；message 本身说不清下一步动作时再补 hint（`range` / `directory` / `pattern` / `broad_pattern`）。`pattern` 转发 CLI 的 RE2 编译原文（出错位置本身就是要改的东西）并点名 RE2 不支持 lookahead/lookbehind/backreference；`broad_pattern` 指向 `hledit_read_anchors`；
 - 读取和写入的 `io` 拒绝保留简洁英文摘要，并在正文追加 `Diagnostic: <rawMessage>`，原样保留操作阶段、系统原文与错误码；`details.error.rawMessage` 和 disposition 不变，不自动重试；
-- revision mismatch 仍为 `stale`，但 `failed:-1` 表示整批版本失效；CLI 从同一当前 snapshot 返回首项请求附近的有界 `currentAnchors`，不把版本变化说成端点锚点错误。完整 snapshot 供显式复核与续编，缺失或截断时按请求范围定向重读；stale remap 与 snapshot 均不触发自动修正或重试；
+- revision mismatch 仍为 `stale`，但 `failed:-1` 表示整批版本失效；CLI 从同一当前 snapshot 返回首项请求附近的有界 `currentAnchors` 及该快照的 `totalLines`，不把版本变化说成端点锚点错误。完整 snapshot 供显式复核与续编（`totalLines` 随恢复代登记，使该代保留越界预检，不把越界锚点误导入自动补读），缺失或截断时按请求范围定向重读；stale remap 与 snapshot 均不触发自动修正或重试；
 - `source_changed_before_commit` 是确认零写入；CLI 从未启动使用 `unavailable`；
 - 已启动进程的取消、超时、输出超限、stdin 错误、非零退出或响应不完整按 `outcome_unknown`，先重读，禁止原样重试。
 

@@ -14,6 +14,7 @@ import { nextProofId } from "./proof-id.ts";
 import { parseHleditReadMetadata, parseRecoveredReads } from "./read-result.ts";
 import { parseWindowsReadMetadata } from "./read-windows.ts";
 import {
+	isIntegerAtLeast,
 	isRawRevision,
 	isRecord,
 	parseEditDeltas,
@@ -578,7 +579,8 @@ export class ReadEvidenceStore {
 			if (!isRawRevision(revision)) { this.invalidate(path); return; }
 			const context = parseAnchorContext(details.error.currentAnchors);
 			if (context && !context.truncated && context.lines.every((line) => !line.textTruncated) && typeof details.proofId === "string") {
-				this.state.read(path, revision, context.lines, details.proofId);
+				// [喵喵喵]: stale 快照携带 totalLines 时登记，使该代的越界预检与正常 read 代一致；旧 CLI 缺字段保持 undefined。
+				this.state.read(path, revision, context.lines, details.proofId, isIntegerAtLeast(details.error.totalLines, 0) ? details.error.totalLines : undefined);
 			}
 		}
 		this.state.touch(path);

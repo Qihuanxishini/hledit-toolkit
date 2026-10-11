@@ -755,6 +755,7 @@ test("revision snapshots support explicit continuation both live and after branc
 			assert.doesNotMatch(stale.content[0]!.text, /Change 1 uses a stale anchor|Before retrying, call hledit_read_anchors/);
 			assert.ok(stale.details.error!.currentAnchors!.offset >= 10998);
 			assert.equal(stale.details.error!.currentAnchors!.truncated, false);
+			assert.equal(stale.details.error?.totalLines, 11002);
 			assert.equal(stale.details.recoveredReads, undefined);
 			assert.ok(stale.details.proofId);
 			assert.notEqual(stale.details.proofId, read.details.proofId);

@@ -101,6 +101,8 @@ fn stale(
 ) -> Value {
     let mut result = rejected("stale", message, failed);
     result["currentRevision"] = json!(snapshot.revision);
+    // [喵喵喵]: totalLines 让调用方在该快照代上做越界预检，避免越界锚点多跑一次注定失败的补读。
+    result["totalLines"] = json!(snapshot.total);
     if start > 0 {
         result["currentAnchors"] = read::context(lines, start, end);
     }

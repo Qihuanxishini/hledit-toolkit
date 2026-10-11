@@ -72,7 +72,7 @@ const COLLAPSED_DIFF_LINES = 24;
 const MAX_EXPANDED_DIFF_LINES = 2000;
 const DIFF_GUTTER_COLUMNS = 7;
 const SPLIT_GUTTER_COLUMNS = 5;
-const MIN_SPLIT_CODE_COLUMNS = 60;
+const MIN_SPLIT_WIDTH = 120;
 const SPLIT_SEPARATOR = " │ ";
 const SPLIT_SEPARATOR_COLUMNS = 3;
 
@@ -362,8 +362,8 @@ function renderUnified(
 function splitColumnWidths(width: number, numberWidth: number): SplitColumnWidths | undefined {
 	const left = Math.floor((width - SPLIT_SEPARATOR_COLUMNS) / 2);
 	const right = width - SPLIT_SEPARATOR_COLUMNS - left;
-	// [喵喵喵]: 保留原净宽断点，不因行标记变紧凑而提前分栏；每侧仍至少保留 60 列代码。
-	if (left - numberWidth - DIFF_GUTTER_COLUMNS < MIN_SPLIT_CODE_COLUMNS) return undefined;
+	// [喵喵喵]: 按组件净宽对齐工具渲染插件的断点，同时保证行号区之外仍有正文空间。
+	if (width < MIN_SPLIT_WIDTH || left - Math.max(3, numberWidth) - SPLIT_GUTTER_COLUMNS < 1) return undefined;
 	return { left, right };
 }
 
@@ -457,18 +457,34 @@ function diffSummary(
 ): string {
 	const added = summaryStats?.added ?? parsed.added;
 	const removed = summaryStats?.removed ?? parsed.removed;
-	const pieces = [
-		theme.fg("toolOutput", `↳ ${theme.bold("diff")}`),
+	const counts = [
 		theme.fg("toolDiffAdded", `+${added}`),
 		theme.fg("toolDiffRemoved", `-${removed}`),
-	];
-	if (summaryStats?.completeHunks === false) pieces.push(theme.fg("muted", "• 局部预览"));
-	else if (mode === "unified") pieces.push(theme.fg("muted", `• ${parsed.hunks} 个变更块`));
-	if (mode) pieces.push(theme.fg("muted", mode));
-	const summary = pieces.join(" ");
+	].join(" ");
+	const heading = `${theme.fg("toolOutput", `↳ ${theme.bold("diff")}`)} ${counts}`;
+	const separator = theme.fg("muted", " • ");
+	const partial = summaryStats?.completeHunks === false ? theme.fg("muted", "局部预览") : undefined;
+	const detail = partial ?? (mode === "unified" ? theme.fg("muted", `${parsed.hunks} 个变更块`) : undefined);
+	const layout = mode ? theme.fg("muted", mode) : "";
+	const summary = heading + (detail ? separator + detail : "")
+		+ (mode ? (mode === "split" ? " " : separator) + layout : "");
+	const required = partial ? heading + separator + partial : heading;
 	const meter = mode ? renderDiffStatBar(added, removed, width, theme) : undefined;
-	// [喵喵喵]: 窄屏优先保留行数、布局及局部预览提示，不为色条挤掉真实状态。
-	return meter && visibleWidth(summary) + 1 + visibleWidth(meter) <= width ? `${summary} ${meter}` : summary;
+	// [喵喵喵]: 先为色条留位，再缩略辅助信息；增删计数和局部预览状态放不下时，色条让位。
+	const meterSuffix = meter && visibleWidth(required) + 1 + visibleWidth(meter) <= width ? ` ${meter}` : "";
+	const summaryWidth = width - visibleWidth(meterSuffix);
+	const candidates = [
+		summary,
+		mode ? `${required} ${layout}` : required,
+		required,
+		partial ? counts + separator + partial : counts,
+		partial ?? theme.fg("toolOutput", "diff"),
+		...(partial ? [theme.fg("muted", "局部")] : []),
+		theme.fg("muted", "…"),
+	];
+	// [喵喵喵]: 按完整信息单元降级，避免窄屏把数字或“局部预览”裁成误导性的半截文本。
+	const fittedSummary = candidates.find((candidate) => visibleWidth(candidate) <= summaryWidth) ?? "";
+	return fittedSummary + meterSuffix;
 }
 
 function applyLineLimit(

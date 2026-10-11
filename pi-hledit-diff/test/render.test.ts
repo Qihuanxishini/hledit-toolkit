@@ -326,7 +326,7 @@ test("renderFileChangesResult renders a unified diff", () => {
 	};
 	const output = render(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }), 72);
 
-	assert.equal(output[0]!.trimEnd(), "↳ diff +2 -1 • 1 个变更块 unified [━━━━━━━━]");
+	assert.equal(output[0]!.trimEnd(), "↳ diff +2 -1 • 1 个变更块 • unified [━━━━━━━━]");
 	assert.ok(output.some((line) => /^▌ -\s+2\s+│/.test(line) && line.includes("beta")));
 	assert.ok(output.some((line) => /^▌ \+\s+2\s+│/.test(line) && line.includes("BETA")));
 	assert.ok(output.every((line) => visibleWidth(line) <= 72));
@@ -421,7 +421,7 @@ test("unified pairs replacement lines while keeping adjacent operations in sourc
 		},
 	};
 	const component = renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } });
-	for (const width of [40, 120]) {
+	for (const width of [40, 119]) {
 		const rows = component.render(width).slice(2, -1);
 		assert.deepEqual(rows.map((line) => line.split(" │ ")[1]!.trimEnd()), [
 			"inserted-line", "bravo", "BRAVO", "charlie", "CHARLIE", "echo-line",
@@ -434,14 +434,16 @@ test("renderFileChangesResult switches between paired unified and split layouts"
 		details: { disposition: "succeeded", changePreview: replacementPreview, editsApplied: 1 },
 	};
 	const component = renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } });
-	for (const width of [40, 80, 139, 140, 141, 200, 80]) {
+	for (const width of [40, 80, 119, 120, 121, 200, 80]) {
 		const output = render(component, width);
-		if (width >= 141) {
+		if (width >= 120) {
 			assert.match(output[0]!.trimEnd(), /^↳ diff \+1 -1 split \[━+\]$/);
 			assert.match(output[2]!, /^  old │\s+│   new │/);
 			assert.match(output[3]!, /^▌\s+2\s+│ beta\s+│ ▌\s+2\s+│ BETA/);
 		} else {
-			assert.match(output[0]!.trimEnd(), /^↳ diff \+1 -1 • 1 个变更块 unified(?: \[━+\])?$/);
+			assert.match(output[0]!.trimEnd(), width === 40
+				? /^↳ diff \+1 -1 unified \[━+\]$/
+				: /^↳ diff \+1 -1 • 1 个变更块 • unified \[━+\]$/);
 			assert.match(output[2]!, /^▌ -\s+2\s+│ beta/);
 			assert.match(output[3]!, /^▌ \+\s+2\s+│ BETA/);
 		}
@@ -484,11 +486,11 @@ test("default Pi tool box preserves responsive reflow", () => {
 	const box = new Box(1, 1);
 	box.addChild(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }));
 
-	for (const width of [82, 142, 143, 202]) {
+	for (const width of [82, 121, 122, 202]) {
 		const output = box.render(width);
 		assert.ok(output.some((line) => line.includes("↳ diff +1 -1")));
 		assert.ok(output.every((line) => visibleWidth(line) <= width));
-		assert.equal(output.some((line) => line.includes("  old │") && line.includes("  new │")), width >= 143);
+		assert.equal(output.some((line) => line.includes("  old │") && line.includes("  new │")), width >= 122);
 	}
 });
 
@@ -593,9 +595,9 @@ test("renderFileChangesResult uses CLI counts for a truncated structured preview
 			editsApplied: 2,
 		},
 	};
-	const output = render(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }), 72);
+	const output = render(renderFileChangesResult(result, options(), theme, { args: { path: "notes.txt" } }), 40);
 
-	assert.equal(output[0]!.trimEnd(), "↳ diff +12 -7 • 局部预览 unified [━━━━━━━━]");
+	assert.equal(output[0]!.trimEnd(), "↳ diff +12 -7 • 局部预览 [━━━━━━━━]");
 	assert.doesNotMatch(output[0] ?? "", /变更块/);
 });
 
@@ -780,7 +782,7 @@ test("long highlighted diff rows keep wrapping bounded by the visible row budget
 	for (const width of [80, 160]) {
 		const rows = component.render(width);
 		assert.ok(rows.some((line) => line.includes("展开")));
-		assert.ok(rows.length <= (width >= 141 ? 30 : 29));
+		assert.ok(rows.length <= (width >= 120 ? 30 : 29));
 		assert.ok(rows.every((line) => visibleWidth(line) <= width));
 	}
 });

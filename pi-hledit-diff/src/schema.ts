@@ -1,7 +1,7 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { ANCHOR_PATTERN } from "./anchor.ts";
-import { DEFAULT_READ_LIMIT, DEFAULT_SEARCH_LIMIT, MAX_READ_LIMIT, MAX_SEARCH_LIMIT } from "./read-args.ts";
+import { DEFAULT_READ_LIMIT, DEFAULT_SEARCH_LIMIT, MAX_READ_LIMIT, MAX_SEARCH_LIMIT, MAX_READ_WINDOWS } from "./read-args.ts";
 
 const STRICT_OBJECT = { additionalProperties: false };
 
@@ -25,7 +25,7 @@ const REPLACE_RANGE_CHANGE_SCHEMA = Type.Object(
 	},
 	{
 		...STRICT_OBJECT,
-		description: "Replace the inclusive start_anchor/end_anchor range with lines. Use the same token twice for one line; select the entire intended source range.",
+		description: "Replace the inclusive source range; repeat the token for one line. May retain source text and change line count.",
 	},
 );
 
@@ -37,7 +37,7 @@ const DELETE_RANGE_CHANGE_SCHEMA = Type.Object(
 	},
 	{
 		...STRICT_OBJECT,
-		description: "Delete the inclusive start_anchor/end_anchor range; use the same token twice for one line. Omit lines.",
+		description: "Delete the inclusive source range; repeat the token for one line.",
 	},
 );
 
@@ -51,7 +51,7 @@ const INSERT_CHANGE_SCHEMA = Type.Object(
 	},
 	{
 		...STRICT_OBJECT,
-		description: "Insert only new text before/after anchor; the anchor and existing text remain. Do not repeat anchor/context lines unless the duplicate is intended.",
+		description: "Insert new text before/after anchor; existing text remains. Do not copy context unless duplication is intended.",
 	},
 );
 
@@ -59,7 +59,14 @@ export const HLEDIT_READ_ANCHORS_PARAMS_SCHEMA = Type.Object(
 	{
 		path: PATH_SCHEMA,
 		offset: Type.Optional(Type.Integer({ minimum: 1, description: "First line (1-based; default 1)." })),
-		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_READ_LIMIT, description: `Maximum contiguous lines (default ${DEFAULT_READ_LIMIT}; max ${MAX_READ_LIMIT}).` })),
+		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_READ_LIMIT, description: `Maximum lines (default ${DEFAULT_READ_LIMIT}).` })),
+		windows: Type.Optional(Type.Array(Type.Object({
+			offset: Type.Integer({ minimum: 1 }),
+			limit: Type.Integer({ minimum: 1, maximum: MAX_READ_LIMIT }),
+		}, STRICT_OBJECT), {
+			minItems: 1, maxItems: MAX_READ_WINDOWS,
+			description: "Same-file windows with 1-based offset and line count; mutually exclusive with top-level offset/limit. Shared 2000-line/96 KiB budget.",
+		})),
 	},
 	STRICT_OBJECT,
 );
@@ -69,7 +76,7 @@ export const HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA = Type.Object(
 		path: PATH_SCHEMA,
 		pattern: Type.String({ minLength: 1, description: "RE2 regex by default; use literal:true for verbatim substring matching. No lookaround or backreferences." }),
 		offset: Type.Optional(Type.Integer({ minimum: 1, description: "First returned source line, 1-based (default 1), not a match index." })),
-		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_SEARCH_LIMIT, description: `Maximum matching/context source lines (default ${DEFAULT_SEARCH_LIMIT}; max ${MAX_SEARCH_LIMIT}).` })),
+		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_SEARCH_LIMIT, description: `Maximum matching/context lines (default ${DEFAULT_SEARCH_LIMIT}).` })),
 		literal: Type.Optional(Type.Boolean({ description: "Treat pattern as plain text, not regex (default false)." })),
 		context: Type.Optional(Type.Integer({ minimum: 0, description: "Context lines before/after each match (default 0)." })),
 		ignore_case: Type.Optional(Type.Boolean({ description: "Case-insensitive matching (default false)." })),
@@ -80,7 +87,7 @@ export const HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA = Type.Object(
 export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 	{
 		path: PATH_SCHEMA,
-		proof_id: Type.String({ minLength: 1, description: "Proof for these anchors' file and generation. Do not mix generations." }),
+		proof_id: Type.String({ minLength: 1, description: "Proof for these anchors' file and generation." }),
 		changes: Type.Array(
 			Type.Union([REPLACE_RANGE_CHANGE_SCHEMA, DELETE_RANGE_CHANGE_SCHEMA, INSERT_CHANGE_SCHEMA]),
 			{

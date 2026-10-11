@@ -13,11 +13,12 @@ hledit capabilities
 hledit version
 hledit help
 hledit read-range <file> [--offset N] [--limit M]
+hledit read-windows <file>
 hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N] [--ignore-case]
 hledit batch [--check] <file>
 ```
 
-`read-range`, `search`, and `batch` emit structured JSON for normal outcomes. They have no text, ANSI, or compatibility output mode. An uncertain write outcome instead exits nonzero with a diagnostic on stderr.
+`read-range`, `read-windows`, `search`, and `batch` emit structured JSON for normal outcomes. They have no text, ANSI, or compatibility output mode. An uncertain write outcome instead exits nonzero with a diagnostic on stderr.
 
 - Logical command failures confirmed to have made no write, including `stale`, `invalid`, `binary`, `encoding`, `directory`, `range`, and pre-commit I/O errors, exit `0` and return `{ "ok": false, ... }` on stdout. A `directory` error means the supplied path is a directory; read and search verbs require one concrete text file.
 - Invalid command-line shape exits `2` with usage on stderr.
@@ -37,6 +38,7 @@ The response is the compatibility gate for the Pi extension:
   "version": "3.4.0",
   "anchorProtocolV2": true,
   "readRangeMetadata": true,
+  "readWindowsMetadata": true,
   "batchInsertAfter": true,
   "batchCheck": true,
   "batchUpdatedAnchorSpans": true,
@@ -61,7 +63,7 @@ A compatible integration requires CLI 3.x and every positive field above. `conte
 hledit read-range <file> [--offset N] [--limit M]
 ```
 
-`read-range` is the only contiguous-source read verb. `offset` is a 1-indexed physical source line and defaults to `1`; `limit` defaults to `160` and bounds returned source lines. It always returns JSON:
+`read-range` reads one contiguous source window. `offset` is a 1-indexed physical source line and defaults to `1`; `limit` defaults to `160` and bounds returned source lines. It always returns JSON:
 
 ```json
 {
@@ -106,9 +108,36 @@ hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N
 
 `totalMatches` counts matching lines in the entire file before context expansion, independently of `offset`. The offset is a lower bound on returned source lines; earlier matches may still contribute trailing context. An empty returned page can therefore have a nonzero `totalMatches`. Zero matches in the file return success with `totalMatches:0`, an empty `lines` array, `truncated:false`, and no `nextOffset`. Empty or invalid patterns return `error:"pattern"`. Broad whole-file expressions such as `.*`, `.+`, and their anchored or dot-all variants return `error:"broad_pattern"`; callers must use `read-range` for contiguous source.
 
-Both read verbs reject directories, binary files, and invalid UTF-8 with structured `directory`, `binary`, or `encoding` errors. They cap the serialized JSON page at 50 KiB.
+`read-range` and `search` reject directories, binary files, and invalid UTF-8 with structured `directory`, `binary`, or `encoding` errors. They cap the serialized JSON page at 50 KiB.
 
 The read path owns one validated UTF-8 buffer and borrows logical lines from it without allocating whole-file line/terminator arrays. One matching pass counts all matching lines and collects bounded page candidates, including context; the page is then rendered with the exact `totalMatches` included in its JSON byte budget. No full-file match index is retained. Full-file scanning is still required for revision, line count, and match count; paging bounds response memory, not source scanning.
+
+### 3.3 `read-windows`
+
+```text
+hledit read-windows <file>
+```
+
+Stdin is one strict JSON object: `{"windows":[{"offset":51,"limit":2},{"offset":90,"limit":1}]}`. There must be 1–8 windows, each with a positive 1-based `offset` and `limit` in 1–2000. Unknown/duplicate fields, coordinate overflow and requests exceeding 16 KiB are rejected. Top-level command-line offset/limit flags are not accepted.
+
+The CLI loads `Snapshot` once, sorts windows by physical position, clamps ends to EOF and merges overlapping or adjacent ranges. Each returned segment lists the original 1-based `requestedWindows` indices in ascending order. All segments share the same revision and a 2,000-row / 96 KiB serialized-JSON budget (including metadata and the final newline).
+
+```json
+{
+  "ok": true,
+  "revision": "sha256:<64 lowercase hex digits>",
+  "totalLines": 120,
+  "windows": [
+    {"offset":51,"limit":2,"requestedWindows":[1],"lines":[{"line":51,"anchor":"51#aB3","text":"first"},{"line":52,"anchor":"52#cD4","text":"second"}],"truncated":false},
+    {"offset":90,"limit":1,"requestedWindows":[2],"lines":[{"line":90,"anchor":"90#eF5","text":"third"}],"truncated":false}
+  ],
+  "truncated": false
+}
+```
+
+Segment `offset` and `limit` describe the complete merged range after EOF clamping; `lines` is its returned prefix. Segment `truncated` means missing requested lines or a `textTruncated:true` final row, not that unrelated file lines follow the window. Only incomplete segments have `nextOffset`: the first missing line, or the text-truncated row itself. Global `truncated` is the OR of all segment flags; exhausted segments remain present with empty lines and their starting `nextOffset`.
+
+An out-of-range start in any window rejects the request with the same structured `range` error as `read-range`; directory, binary and encoding errors are unchanged. The Pi extension validates all segments against the original request and records one proof only when the entire request is complete. Incomplete results are preview-only, including already completed segments; callers must reread the needed ranges in smaller complete calls. The recorded `details.windowsRead` drives the same validation during branch replay.
 
 ## 4. Batch edit protocol
 
@@ -147,7 +176,7 @@ Batch wire v3 has one canonical shape:
 
 All edits are validated against one original snapshot before writing. Conflicting ranges, duplicate insertion boundaries, inserts inside a consumed range, invalid anchors, and stale anchors reject the entire request with zero writes. The planner orders non-conflicting edits by physical boundary and rebuilds the file once.
 
-Success includes `revision`, `contentChanged`, aggregate edit statistics, one `editDeltas` entry per request edit, and—except for `--check`, where it is `null`—`updatedAnchorSpans`. An applied batch reports the resulting revision; `--check` writes nothing and reports the current source revision. Each span is context-free and covers exactly one producing edit's range in the new file, in physical order. Pure deletions produce no span. The spans share one budget (80 lines / 16 KiB): a span whose first line exceeds the remaining budget carries that line with `textTruncated:true`, and once the budget is exhausted later spans are still emitted with empty `lines` and `truncated:true` so callers can match spans to `editDeltas` one-to-one.
+Success includes `revision`, `contentChanged`, aggregate edit statistics, one `editDeltas` entry per request edit, and—except for `--check`, where it is `null`—`updatedAnchorSpans`. An applied batch reports the resulting revision; `--check` writes nothing and reports the current source revision. Each span is context-free and covers exactly one producing edit's range in the new file, in physical order. Pure deletions produce no span. The spans share one budget (400 lines / 96 KiB of serialized rows): a span whose first line exceeds the remaining budget carries that line with `textTruncated:true`, and once the budget is exhausted later spans are still emitted with empty `lines` and `truncated:true` so callers can match spans to `editDeltas` one-to-one. The Pi extension compares complete spans with the executed input before returning compact change-to-anchor ranges; otherwise its visible fallback is capped separately at 80 lines / 16 KiB.
 
 ```json
 {
@@ -193,6 +222,7 @@ On Windows, the temporary file receives the target DACL before any replacement t
 ```text
 src/main.rs          command dispatch and capability response
 src/read.rs          bounded read/search pages and anchor contexts
+src/read_windows.rs  single-snapshot multi-window reads and shared JSON budget
 src/pattern.rs       RE2-compatible matching and broad-pattern classification
 src/batch.rs         strict wire decoding, proof validation, one-pass batch planning
 src/text.rs          UTF-8 ownership, BOM, terminators, hashes and revisions

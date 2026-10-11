@@ -14,6 +14,7 @@ const DECLARED_CAPABILITIES = {
 	version: "3.4.0",
 	anchorProtocolV2: true,
 	readRangeMetadata: true,
+	readWindowsMetadata: true,
 	batchInsertAfter: true,
 	batchCheck: true,
 	batchUpdatedAnchorSpans: true,
@@ -65,7 +66,7 @@ test("parseHleditCapabilities requires the reviewed CLI 3.x read/search/apply co
 // 单一 REQUIRED_CAPABILITIES 列表必须真的逐项生效：任何一项缺失都要拒绝整个 CLI。
 test("parseHleditCapabilities rejects a CLI missing any single required capability", () => {
 	const capabilities = Object.keys(DECLARED_CAPABILITIES).filter((name) => name !== "version");
-	assert.equal(capabilities.length, 13);
+	assert.equal(capabilities.length, 14);
 	for (const capability of capabilities) {
 		const declaration = { ok: true, ...DECLARED_CAPABILITIES, [capability]: false };
 		assert.equal(

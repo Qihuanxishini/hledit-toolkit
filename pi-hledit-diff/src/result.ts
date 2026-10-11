@@ -1,5 +1,6 @@
 import type { HleditRun } from "./cli.ts";
 import type { BatchAnchorContext, ProducedLineRange } from "./post-edit-context.ts";
+import type { WindowsReadMetadata } from "./read-windows.ts";
 
 // 三个工具共用的结果类型、结构化 details 与构造器；读取与写入各自的响应校验
 // 分别位于 read-result.ts 与 apply-result.ts。
@@ -126,6 +127,7 @@ export type HleditDetails = Record<string, unknown> & {
 	updatedAnchorSpans?: BatchAnchorContext[];
 	unprovenAnchors?: string[];
 	read?: HleditReadMetadata;
+	windowsRead?: WindowsReadMetadata;
 	recoveredReads?: HleditReadMetadata[];
 	recoveryRequiredRanges?: Array<{ start: number; end: number }>;
 	recoveryReadError?: { disposition: HleditDisposition; error?: HleditErrorMetadata };

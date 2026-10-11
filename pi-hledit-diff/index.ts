@@ -238,10 +238,10 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		exposure: "model-only",
 		annotations: { readOnlyHint: true, openWorldHint: false },
 		label: "Read for Edit",
-		description: "Read contiguous text lines with LN#HASH anchors and file-bound proof_id for stale-safe edits.",
+		description: "Read precise text windows from one snapshot with LN#HASH anchors and a file-bound proof_id for editing.",
 		promptGuidelines: [
-			"Use hledit_read_anchors for edit proof unless successful hledit_search_anchors output or verified updated anchors already cover the target. Ordinary read/grep output is not proof.",
-			"For replace_range or delete_range, use hledit_read_anchors to cover every source line missing from current proof; sparse endpoints are not proof. Truncated source lines are not proof; follow returned continuation offsets.",
+			"For planned edits, use hledit_read_anchors directly, not ordinary read/grep. Reuse complete hledit_search_anchors output or verified updated anchors covering the target.",
+			"In hledit_read_anchors, cover every consumed source line; sparse endpoints and truncated text are not proof. Use the smallest semantically complete ranges; windows combine distant targets. Follow continuation guidance.",
 		],
 		parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 		// provider 侧按 schema 约束采样，从源头消除畸形参数；不支持的模型自动回落普通调用。
@@ -267,7 +267,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		label: "Search Anchors",
 		description: "Search one text file (not a directory) for literal text or RE2 matches.",
 		promptGuidelines: [
-			"Use hledit_search_anchors on one file, never a directory; enumerate files first for project-wide search. Use it to locate matching lines, not to inspect broad contiguous text; use hledit_read_anchors for that. Only returned complete, non-truncated lines provide proof; read any range gaps.",
+			"Use hledit_search_anchors for matching lines, not broad source inspection; use hledit_read_anchors for gaps. Search one file; enumerate files first for project-wide search. Only complete returned lines provide proof.",
 			"In hledit_search_anchors, literal:true means verbatim substring search: do not add regex anchors or regex-only escaping. If no match, check mode, pattern and offset.",
 		],
 		parameters: HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA,
@@ -291,11 +291,11 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		exposure: "model-only",
 		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
 		label: "Apply File Changes",
-		description: "Atomic, non-overlapping inclusive ranges or anchor inserts on one file; requires complete read proof. Replacements may retain source lines and change the line count.",
+		description: "Apply one atomic batch of source ranges and anchored inserts in one file; requires complete read proof.",
 		promptGuidelines: [
-			"Use hledit_apply_file_changes with proof_id and LN#HASH tokens from the same evidence generation. Changed apply returns new proof; reuse complete Updated anchors. Old pairs work only for verified surviving targets. Failed reads create no proof.",
-			"For hledit_apply_file_changes, insert_before/insert_after preserve the anchor; lines must contain only new content, not copied context. Moving text also requires deleting the original.",
-			"In hledit_apply_file_changes.lines, use raw text without LN#HASH prefixes. \\n separates lines; one trailing \\n terminates the last line; \"\" writes one blank line, not a deletion. For targeted edits, use write only for a new/empty file or an intentional complete-file rewrite allowed by recovery guidance; never bypass proof.",
+			"Use hledit_apply_file_changes with proof_id and anchors from the same evidence generation. Reuse verified output anchors with the new proof; read intermediate lines when needed. Old pairs work only for verified surviving targets. Failed reads create no proof.",
+			"In hledit_apply_file_changes, batch independent same-file edits. Keep consumed ranges semantically complete without unrelated lines. Insert preserves its anchor; moving text also requires deletion.",
+			"In hledit_apply_file_changes.lines, one trailing \\n terminates the last line; \"\" writes a blank line, not a deletion. Use write only for new/empty files or intentional full rewrites permitted by recovery guidance; never bypass proof.",
 			"After hledit_apply_file_changes, never replay success. Rejected batches made no write; fix the cause and review recovered reads before retrying. Recovery reads do not apply edits. On outcome_unknown, inspect the file and follow recovery guidance before writing.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,

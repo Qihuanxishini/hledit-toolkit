@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const EXTENSION_ROOT = fileURLToPath(new URL("../", import.meta.url));
 
-export const HLEDIT_INSTALL_HINT = `This extension requires the bundled Windows x64 hledit CLI 3.x with v2 anchors, structured range reads, dedicated regex/literal search, strict batch wire v3, read proof, batch validation, insert-after support, updated-anchor spans, and edit deltas.
+export const HLEDIT_INSTALL_HINT = `This extension requires the bundled Windows x64 hledit CLI 3.x with v2 anchors, structured range/windows reads, dedicated regex/literal search, strict batch wire v3, read proof, batch validation, insert-after support, updated-anchor spans, and edit deltas.
 Resync or reinstall pi-hledit-diff, then confirm that bin/hledit.exe exists.`;
 
 export const HLEDIT_RUN_TIMEOUT_MS = 30_000;
@@ -28,6 +28,7 @@ export type HleditCapabilities = {
 const REQUIRED_CAPABILITIES = [
 	"anchorProtocolV2",
 	"readRangeMetadata",
+	"readWindowsMetadata",
 	"batchInsertAfter",
 	"batchCheck",
 	"batchUpdatedAnchorSpans",
@@ -73,9 +74,8 @@ export function resolveHleditBin(): string {
 	return resolve(EXTENSION_ROOT, "bin", "hledit.exe");
 }
 
-// maxOutputBytes 是 wrapper 协议余量：必须容纳 CLI 自身 50 KiB/2000 行截断后的
-// 最坏 JSON 转义膨胀（控制字符 6 倍 + 逐行框架）。正式调用方使用默认值；
-// 更小的显式值仅供回归测试覆盖 overflow 终止路径。
+// wrapper 的 1 MiB 余量必须容纳 CLI 50/96 KiB JSON 预算和批量元数据；
+// 更小的显式值仅供已有验证覆盖 overflow 终止路径。
 type ForceTerminateProcess = (
 	child: ChildProcessWithoutNullStreams,
 	reportDiagnostic: (message: string) => void,

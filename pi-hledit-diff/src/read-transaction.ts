@@ -5,7 +5,8 @@ import type { HleditRun } from "./cli.ts";
 import { ReadEvidenceStore, resolveReadEvidencePath } from "./read-evidence.ts";
 import { buildReadArgs, buildSearchArgs, normalizeReadRequest, normalizeSearchRequest } from "./read-args.ts";
 import { readAnchorsResult } from "./read-result.ts";
-import type { TextResult } from "./result.ts";
+import { normalizeWindowsRequest, readWindowsResult } from "./read-windows.ts";
+import { rejectedToolResult, type TextResult } from "./result.ts";
 import type { ReadAnchorsParams, SearchAnchorsParams } from "./schema.ts";
 
 export type HleditReadRunner = (
@@ -24,9 +25,16 @@ export async function runReadAnchorsTransaction(
 	run: HleditReadRunner,
 ): Promise<TextResult> {
 	const request = normalizeReadRequest(params);
+	const windows = params.windows !== undefined ? normalizeWindowsRequest(params) : undefined;
+	if (params.windows !== undefined && !windows) return rejectedToolResult(
+		"Use 1-8 windows with positive safe-integer offset and limit (1-2000), without top-level offset/limit.",
+		{ code: "invalid", message: "Invalid or conflicting read windows." },
+	);
 	const evidencePath = await resolveReadEvidencePath(cwd, request.path);
 	return withFileMutationQueue(evidencePath, async () => {
-		const result = readAnchorsResult(await run(buildReadArgs(request), undefined, cwd, signal), request);
+		const result = windows
+			? readWindowsResult(await run(["read-windows", "--", windows.path], JSON.stringify({ windows: windows.windows }), cwd, signal), windows)
+			: readAnchorsResult(await run(buildReadArgs(request), undefined, cwd, signal), request);
 		const queuedResult = { ...result, details: { ...result.details, path: request.path, evidencePath } };
 		evidence.updateFromToolResult(HLEDIT_READ_ANCHORS_TOOL, queuedResult.details, cwd);
 		return queuedResult;

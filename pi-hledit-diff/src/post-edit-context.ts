@@ -84,9 +84,45 @@ export function parseUpdatedAnchorSpans(value: unknown): BatchAnchorContext[] | 
 // 一个 change 在新文件坐标下写出的行区间；纯删除什么都没写出，产出空区间（end < start）。
 export type ProducedLineRange = { start: number; end: number };
 
-// span 里的行全部是本次编辑新写入的，模型没有任何旧锚点可用，因此整体进入模型正文；
-// 区间外的行已由 editDeltas 平移与 verified rename 覆盖，CLI 不再返回。纯删除没有 span，
-// 不输出 anchor 块；只有 span 被预算截断或产出行文本被截断时才提示不完整。
+// [喵喵喵]: 紧凑摘要必须逐行核对实际执行文本；三字符 hash 不能代替正文相等。
+export function formatVerifiedOutputAnchors(
+	spans: readonly BatchAnchorContext[],
+	outputs: readonly { changeNumber: number; lines: readonly string[] }[],
+): PostEditContextResult | undefined {
+	const producing = outputs.filter((output) => output.lines.length > 0);
+	if (producing.length !== spans.length || !spans.every((span, index) =>
+		!span.truncated && span.limit === span.desiredLimit && span.lines.length === producing[index]!.lines.length &&
+		span.lines.every((line, row) => !line.textTruncated && line.text === producing[index]!.lines[row]),
+	)) return undefined;
+	if (spans.length === 0) return { text: "", truncated: false };
+	return {
+		text: ["New output anchors (submitted text verified):", ...spans.map((span, index) => {
+			const first = span.lines[0]!.anchor;
+			const last = span.lines[span.lines.length - 1]!.anchor;
+			return `- change ${producing[index]!.changeNumber}: ${first}${span.limit > 1 ? `–${last}` : ""} (${span.limit} ${span.limit === 1 ? "line" : "lines"})`;
+		})].join("\n"),
+		truncated: false,
+	};
+}
+
+// [喵喵喵]: 内部证据预算大于模型回退预算；回退只登记实际显示的完整行，不能把隐藏正文授权为 proof。
+export function limitVisibleAnchorSpans(spans: readonly BatchAnchorContext[]): BatchAnchorContext[] {
+	let remainingLines = 80;
+	let remainingBytes = 16 * 1024;
+	return spans.map((span) => {
+		const lines: BatchAnchorLine[] = [];
+		for (const line of span.lines) {
+			const bytes = Buffer.byteLength(`${line.anchor}:${line.text}\n`, "utf8");
+			if (remainingLines === 0 || bytes > remainingBytes) break;
+			lines.push(line);
+			remainingLines--;
+			remainingBytes -= bytes;
+		}
+		return { ...span, lines, limit: lines.length, truncated: span.truncated || lines.length < span.desiredLimit };
+	});
+}
+
+// [喵喵喵]: 正文回退保留截断提示；纯删除没有新锚点，不输出空块。
 export function formatUpdatedAnchorSpans(spans: readonly BatchAnchorContext[]): PostEditContextResult {
 	const producedLines = spans.flatMap((span) => span.lines);
 	const incomplete = spans.some((span) => span.truncated || span.lines.some((line) => line.textTruncated));

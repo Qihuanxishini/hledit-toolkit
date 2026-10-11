@@ -8,7 +8,7 @@
 
 插件注册三个职责明确的工具：
 
-- `hledit_read_anchors`（TUI 显示为 `Read for Edit`）：只读取连续物理行并返回 `LN#HASH` 锚点；需要正则、字面量或上下文定位时使用 `hledit_search_anchors`。
+- `hledit_read_anchors`（TUI 显示为 `Read for Edit`）：读取单个连续范围，或以 `windows: [{offset, limit}, ...]` 一次读取同文件多段范围，返回 `LN#HASH` 锚点；模式定位使用 `hledit_search_anchors`。
 - `hledit_search_anchors`（TUI 显示为 `Search Anchors`）：按 RE2 正则或字面量模式搜索，并返回带锚点的匹配/上下文行。
 - `hledit_apply_file_changes`：对一个文件原子提交一组非冲突修改，并直接返回修改后的新锚点。
 
@@ -28,9 +28,11 @@
 - 定向补读按整批实际缺口规划，共享 1,200 行、4 页、96 KiB 正文预算；预算耗尽后保留已返回页并列出合法的剩余窗口。目标越界、被消费或旧范围不再连续时停止计划，要求重新定位；补读期间 revision 变化则丢弃本次页面并失效旧证据。截断源码不可建立 proof，补读不会自动执行编辑。
 - 读取错误一律给出可操作正文：`pattern` 转发 RE2 编译原文并说明 RE2 不支持 lookahead/lookbehind/backreference（可改用 `literal:true`），`broad_pattern` 指向 `hledit_read_anchors`。
 - read/search 仅在省略参数时使用默认值，非法 offset/limit 由 schema 拒绝，不静默回落或截断。搜索明确区分全文件匹配数与本页源行数；offset 是返回源行下界，前面的匹配仍可贡献后置上下文。
+- `windows` 与顶层 `offset` / `limit` 互斥，最多 8 个窗口。CLI 单次加载 `Snapshot`，按物理位置合并重叠或相邻窗口，并共享 2,000 行 / 96 KiB JSON 预算。只有所有请求段均完整返回时才登记联合证据；任一段不完整则本次结果仅供预览，不发 proof，应分小批重新读取，包括先前已完成段。
 - 超过单页预算的源行会标记 `textTruncated`，不能作为编辑 proof；若后面还有待读行或匹配，结果仍提供 `nextOffset` 和续读提示。
 - CLI 在临时文件同步后、原子替换前复检原始字节 revision。`source_changed_before_commit` 是确认零写入；已启动进程的取消、超时、输出超限或异常响应属于 `outcome_unknown`，必须重新读取。
-- 改变文件的成功 apply 建立新证据代并返回新 `proof_id`，其完整 Updated anchors 可直接续编，token 字面复用不再要求额外重读。旧 proof/token 对只迁移可验证存续目标；范围内每条源行必须存续且保持连续，不能误消费后来插入的行。已消费身份不会因内容恢复而复活；无变化批次不推进证据代。
+- 改变文件的成功 apply 建立新证据代并返回新 `proof_id`。CLI span 与实际执行文本逐行一致且完整时，仅回显 change 编号、新锚点首尾和行数；完整 span 保存在 `details`。返回的端点可直接续编，中间新行按需精确读取。旧 proof/token 对只迁移逐行存续且连续的目标；已消费身份不会因内容恢复而复活，无变化批次不推进证据代。
+- 后编辑内部 span 预算为 400 行 / 96 KiB；不满足紧凑条件时，模型正文及对应 evidence 限为实际显示的 80 行 / 16 KiB，并明确标示不完整。非法 delta、产出范围或结构仍属于 `outcome_unknown`，不能退成成功正文。
 - 读取、proof 选择、CLI mutation 与 evidence 更新按 canonical real path 使用同一 file mutation queue。同文件状态事务串行，不同文件仍可并行。
 - evidence 有界：单文件 10,000 records / 4 MiB 计费额度，session 50,000 records / 16 MiB；历史坐标、proof 与行证据共同计费，最多保留 32 个历史代。优先淘汰历史，其次保留当前发布窗口或恢复目标。整批必需证据无法容纳时终止为 `evidence_capacity_exceeded`，不让补读循环；拆分写入必须接受失去整批原子性的代价。重放使用记录的发布顺序，而不是 Pi 并行结果的请求顺序。
 - 仅接受有效 UTF-8 且不含 NUL 的文本；revision 基于原始字节。非空结果保留既有 BOM，拒绝会把首字符 U+FEFF 重新解释为 BOM 的修改。孤立 CR 作为正文保留；空末行必要地补行尾，其余按局部规则保留行尾与末尾换行状态。
@@ -42,12 +44,12 @@ CLI 3.x capability 健康时，插件始终启用这三个专用工具并替换 
 
 插件自行渲染三个工具，不依赖其他显示扩展：
 
-- 连续锚点读取和搜索都使用 `LN#HASH` gutter、语法高亮和紧凑预览；摘要显示实际范围、总行数、EOF 或下一 offset。搜索全文件匹配数保存在 `details.read.totalMatches`，不作为当前 TUI 摘要字段。
+- 连续锚点读取、多窗口和搜索都使用 `LN#HASH` gutter、语法高亮和紧凑预览；摘要显示实际范围和总行数，单窗口显示 EOF 或下一 offset，多窗口显示请求窗口数。搜索全文件匹配数保存在 `details.read.totalMatches`。
 - 文件修改按组件可用宽度自适应：净宽达到 120 列且两侧行号区之外仍有正文空间时显示左旧右新双栏，否则显示单栏；纯新增、纯删除或缺少操作关联的旧预览保持单栏。多项修改在标题中分别显示范围。
 - 新增行使用整行绿底，删除行使用整行红底，续行与尾部补齐区域保持同色。保留语法高亮，不叠加字词级背景色；双栏长行分别换行并补齐高度，续行留空标记与行号，不显示箭头。摘要、上下文、空栏、分隔和折叠提示固定使用工具绿色 `#283228`，不随主题底色切换。
 - 变更块按原文件中的修改位置展示，只配对同一操作的旧/新内容。单栏按每对旧行、新行上下相邻展示，双栏左旧右新；多出的行保持单侧显示，不把不同位置的相同文本拉到一起。缺少操作关联的旧预览保留原始顺序。
 - `details.changePreview` 是提交绑定的结构化局部 diff；上限为 2,000 行 / 256 KiB UTF-8，超长单行保留首尾并标记截断。截断统计使用 CLI 验证的 `linesAdded` / `linesDeleted`，不把局部 hunk 数冒充完整统计。
-- 读取、差异预览和 expanded 更新锚点分别消费 `details.read`、`details.changePreview`、`details.updatedAnchorSpans`；展示与证据恢复共用结构化结果。
+- 单窗口／搜索、多窗口、差异预览和 expanded 更新锚点分别消费 `details.read`、`details.windowsRead`、`details.changePreview`、`details.updatedAnchorSpans`；展示与证据恢复共用结构化结果。
 - 组件缓存同宽布局与语法高亮，并从当前 Pi theme 派生颜色。
 - 只读错误显示“读取失败”；编辑错误区分待复核（未写入）、未写入、未执行与结果未知。I/O 和补读失败优先展示具体原因；冲突诊断指出双方操作编号。展开后按终端宽度换行，完整显示恢复路径和操作指令。
 

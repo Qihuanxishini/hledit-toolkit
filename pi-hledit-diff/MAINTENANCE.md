@@ -40,7 +40,7 @@ pi-hledit-diff/
 
 | 工具 | 职责 |
 | --- | --- |
-| `hledit_read_anchors` | 读取连续文本范围并返回 `LN#HASH` 锚点及结构化 snapshot。 |
+| `hledit_read_anchors` | 从一个 snapshot 读取单个连续范围或多段 windows，返回 `LN#HASH` 锚点和 proof。 |
 | `hledit_search_anchors` | 按 RE2 正则或字面量模式搜索，并返回匹配/上下文锚点行。 |
 | `hledit_apply_file_changes` | 对一个文件提交完整非冲突 change batch，原子应用并返回新锚点。 |
 
@@ -59,12 +59,14 @@ pi-hledit-diff/
   path: string,
   offset?: number,
   limit?: number,
+  windows?: Array<{ offset: number; limit: number }>, // 与顶层 offset/limit 互斥
 }
 ```
 
 - 编辑现有非空可读文本文件前，使用该工具读取会被消费的全部连续原始行；普通 `read` 只用于参考或目标未定的探索。
-- 默认 `limit` 为 160，公开上限 2000；仅省略参数时使用默认值，非法整数、非整数与超限值由 schema 拒绝。它只执行连续范围读取，不接受 grep、literal、context 或 ignore_case。
-- 固定调用 `read-range`。响应验证 revision、总行数、连续性/递增顺序、锚点格式、分页和 source-line truncation；模型正文和 `details.read` 都由已验证结构生成。
+- 单窗口默认 `limit` 为 160，上限 2000；仅省略参数时使用默认值，非法整数与超限值由 schema 拒绝。读取不接受 grep、literal、context 或 ignore_case。
+- 单窗口调用 `read-range`，多窗口调用 `read-windows`（JSON stdin）。响应验证 revision、总行数、连续性/递增顺序、锚点格式、分页和 source-line truncation；正文与 `details.read` / `details.windowsRead` 由同一已验证结构生成。
+- `windows` 与顶层 `offset` / `limit` 互斥，最多 8 项，乱序、重叠或相邻窗口按物理位置合并，保留原始请求编号。一份 `Snapshot` 共享 2,000 行 / 96 KiB JSON 预算；仅当所有段完整时，一次登记联合证据并发出 proof。任一段不完整，本次全部结果仅供预览，需分小批重读所需范围，包括已完成段。
 - 单行超过 50 KiB JSON 页预算时仅返回截断文本；该行不建立 proof，但后续仍有物理行时提供 `nextOffset`。搜索同样在还有匹配/上下文行时提供续读游标。
 - CLI 执行、响应验证和 evidence 更新是同一个 canonical file queue 事务。不得在队列外记录晚到 snapshot。
 
@@ -100,7 +102,7 @@ pi-hledit-diff/
 - 固定调用 `search`。一次匹配遍历计算全文件 `totalMatches` 并收集有界页候选，随后按精确 JSON 字节预算渲染，不保存全文件命中索引。正文区分全文件匹配数和本页匹配/上下文源行数；offset 是返回源行下界，较早匹配仍可贡献后置上下文。零命中同 revision 保留旧证据并回显当前 proof，不同 revision 清除旧状态。
 - 搜索返回的完整匹配/上下文行可以贡献局部 proof；搜索结果不保证连续覆盖，范围编辑缺口由 apply 内部自动分页补读。
 
-读取结果的 proof 规则：非空 read/search 发出 `proof_id` 并写入正文与 `details.proofId`，同一证据代内合并完整行，保留尚未被容量淘汰的已发 id。proof 定义 token 的原始坐标空间，不能随编辑改为指向新目标；外部 revision 变化会失效旧状态，已验证 apply 则建立新代并保留受限的历史迁移。`textTruncated` 行不建立 proof。`src/proof-id.ts` 使用 96 位随机进程 nonce 加 BigInt 单调序号，降低重启后与历史 id 碰撞的风险；id 不是授权凭证，正确性仍依赖来源、逐行覆盖和 CLI revision 复检。
+读取结果的 proof 规则：非空单窗口 read/search 发出 `proof_id`，多窗口仅在整组完整时发出，均写入正文与 `details.proofId`。同一证据代合并完整行并保留尚未被容量淘汰的 id。proof 定义 token 的原始坐标空间，不能随编辑改为指向新目标；外部 revision 变化失效旧状态，已验证 apply 建立新代并保留受限迁移。`textTruncated` 行不建立 proof。`src/proof-id.ts` 使用 96 位随机进程 nonce 加 BigInt 单调序号；id 不是授权凭证，正确性仍依赖来源、逐行覆盖和 CLI revision 复检。
 
 ### `hledit_apply_file_changes`
 
@@ -195,7 +197,9 @@ Batch wire v3 是唯一 canonical 形状：`replace` 必须带 `lines`（可为�
 }
 ```
 
-插件验证 revision、统计、warning、每项 `editDeltas` 与 `updatedAnchorSpans`：delta 条数、区间、物理顺序、总和必须与公开 change 一一对应；窗口数量、`offset` 与 `desiredLimit` 必须与由 `editDeltas` 换算出的非空产出区间逐项对应（纯删除无窗口）。窗口不带上下文行，共享 CLI 侧 80 行 / 16 KiB 预算；首行超过剩余字节预算时可返回 `textTruncated:true` 的部分行，预算耗尽后的窗口以空 `lines` + `truncated:true` 保持可计数。malformed 或 request-inconsistent success 属于 `outcome_unknown`，不得用于 evidence。`contentChanged:false` 不触碰文件，不消费身份或推进 proof 代。
+插件验证 revision、统计、warning、每项 `editDeltas` 与 `updatedAnchorSpans`：delta 条数、区间、物理顺序、总和必须与公开 change 一一对应；窗口数量、`offset` 与 `desiredLimit` 必须与由 delta 换算出的非空产出区间逐项对应（纯删除无窗口）。窗口无上下文行，共享 CLI 侧 400 行 / 96 KiB serialized-row 预算；超长首行可返回 `textTruncated:true`，耗尽后的窗口仍以空 `lines` + `truncated:true` 保持可计数。非法结构、delta 或产出范围属于 `outcome_unknown`，不得用于 evidence。
+
+通过上述校验后，还须逐行核对执行参数与实际 span 文本，全部完整一致才输出紧凑 change→首尾 anchor 摘要；结构化全文留在 details。正文不一致、截断或缺少执行文本则取消紧凑显示，回退为最多 80 行 / 16 KiB 已显示正文，只把显示的完整行和范围元数据留在 `details.updatedAnchorSpans`。回退不把未知写入结果降级成成功；`contentChanged:false` 仍不触碰文件、不消费身份或推进 proof 代。
 
 CLI 写入保留非空结果的 BOM 与未修改行尾，真实空末行必要地补 terminator；正文以 CR 结尾的已终止行使用 CRLF，避免丢失正文 CR。会把首字符 U+FEFF 重新解释为 BOM 的修改在 check/apply 共同入口零写入拒绝，删除全部逻辑行则生成真正空文件。CLI 拒绝 multi-hardlink target，保留 symlink entry，并在 temp sync 后、atomic replace 前复检原始字节 revision。recheck 与 rename 之间仍有极短外部竞态，不宣称线性化 CAS。
 
@@ -226,21 +230,21 @@ Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标�
 - 确认退出后主动销毁本地 stdio handles，并清理 listener、abort listener 和 timer；
 - 若 OS 始终不确认退出，宁可阻塞该文件队列，也不在进程仍可能写入时提前返回。
 
-默认 wrapper 输出上限为 1 MiB，作为异常或不兼容 CLI 输出的进程级保护；read JSON 已按最终 UTF-8 序列化结果限制为 50 KiB，不依赖 wrapper 吸收控制字符转义膨胀。
+wrapper 输出上限为 1 MiB，保护异常或不兼容 CLI 输出；单窗口 read/search JSON 上限 50 KiB，多窗口上限 96 KiB（均按序列化 UTF-8 计费），不依赖 wrapper 吸收控制字符转义膨胀。
 
 ## Preview、TUI 与 compaction
 
 - `details.changePreview` 只由同 revision 消费行 evidence、请求 payload 和已验证 delta 构成；不读取全文件 before/after snapshot，也不注入模型正文；
 - preview 上限 2000 行 / 256 KiB，所有计数使用 UTF-8 bytes。超长单行保留首尾及 `textTruncated:true`；
-- TUI 从 `details.read`、`details.changePreview` 与 `details.updatedAnchorSpans` 渲染读取、差异和更新锚点；preview 截断或没有可渲染 change 行时使用 CLI `linesAdded` / `linesDeleted`，不显示局部推导的完整 hunk 数；
+- TUI 从 `details.read` / `details.windowsRead`、`details.changePreview` 与 `details.updatedAnchorSpans` 渲染读取、差异和更新锚点；preview 截断或没有可渲染 change 行时使用 CLI `linesAdded` / `linesDeleted`，不显示局部推导的完整 hunk 数；
 - 只读失败显示“读取失败”；编辑失败区分待复核（未写入）、未写入、未执行与结果未知，只有已返回可用 proof 的恢复结果标为待复核。I/O 优先展示原始诊断，补读失败优先展示内层读取原因；宿主错误标记与已确认成功回包冲突时显示“状态不一致”，不推翻已确认的写入状态。展开正文保留完整路径与指令；折叠摘要仍有单行宽度限制，模型正文不受影响；
-- 模型正文展示产出窗口的 Updated anchors，完整且保留的行配合新 proof 可继续编辑；区间外存续目标由历史 proof/token 对迁移，CLI 不额外返回。纯删除没有窗口，不输出 anchor 块。截断或容量导致证据不完整时明确说明后续可用性，不能把展示当作完整 proof，也不能改报提交失败；
+- 模型正文在提交文本核对一致时只展示 change 编号和新锚点首尾，完整证据保存在 details；返回端点可配新 proof 续编，中间新行按需补读。不满足紧凑条件则显示有界 Updated anchors 正文。区间外存续目标由历史 proof/token 对迁移；纯删除无 anchor 块。截断或容量导致证据不完整时明确说明后续可用性，不得改报提交失败；
 - expanded updated-anchor rows 只来自 `details.updatedAnchorSpans`，不解析模型正文；
 - diff 在组件净宽达到 120 列、两侧行号区之外仍有正文空间时切为 split，与 `pi-tool-display` 的默认自动分栏门槛一致；纯单侧或缺少操作关联的旧预览保持 unified。双栏左旧右新并保留独立行号与续行对齐；
 - 两种布局沿用 `changePreview.lines` 的原文件操作位置顺序，只配对同一 `changeIndex` 的连续片段；单栏按每对旧行、新行依次展开，上下文仅显示一次，多出的行单独显示。双栏复用同一配对；不跨操作同文匹配，也不把 `oldLine` / `newLine` 混为同一套坐标排序。缺少操作关联的旧预览保持原始顺序；
 - 差异使用按深浅主题和 truecolor/256-color 模式选择的独立整行红绿底色，保留语法高亮，不叠加字词级底色；摘要、上下文、空栏、中缝、省略行、边框和折叠提示固定使用 `#283228` 并填满宽度（取自 `pi-tool-display` 使用的 `classic-dark.toolSuccessBg`，256 色模式由宿主量化）。摘要保留 `↳ diff`、增删计数和按比例分配红绿段的色条；窄屏先为色条留位，再按完整信息单元缩略辅助说明，增删计数与局部预览状态放不下时色条让位，不截断数字或状态文本。续行留空标记与行号，不显示箭头。`theme.style()` 处理内部 reset，单元格末尾恢复工具容器背景；主题色、布局和高亮缓存必须在 `invalidate()` 正确清理；
 - 语法高亮只处理规范化显示行不超过 8,192 UTF-16 code units 的内容；超长行保留完整纯文本、控制字符转义与宽度计算，只跳过同步语法着色。预算不影响源码、proof 或模型正文；
-- `session_before_compact` 从三个工具的结构化结果补充 fileOps：read/search 成功 → read；带严格验证 `recoveredReads` 的零写入 apply → read；apply content change → modified；apply no-op → read；`outcome_unknown` → modified；其余确认零写入结果不记录。
+- `session_before_compact` 从三个工具的结构化结果补充 fileOps：read/search 成功 → read；已验证且返回过源码的不完整多窗口预览 → read（不授予 proof）；带严格验证 `recoveredReads` 的零写入 apply → read；apply content change → modified；apply no-op → read；`outcome_unknown` → modified；其余确认零写入结果不记录。
 
 ## 源码结构
 
@@ -249,7 +253,8 @@ Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标�
 | `index.ts` | 三工具注册、apply queue 主流程、错误升级与 active-tool 生命周期。 |
 | `src/schema.ts` | 三工具的严格 schema 与参数类型。 |
 | `src/proof-id.ts` | 96 位进程 nonce 与单调序号 proof id 生成器。 |
-| `src/read-transaction.ts` | read/search CLI、结果校验和 evidence 更新的 canonical queue 事务。 |
+| `src/read-transaction.ts` | 单窗口、多窗口和 search CLI、结果校验与 evidence 发布的 canonical queue 事务。 |
+| `src/read-windows.ts` | 多窗口参数、合并契约、实时/重放元数据校验与模型正文。 |
 | `src/read-recovery.ts` | 整批 proof 缺口分页补读、共享预算与 revision 变化处理。 |
 | `src/read-evidence.ts` | proof 选择、目标迁移、恢复决策及发布/重放统一 reducer。 |
 | `src/proof-state.ts` | 证据代、历史坐标转换、容量计费及淘汰。 |

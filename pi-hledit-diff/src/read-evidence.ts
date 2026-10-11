@@ -12,6 +12,7 @@ import type { HleditBatchReadProof } from "./file-changes.ts";
 import { parseAnchorContext, parseUpdatedAnchorSpans } from "./post-edit-context.ts";
 import { nextProofId } from "./proof-id.ts";
 import { parseHleditReadMetadata, parseRecoveredReads } from "./read-result.ts";
+import { parseWindowsReadMetadata } from "./read-windows.ts";
 import {
 	isRawRevision,
 	isRecord,
@@ -543,6 +544,14 @@ export class ReadEvidenceStore {
 		if (!path) return;
 		if (details.evidenceDropped) { this.invalidate(path); return; }
 		if (toolName === HLEDIT_READ_ANCHORS_TOOL || toolName === HLEDIT_SEARCH_ANCHORS_TOOL) {
+			if (details.windowsRead !== undefined) {
+				const read = parseWindowsReadMetadata(details.windowsRead);
+				if (read && !read.truncated && details.disposition === "succeeded" && typeof details.proofId === "string") {
+					this.state.read(path, read.revision, read.windows.flatMap((window) => window.lines), details.proofId, read.totalLines);
+				} else if (read && this.state.get(path)?.current.revision !== read.revision) this.invalidate(path);
+				else this.state.touch(path);
+				return;
+			}
 			const read = details.disposition === "succeeded" ? parseHleditReadMetadata(details.read) : undefined;
 			if (read) this.recordRead(path, read, details.proofId);
 			else this.state.touch(path);

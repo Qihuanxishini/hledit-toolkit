@@ -178,23 +178,23 @@ test("registered tool metadata explains the contract within its budget and names
 	const readGuidelines = readTool.promptGuidelines.join(" ");
 	const searchGuidelines = searchTool.promptGuidelines.join(" ");
 	const applyGuidelines = applyTool.promptGuidelines.join(" ");
-	assert.match(readTool.description, /contiguous text lines[\s\S]*LN#HASH anchors/);
-	assert.match(readGuidelines, /successful hledit_search_anchors output[\s\S]*verified updated anchors/);
-	assert.match(readGuidelines, /cover every source line[\s\S]*sparse endpoints are not proof/);
+	assert.match(readTool.description, /text windows[\s\S]*LN#HASH anchors/);
+	assert.match(readGuidelines, /complete hledit_search_anchors output[\s\S]*verified updated anchors/);
+	assert.match(readGuidelines, /cover every consumed source line[\s\S]*sparse endpoints and truncated text are not proof/);
 	assert.match(searchTool.description, /literal text[\s\S]*RE2 matches/);
-	assert.match(searchGuidelines, /locate matching lines[\s\S]*not to inspect broad contiguous text[\s\S]*hledit_read_anchors/);
-	assert.match(searchGuidelines, /Only returned complete, non-truncated lines provide proof[\s\S]*read any range gaps/);
-	assert.match(applyTool.description, /non-overlapping inclusive ranges[\s\S]*complete read proof[\s\S]*retain source lines[\s\S]*change the line count/);
-	assert.match(applyGuidelines, /proof_id and LN#HASH tokens from the same evidence generation[\s\S]*Old pairs work only for verified surviving targets/);
-	assert.match(applyGuidelines, /Failed reads create no proof/);
-	assert.match(applyGuidelines, /raw text without LN#HASH prefixes[\s\S]*\\n separates lines[\s\S]*one blank line/);
-	assert.match(applyGuidelines, /For targeted edits[\s\S]*write only for a new\/empty file[\s\S]*complete-file rewrite/);
+	assert.match(searchGuidelines, /matching lines, not broad source inspection[\s\S]*hledit_read_anchors/);
+	assert.match(searchGuidelines, /hledit_read_anchors for gaps[\s\S]*Only complete returned lines provide proof/);
 	const applySchema = JSON.stringify(applyTool.parameters);
-	assert.match(applySchema, /anchors' file and generation[\s\S]*Do not mix generations/);
+	assert.match(`${applyTool.description} ${applySchema}`, /atomic batch[\s\S]*complete read proof[\s\S]*retain source text and change line count/);
+	assert.match(applyGuidelines, /proof_id and anchors from the same evidence generation[\s\S]*Old pairs work only for verified surviving targets/);
+	assert.match(applyGuidelines, /Failed reads create no proof/);
+	assert.match(applyGuidelines, /one trailing \\n terminates the last line[\s\S]*writes a blank line, not a deletion/);
+	assert.match(applyGuidelines, /Use write only for new\/empty files[\s\S]*full rewrites permitted by recovery guidance/);
+	assert.match(applySchema, /anchors' file and generation/);
 	assert.ok(applySchema.includes(JSON.stringify("Raw text; \\n separates lines; no LN#HASH prefixes.")));
 
 	assert.match(searchTool.description, /one text file[\s\S]*not a directory/i);
-	assert.match(searchGuidelines, /one file[\s\S]*never a directory[\s\S]*enumerate files first[\s\S]*project-wide search/);
+	assert.match(searchGuidelines, /one file[\s\S]*enumerate files first[\s\S]*project-wide search/);
 	assert.match(JSON.stringify(searchTool.parameters), /One text file path[\s\S]*not a directory/);
 	const protocolCharacters = [readTool, searchTool, applyTool].reduce(
 		(total, tool) => total
@@ -371,11 +371,11 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 	assert.equal(applyResult.details.disposition, "succeeded");
 	assert.equal(applyResult.isError, false);
 	const resultText = applyResult.content[0]?.text ?? "";
-	assert.match(resultText, /^Applied 1 change; line delta: \+1 -1\.\n\nUpdated anchors:\n/);
-	assert.match(resultText, /TWO/);
+	assert.match(resultText, /^Applied 1 change; line delta: \+1 -1\.\n\nNew output anchors \(submitted text verified\):\n/);
+	assert.doesNotMatch(resultText, /TWO/);
 	assert.notEqual(applyResult.details.proofId, readResult.details.proofId);
 	assert.equal(resultText.split("\n").at(-1), `proof_id: ${applyResult.details.proofId}`);
-	assert.equal(resultText.match(/^Updated anchors:$/gm)?.length, 1);
+	assert.equal(resultText.match(/^New output anchors \(submitted text verified\):$/gm)?.length, 1);
 	assert.ok(resultText.length < 250);
 	assert.doesNotMatch(resultText, /Later changes inside this span/);
 	assert.equal(await readFile(join(directory, "target.txt"), "utf8"), "one\nTWO\nthree\n");
@@ -446,7 +446,7 @@ test("apply tool returns a complete produced span for a long-line file", async (
 	assert.equal(spans?.length, 1);
 	const updatedLine = spans?.[0]?.lines.find((line) => line.line === 5);
 	assert.ok(updatedLine);
-	assert.equal(applyResult.content[0]?.text ?? "", `Applied 1 change; line delta: +1 -1.\n\nUpdated anchors:\n${updatedLine.anchor}:CHANGED\n\nproof_id: ${applyResult.details.proofId}`);
+	assert.equal(applyResult.content[0]?.text ?? "", `Applied 1 change; line delta: +1 -1.\n\nNew output anchors (submitted text verified):\n- change 1: ${updatedLine.anchor} (1 line)\n\nproof_id: ${applyResult.details.proofId}`);
 	assert.equal(spans?.[0]?.truncated, false);
 	assert.equal(spans?.[0]?.lines.length, 1);
 	assert.equal((await readFile(target, "utf8")).split(/\r?\n/)[4], "CHANGED");
@@ -488,7 +488,7 @@ test("apply tool lists only produced lines for a wide multi-change batch", async
 	assert.equal(applyResult.details.disposition, "succeeded");
 	const resultText = applyResult.content[0]?.text ?? "";
 	// 每个变更各得一个产出 span：相距很远的两处修改都返回新锚点，且不混入未变更的上下文行。
-	assert.match(resultText, /^Applied 2 changes; line delta: \+2 -2\.\n\nUpdated anchors:\n10#[A-Za-z0-9_-]{3}:FIRST\n180#[A-Za-z0-9_-]{3}:LAST\n/);
+	assert.match(resultText, /^Applied 2 changes; line delta: \+2 -2\.\n\nNew output anchors \(submitted text verified\):\n- change 1: 10#[A-Za-z0-9_-]{3} \(1 line\)\n- change 2: 180#[A-Za-z0-9_-]{3} \(1 line\)\n/);
 	assert.doesNotMatch(resultText, /Updated anchors are incomplete/);
 	assert.doesNotMatch(resultText, /:line \d+/);
 	assert.ok(resultText.length < 250);

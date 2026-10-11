@@ -4,6 +4,8 @@ export const DEFAULT_READ_LIMIT = 160;
 export const DEFAULT_SEARCH_LIMIT = 100;
 export const MAX_READ_LIMIT = 2000;
 export const MAX_SEARCH_LIMIT = MAX_READ_LIMIT;
+export const MAX_READ_WINDOWS = 8;
+export const MAX_WINDOWS_BYTES = 96 * 1024;
 export type ReadArgsParams = {
 	path: string;
 	offset?: number;

@@ -1,6 +1,6 @@
 import { anchorTokenLine, lineFromAnchor } from "./anchor.ts";
 import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
-import { formatUpdatedAnchorSpans, parseAnchorContext, parseUpdatedAnchorSpans, type BatchAnchorContext } from "./post-edit-context.ts";
+import { formatUpdatedAnchorSpans, formatVerifiedOutputAnchors, limitVisibleAnchorSpans, parseAnchorContext, parseUpdatedAnchorSpans, type BatchAnchorContext } from "./post-edit-context.ts";
 import { suggestedReadWindow } from "./read-args.ts";
 import {
 	isIntegerAtLeast,
@@ -384,21 +384,23 @@ function formatApplyResult(result: Record<string, unknown>): string {
 // oldStart-1）升序；同一 boundary 上 insert 的空区间 oldEnd 更小，因此 (oldStart, oldEnd)
 // 双键升序即可精确复现 CLI sortEditsForRebuild 的顺序。改动 CLI 排序或 delta 语义
 // 属于协议升级，必须两侧同步。
-function expectedBatchEditDeltas(changes: FileChangeParams["changes"]): HleditEditDelta[] | undefined {
-	const deltas: HleditEditDelta[] = [];
-	for (const change of changes) {
+type PlannedOutput = HleditEditDelta & { changeNumber: number; lines: string[] };
+function expectedBatchEditDeltas(changes: FileChangeParams["changes"]): PlannedOutput[] | undefined {
+	const deltas: PlannedOutput[] = [];
+	for (const [index, change] of changes.entries()) {
+		const output = { changeNumber: index + 1, lines: "lines" in change ? change.lines : [] };
 		if (change.operation === "insert_before" || change.operation === "insert_after") {
 			const line = lineFromAnchor(change.anchor);
 			if (line === undefined) return undefined;
 			const oldStart = change.operation === "insert_before" ? line : line + 1;
-			deltas.push({ oldStart, oldEnd: oldStart - 1, delta: change.lines.length });
+			deltas.push({ ...output, oldStart, oldEnd: oldStart - 1, delta: change.lines.length });
 			continue;
 		}
 		const start = lineFromAnchor(change.start_anchor);
 		const end = lineFromAnchor(change.end_anchor);
 		if (start === undefined || end === undefined || end < start) return undefined;
 		const replacementCount = change.operation === "replace_range" ? change.lines.length : 0;
-		deltas.push({ oldStart: start, oldEnd: end, delta: replacementCount - (end - start + 1) });
+		deltas.push({ ...output, oldStart: start, oldEnd: end, delta: replacementCount - (end - start + 1) });
 	}
 	return deltas.sort((left, right) => left.oldStart - right.oldStart || left.oldEnd - right.oldEnd);
 }
@@ -523,8 +525,11 @@ export function applyFileChangesResult(run: HleditRun, context: ApplyResultConte
 				: applyError
 					? "rejected"
 					: "outcome_unknown";
-	// [喵喵喵]: 已验证的 span 同时生成正文和持久化 details；入口无需重新解析 CLI 输出。
-	const postEditContext = success ? formatUpdatedAnchorSpans(success.updatedAnchorSpans) : undefined;
+	// [喵喵喵]: 成功协议先完整校验，再决定显示形式；回退不保留隐藏且未经文本比对的证据。
+	const outputs = context.changes ? expectedBatchEditDeltas(context.changes) : undefined;
+	const compact = success && outputs ? formatVerifiedOutputAnchors(success.updatedAnchorSpans, outputs) : undefined;
+	if (success && !compact) success.updatedAnchorSpans = limitVisibleAnchorSpans(success.updatedAnchorSpans);
+	const postEditContext = compact ?? (success ? formatUpdatedAnchorSpans(success.updatedAnchorSpans) : undefined);
 	const text = formatApplyRunText(run, context, parsed, success !== undefined, applyError);
 	const anchorText = parsed?.contentChanged === false ? undefined : postEditContext?.text;
 	return {

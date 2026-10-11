@@ -474,8 +474,9 @@ pub fn run(path: &Path, check: bool) -> Result<Value, String> {
         result["checked"] = json!(true);
         return Ok(result);
     }
-    let mut remaining_lines = 80;
-    let mut remaining_bytes = 16 * 1024;
+    // [喵喵喵]: 这些正文供插件逐行验证紧凑回包，不等于模型正文预算；总 stdout 仍受 wrapper 的 1 MiB 限制。
+    let mut remaining_lines = 400;
+    let mut remaining_bytes = 96 * 1024;
     let mut shift = 0isize;
     let mut spans = Vec::new();
     for delta in &deltas {

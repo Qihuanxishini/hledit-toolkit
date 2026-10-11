@@ -1,6 +1,6 @@
 # hledit
 
-`hledit` is a small hash-anchored editor for coding agents. It has one structured protocol: read contiguous source with `read-range`, find locations with `search`, and submit all changes for a file in one atomic `batch`.
+`hledit` is a small hash-anchored editor for coding agents. It has one structured protocol: read contiguous source with `read-range` or multiple same-snapshot windows with `read-windows`, find locations with `search`, and submit all changes for a file in one atomic `batch`.
 
 Every source row contains a stable `LN#HHH` anchor. A batch validates its anchors and optional snapshot proof against one original file state before it can write. Stale or incomplete requests are rejected without partial changes.
 
@@ -33,11 +33,12 @@ hledit capabilities
 hledit version
 hledit help
 hledit read-range <file> [--offset N] [--limit M]
+hledit read-windows <file>
 hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N] [--ignore-case]
 hledit batch [--check] <file>
 ```
 
-`read-range`, `search`, and `batch` are JSON-only. There are no unstructured read, single-edit, ANSI, or compatibility command paths.
+`read-range`, `read-windows`, `search`, and `batch` are JSON-only. There are no unstructured read, single-edit, ANSI, or compatibility command paths.
 
 ### Read a contiguous window
 
@@ -57,6 +58,14 @@ hledit read-range main.rs --offset 40 --limit 1
 ```
 
 The `nextOffset` field appears when another page is needed. A `textTruncated:true` row is too long for an empty 50 KiB JSON page and must not be used as edit proof.
+
+### Read multiple windows
+
+```bash
+printf '%s' '{"windows":[{"offset":40,"limit":8},{"offset":200,"limit":12}]}' | hledit read-windows main.rs
+```
+
+Up to eight windows share one snapshot, a 2,000-line limit and a 96 KiB JSON budget. Overlapping or adjacent windows merge; each returned segment lists its 1-based `requestedWindows` indices. `truncated` is relative to the requested segment, not the remainder of the file. Incomplete segments include `nextOffset`; a text-truncated row remains the next offset. The Pi extension creates one proof only when all segments are complete; otherwise it displays a preview and asks for smaller complete reads.
 
 ### Search anchors
 

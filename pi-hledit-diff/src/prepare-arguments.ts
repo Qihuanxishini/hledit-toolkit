@@ -32,6 +32,9 @@ export function prepareReadAnchorsArguments(args: unknown): ReadAnchorsParams {
 		...args,
 		offset: parseIntegerLike(args.offset),
 		limit: parseIntegerLike(args.limit),
+		...(Array.isArray(args.windows) ? { windows: args.windows.map((window) => isRecord(window)
+			? { ...window, offset: parseIntegerLike(window.offset), limit: parseIntegerLike(window.limit) }
+			: window) } : {}),
 	} as ReadAnchorsParams;
 }
 

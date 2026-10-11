@@ -185,9 +185,12 @@ export function renderHleditCall(
 	const pattern = kind === "search_anchors" && typeof input.pattern === "string" ? input.pattern : undefined;
 	const patternLiteral = kind === "search_anchors" && input.literal === true;
 	const patternIgnoreCase = kind === "search_anchors" && input.ignore_case === true;
+	const windowRanges = kind === "read_anchors" && Array.isArray(input.windows)
+		? input.windows.flatMap((window) => isRecord(window) && typeof window.offset === "number" && typeof window.limit === "number"
+			? [formatLineRange(window.offset, window.offset + window.limit - 1)] : []).filter(Boolean).join(", ")
+		: undefined;
 	const range = kind === "read_anchors"
-		// 未提供 limit 时插件实际按 DEFAULT_READ_LIMIT 发起 CLI 请求，标题不得显示 2000。
-		? formatLineRange(offset ?? 1, (offset ?? 1) + (limit ?? DEFAULT_READ_LIMIT) - 1)
+		? windowRanges || formatLineRange(offset ?? 1, (offset ?? 1) + (limit ?? DEFAULT_READ_LIMIT) - 1)
 		: kind === "apply_file_changes" ? fileChangeLineRanges(input.changes) : undefined;
 	const operationCount = kind === "apply_file_changes" && Array.isArray(input.changes) ? input.changes.length : undefined;
 	const searchContext = kind === "search_anchors" && typeof input.context === "number" && Number.isInteger(input.context) && input.context > 0 ? input.context : undefined;
@@ -224,6 +227,23 @@ export function renderReadAnchorsResult(
 		return renderFailure("read", result, options.expanded, theme);
 	}
 
+	const windowsRead = result.details.windowsRead;
+	if (windowsRead) {
+		const lines = windowsRead.windows.flatMap((window) => window.lines);
+		const visible = options.expanded ? lines : lines.slice(0, COLLAPSED_ANCHOR_ROWS);
+		const source = createAnchoredSourceRowsComponent(
+			visible.map((line) => ({ anchor: line.anchor, lineNumber: line.line, content: line.text })), pathFromContext(context), theme,
+			options.expanded ? Number.POSITIVE_INFINITY : COLLAPSED_ANCHOR_ROWS,
+		);
+		const ranges = windowsRead.windows.map((window) => formatLineRange(window.offset, window.offset + window.limit - 1)).join(", ");
+		return component((width) => width <= 0 ? [] : [
+			truncateToWidth(theme.fg("toolOutput", `↳ ${lines.length} 行锚点 • ${windowsRead.requested.length} 个窗口 • ${ranges} / 共 ${windowsRead.totalLines} 行`), width, ""),
+			...source.render(width),
+			...(!options.expanded && lines.length > visible.length
+				? [truncateToWidth(theme.fg("muted", `… 还有 ${lines.length - visible.length} 行锚点 • ${expandHint()}`), width, "")]
+				: []),
+		], () => source.invalidate?.());
+	}
 	const read = result.details.read;
 	if (!read) {
 		return component((width) => [truncateToWidth(theme.fg("warning", "缺少结构化读取结果；请重新读取目标文件"), width, "")]);

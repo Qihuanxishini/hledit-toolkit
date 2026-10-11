@@ -1,6 +1,7 @@
 mod batch;
 mod pattern;
 mod read;
+mod read_windows;
 mod text;
 mod write;
 
@@ -15,7 +16,7 @@ pub fn failure(code: &str, message: impl ToString) -> Value {
     json!({"ok": false, "error": code, "message": message.to_string()})
 }
 
-const USAGE: &str = "hledit — hash-anchored line editor\nUsage:\n  hledit capabilities|version|help\n  hledit read-range <file> [--offset N] [--limit M]\n  hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N] [--ignore-case]\n  hledit batch [--check] <file>\n";
+const USAGE: &str = "hledit — hash-anchored line editor\nUsage:\n  hledit capabilities|version|help\n  hledit read-range <file> [--offset N] [--limit M]\n  hledit read-windows <file>  (JSON stdin: {\"windows\":[{\"offset\":N,\"limit\":M}]})\n  hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N] [--ignore-case]\n  hledit batch [--check] <file>\n";
 
 #[derive(Default)]
 struct Args {
@@ -44,7 +45,9 @@ fn arguments(verb: &str, args: impl Iterator<Item = std::ffi::OsString>) -> Resu
         if !positional {
             match flag {
                 "--offset" | "-offset" | "--limit" | "-limit" | "--context" | "-context" => {
-                    if verb == "batch" || (flag.ends_with("context") && verb != "search") {
+                    if matches!(verb, "batch" | "read-windows")
+                        || (flag.ends_with("context") && verb != "search")
+                    {
                         return Err(());
                     }
                     let n: i64 = args
@@ -105,8 +108,8 @@ fn run() -> Result<(), i32> {
         json!({"ok":true,"version":env!("CARGO_PKG_VERSION"),"anchorProtocolV2":true,"readRangeMetadata":true,
             "batchInsertAfter":true,"batchCheck":true,"batchUpdatedAnchorSpans":true,"batchStaleContext":true,
             "batchWireV3":true,"batchReadProof":true,"batchEditDeltas":true,"searchIgnoreCase":true,
-            "searchRegex":true,"searchLiteral":true,"search":true})
-    } else if matches!(verb, "read-range" | "search" | "batch") {
+            "searchRegex":true,"searchLiteral":true,"search":true,"readWindowsMetadata":true})
+    } else if matches!(verb, "read-range" | "read-windows" | "search" | "batch") {
         let args = arguments(verb, args).map_err(|_| {
             eprint!("{USAGE}");
             2
@@ -117,6 +120,8 @@ fn run() -> Result<(), i32> {
                 eprintln!("{error}");
                 1
             })?
+        } else if verb == "read-windows" {
+            read_windows::run(&path)
         } else {
             read::run(
                 &path,

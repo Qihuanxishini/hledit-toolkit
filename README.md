@@ -6,7 +6,7 @@
 
 | 目录 | 用途 |
 | --- | --- |
-| [`cli/`](./cli/) | Rust 编写的 `hledit` CLI：只提供结构化 `read-range`、`search` 与原子 `batch` 协议；使用 v2 `LN#HASH`（三位 URL-safe Base64）锚点和 raw-byte revision。 |
+| [`cli/`](./cli/) | Rust 编写的 `hledit` CLI：提供结构化 `read-range`、单快照 `read-windows`、`search` 与原子 `batch` 协议；使用 v2 `LN#HASH`（三位 URL-safe Base64）锚点和 raw-byte revision。 |
 | [`pi-hledit-diff/`](./pi-hledit-diff/) | Pi 插件：注册严格的 `hledit_read_anchors`、`hledit_search_anchors` 与 `hledit_apply_file_changes` 工具，并提供 evidence 管理和 diff 渲染。 |
 
 插件当前面向 Windows x64，仓库内附带 `pi-hledit-diff/bin/hledit.exe`。
@@ -17,6 +17,7 @@
 - [`cli/SPEC.md`](./cli/SPEC.md)：CLI 的当前实现与协议契约。
 - [`pi-hledit-diff/README.md`](./pi-hledit-diff/README.md)：Pi 插件工作流和安装说明。
 - [`pi-hledit-diff/MAINTENANCE.md`](./pi-hledit-diff/MAINTENANCE.md)：插件与 bundled CLI 的维护约束。
+- [`docs/token-optimization-implementation-plan.md`](./docs/token-optimization-implementation-plan.md)：紧凑成功回包、精确读取与多窗口能力的实施和验收基线。
 
 ## 核心特点
 

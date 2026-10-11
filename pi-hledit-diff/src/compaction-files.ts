@@ -4,6 +4,7 @@ import {
 	HLEDIT_SEARCH_ANCHORS_TOOL,
 } from "./active-tools.ts";
 import { parseRecoveredReads } from "./read-result.ts";
+import { parseWindowsReadMetadata } from "./read-windows.ts";
 
 // 与宿主 compaction FileOperations 的结构子集对齐（written 由内置 write 工具独占）。
 type AnchoredCompactionFileOps = {
@@ -33,7 +34,9 @@ export function recordAnchoredFileOperations(messages: unknown[], fileOps: Ancho
 		if (typeof path !== "string" || path.length === 0) continue;
 
 		if (candidate.toolName === HLEDIT_READ_ANCHORS_TOOL || candidate.toolName === HLEDIT_SEARCH_ANCHORS_TOOL) {
-			if (disposition === "succeeded") fileOps.read.add(path);
+			const windowsRead = parseWindowsReadMetadata(record.windowsRead);
+			// [喵喵喵]: 不完整多窗口虽不授权 proof，实际显示过的源码仍应进入 compaction 的读文件记录。
+			if (disposition === "succeeded" || (windowsRead?.path === path && windowsRead.windows.some((window) => window.lines.length > 0))) fileOps.read.add(path);
 			continue;
 		}
 		if (candidate.toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) continue;

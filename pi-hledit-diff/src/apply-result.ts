@@ -178,7 +178,7 @@ function staleReadInstruction(result: Record<string, unknown>, context: ApplyRes
 	if (targetLines.length === 0) return genericInstruction;
 	const end = Math.max(...targetLines);
 	const { offset, limit, lastLine } = suggestedReadWindow(Math.min(...targetLines), end);
-	return `Before retrying, call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, offset: ${offset}, limit: ${limit} })${lastLine < end ? `, then continue with nextOffset through line ${end}` : ""}. Reconfirm the intended target; prior line numbers may have shifted. Do not reuse anchors from before the change.`;
+	return `Before retrying, call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, windows: [{ offset: ${offset}, limit: ${limit} }] })${lastLine < end ? `, then continue with nextOffset through line ${end}` : ""}. Reconfirm the intended target; prior line numbers may have shifted. Do not reuse anchors from before the change.`;
 }
 
 function localizeInvalidApplyMessage(rawMessage: string, failedChange: number | undefined): string {
@@ -298,7 +298,7 @@ function appendInsufficientReadProofRecovery(
 	const change = failedIndex === undefined ? undefined : context.changes?.[failedIndex];
 	const resubmitInstruction = "use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.";
 	const genericInstruction = context.path
-		? `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)} }) to reread every source line required by the failed change, then ${resubmitInstruction}`
+		? `Call hledit_read_anchors for ${JSON.stringify(context.path)} with windows covering every source line required by the failed change, then ${resubmitInstruction}`
 		: `Call hledit_read_anchors to reread every source line required by the failed change, then ${resubmitInstruction}`;
 	if (failedIndex === undefined || !context.path || !change) {
 		lines.push(genericInstruction);
@@ -322,8 +322,8 @@ function appendInsufficientReadProofRecovery(
 	const changeNumber = failedIndex + 1;
 	const { offset, limit, lastLine: lastSuggestedLine } = suggestedReadWindow(start, end);
 	lines.push(lastSuggestedLine < end
-		? `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, offset: ${offset}, limit: ${limit} }) first, continue with nextOffset until line ${end} is covered, then ${resubmitInstruction}`
-		: `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, offset: ${offset}, limit: ${limit} }) to reread every source line required by change ${changeNumber}, then ${resubmitInstruction}`);
+		? `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, windows: [{ offset: ${offset}, limit: ${limit} }] }) first, continue with nextOffset until line ${end} is covered, then ${resubmitInstruction}`
+		: `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, windows: [{ offset: ${offset}, limit: ${limit} }] }) to reread every source line required by change ${changeNumber}, then ${resubmitInstruction}`);
 }
 function formatApplyFailureResult(
 	result: Record<string, unknown>,
@@ -410,9 +410,8 @@ function expectedBatchEditDeltas(changes: FileChangeParams["changes"]): PlannedO
 
 // editDeltas 驱动证据重映射与锚点更名，必须与请求可精确互推；对不上时按不兼容
 // 成功响应处理（outcome_unknown），宁可多一轮重读也不用可疑数据平移证据。
-function editDeltasMatchRequest(deltas: HleditEditDelta[], context: ApplyResultContext): boolean {
-	if (!context.changes) return true;
-	const expected = expectedBatchEditDeltas(context.changes);
+function editDeltasMatchRequest(deltas: HleditEditDelta[], changes: FileChangeParams["changes"] | undefined, expected: PlannedOutput[] | undefined): boolean {
+	if (!changes) return true;
 	if (!expected || expected.length !== deltas.length) return false;
 	return expected.every((delta, index) =>
 		deltas[index]!.oldStart === delta.oldStart &&
@@ -424,6 +423,7 @@ function editDeltasMatchRequest(deltas: HleditEditDelta[], context: ApplyResultC
 function parseApplySuccess(
 	parsed: Record<string, unknown> | null,
 	context: ApplyResultContext,
+	outputs: PlannedOutput[] | undefined,
 ): { editDeltas: HleditEditDelta[]; updatedAnchorSpans: BatchAnchorContext[] } | undefined {
 	if (parsed?.ok !== true || !isRawRevision(parsed.revision)) return undefined;
 	if (typeof parsed.editsApplied !== "number" || !Number.isSafeInteger(parsed.editsApplied) || parsed.editsApplied < 0) return undefined;
@@ -436,7 +436,7 @@ function parseApplySuccess(
 	const editDeltas = parseEditDeltas(parsed.editDeltas);
 	if (!editDeltas || editDeltas.length !== parsed.editsApplied) return undefined;
 	if (editDeltas.reduce((sum, delta) => sum + delta.delta, 0) !== parsed.linesAdded - parsed.linesDeleted) return undefined;
-	if (!editDeltasMatchRequest(editDeltas, context)) return undefined;
+	if (!editDeltasMatchRequest(editDeltas, context.changes, outputs)) return undefined;
 	// 产出 span必须与 editDeltas 换算出的非空产出区间逐项对应：窗口是 evidence 合并与
 	// 模型正文的直接来源，对不上就不能当成功结果消费。
 	const spans = parseUpdatedAnchorSpans(parsed.updatedAnchorSpans);
@@ -515,7 +515,9 @@ export function extractCliSummary(parsed: Record<string, unknown> | null): Recor
 
 export function applyFileChangesResult(run: HleditRun, context: ApplyResultContext = {}): TextResult {
 	const parsed = parseRunObject(run);
-	const success = run.exitCode === 0 ? parseApplySuccess(parsed, context) : undefined;
+	// [喵喵喵]: outputs 供成功校验与紧凑回包共用；expectedBatchEditDeltas 单次 apply 只计算一次。
+	const outputs = context.changes ? expectedBatchEditDeltas(context.changes) : undefined;
+	const success = run.exitCode === 0 ? parseApplySuccess(parsed, context, outputs) : undefined;
 	const applyError = parsed ? parseApplyErrorMetadata(parsed, context) : undefined;
 	// [喵喵喵]: 退出码 0 不证明零写入；只有完整拒绝回包才能保留旧 proof，其余异常回包必须失效证据。
 	const disposition: HleditDisposition =
@@ -529,7 +531,6 @@ export function applyFileChangesResult(run: HleditRun, context: ApplyResultConte
 					? "rejected"
 					: "outcome_unknown";
 	// [喵喵喵]: 成功协议先完整校验，再决定显示形式；回退不保留隐藏且未经文本比对的证据。
-	const outputs = context.changes ? expectedBatchEditDeltas(context.changes) : undefined;
 	const compact = success && outputs ? formatVerifiedOutputAnchors(success.updatedAnchorSpans, outputs) : undefined;
 	if (success && !compact) success.updatedAnchorSpans = limitVisibleAnchorSpans(success.updatedAnchorSpans);
 	const postEditContext = compact ?? (success ? formatUpdatedAnchorSpans(success.updatedAnchorSpans) : undefined);

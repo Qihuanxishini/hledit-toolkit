@@ -6,18 +6,26 @@ import { Value } from "typebox/value";
 import { HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA } from "../src/schema.ts";
 
 test("read and search schemas keep their contracts separate", () => {
-	assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts", offset: 3, limit: 20 }), true);
-	assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts", pattern: "needle" }), false);
+	const read = { path: "src/a.ts", windows: [{ offset: 3, limit: 20 }] };
+	assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, read), true);
+	for (const invalid of [
+		{ ...read, pattern: "needle" },
+		{ ...read, offset: 3, limit: 20 },
+		{ path: "src/a.ts", offset: 3, limit: 20 },
+		{ path: "src/a.ts" },
+	]) {
+		assert.equal(Value.Check(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA, invalid), false, JSON.stringify(invalid));
+	}
 	assert.equal(Value.Check(HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts", pattern: "needle", context: 2 }), true);
 	assert.equal(Value.Check(HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts", pattern: "needle", context: -1 }), false);
 	assert.equal(Value.Check(HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts", pattern: "" }), false);
 });
 
-test("schemas compile with the host-aligned TypeBox version", () => {
+test("read and apply schemas compile", () => {
   const readValidator = Compile(HLEDIT_READ_ANCHORS_PARAMS_SCHEMA);
   const applyValidator = Compile(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA);
 
-  assert.equal(readValidator.Check({ path: "src/a.ts", offset: 1, limit: 20 }), true);
+  assert.equal(readValidator.Check({ path: "src/a.ts", windows: [{ offset: 1, limit: 20 }] }), true);
   assert.equal(
     applyValidator.Check({
       path: "src/a.ts",
@@ -62,34 +70,19 @@ test("apply file changes rejects old operation shapes", () => {
   }
 });
 
-test("apply file changes rejects mixed and invalid operation-specific fields", () => {
-  const invalidChanges = [
-    { operation: "replace_range", start_anchor: "1#BHJ", lines: "missing end" },
-    { operation: "delete_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: "wrong" },
-    { operation: "insert_before", anchor: "1#BHJ", end_anchor: "2#BBK", lines: "wrong" },
-    { operation: "insert_after", anchor: "1#BHJ", position: "after", lines: "wrong" },
-  ];
-
-  for (const change of invalidChanges) {
-    assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, { path: "src/a.ts", changes: [change] }), false);
+test("apply schema rejects missing proof and unknown fields", () => {
+  const change = { operation: "insert_after", anchor: "1#BHJ", lines: "next" };
+  const input = { path: "src/a.ts", proof_id: "proof-1", changes: [change] };
+  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, input), true);
+  assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, { path: input.path, changes: [change] }), false);
+  for (const field of ["position", "content"]) {
+    assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
+      ...input, changes: [{ ...change, [field]: "unknown" }],
+    }), false, field);
   }
-  assert.equal(
-    Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
-      path: "src/a.ts",
-      proof_id: "proof-1",
-      changes: [{ operation: "insert_after", anchor: "1#BHJ", lines: "next", content: "unknown" }],
-    }),
-    false,
-  );
   for (const hiddenField of ["revision", "proof", "readSet"]) {
-    assert.equal(
-      Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
-        path: "src/a.ts",
-        proof_id: "proof-1",
-        changes: [{ operation: "delete_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ" }],
-        [hiddenField]: "must remain internal",
-      }),
-      false,
-    );
+    assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, {
+      ...input, [hiddenField]: "must remain internal",
+    }), false, hiddenField);
   }
 });

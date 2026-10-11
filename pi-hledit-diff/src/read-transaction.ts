@@ -3,7 +3,7 @@ import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL } from "./active-tools.ts";
 import type { HleditRun } from "./cli.ts";
 import { ReadEvidenceStore, resolveReadEvidencePath } from "./read-evidence.ts";
-import { buildReadArgs, buildSearchArgs, normalizeReadRequest, normalizeSearchRequest } from "./read-args.ts";
+import { buildReadArgs, buildSearchArgs, normalizeSearchRequest } from "./read-args.ts";
 import { readAnchorsResult } from "./read-result.ts";
 import { normalizeWindowsRequest, readWindowsResult } from "./read-windows.ts";
 import { rejectedToolResult, type TextResult } from "./result.ts";
@@ -24,17 +24,18 @@ export async function runReadAnchorsTransaction(
 	evidence: ReadEvidenceStore,
 	run: HleditReadRunner,
 ): Promise<TextResult> {
-	const request = normalizeReadRequest(params);
-	const windows = params.windows !== undefined ? normalizeWindowsRequest(params) : undefined;
-	if (params.windows !== undefined && !windows) return rejectedToolResult(
-		"Use 1-8 windows with positive safe-integer offset and limit (1-2000), without top-level offset/limit.",
-		{ code: "invalid", message: "Invalid or conflicting read windows." },
+	const request = normalizeWindowsRequest(params);
+	if (!request) return rejectedToolResult(
+		"Use windows: [{ offset: 1, limit: 160 }] with 1-8 ranges; offsets and limits must be positive safe integers, with limit at most 2000.",
+		{ code: "invalid", message: "Invalid read windows." },
 	);
 	const evidencePath = await resolveReadEvidencePath(cwd, request.path);
 	return withFileMutationQueue(evidencePath, async () => {
-		const result = windows
-			? readWindowsResult(await run(["read-windows", "--", windows.path], JSON.stringify({ windows: windows.windows }), cwd, signal), windows)
-			: readAnchorsResult(await run(buildReadArgs(request), undefined, cwd, signal), request);
+		// [喵喵喵]: 单窗口保留分页证据；多窗口必须在同一 Snapshot 内完整取证，不能循环读取。
+		const single = request.windows.length === 1 ? { path: request.path, ...request.windows[0]! } : undefined;
+		const result = single
+			? readAnchorsResult(await run(buildReadArgs(single), undefined, cwd, signal), single)
+			: readWindowsResult(await run(["read-windows", "--", request.path], JSON.stringify({ windows: request.windows }), cwd, signal), request);
 		const queuedResult = { ...result, details: { ...result.details, path: request.path, evidencePath } };
 		evidence.updateFromToolResult(HLEDIT_READ_ANCHORS_TOOL, queuedResult.details, cwd);
 		return queuedResult;

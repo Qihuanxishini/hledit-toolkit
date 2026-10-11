@@ -69,7 +69,7 @@ test("feedback recovery diagnostics preserve safety and give actionable next ste
 	t.after(() => rm(directory, { recursive: true, force: true }));
 	const { registeredTools } = registerExtensionForTest();
 	const call = (name: string, params: unknown) => registeredTools.get(name)!.execute("feedback", params as never, undefined, undefined, { cwd: directory });
-	const read = (path: string, extra = {}) => call(HLEDIT_READ_ANCHORS_TOOL, { path, ...extra });
+	const read = (path: string, windows = [{ offset: 1, limit: 160 }]) => call(HLEDIT_READ_ANCHORS_TOOL, { path, windows });
 	const apply = (path: string, proof_id: string | undefined, changes: unknown[]) => call(HLEDIT_APPLY_FILE_CHANGES_TOOL, { path, proof_id, changes });
 	await writeFile(join(directory, "other.txt"), "other\n");
 	const other = await read("other.txt");
@@ -110,7 +110,7 @@ test("feedback recovery diagnostics preserve safety and give actionable next ste
 		for (const kind of ["start", "end", "empty"]) {
 			const path = `range-${kind}.txt`;
 			await writeFile(join(directory, path), "one\ntwo\n");
-			const initial = await read(path, { limit: 1 });
+			const initial = await read(path, [{ offset: 1, limit: 1 }]);
 			const first = initial.details.read!.lines[0]!.anchor;
 			if (kind === "empty") await writeFile(join(directory, path), "");
 			const result = await apply(path, initial.details.proofId, [{ operation: "replace_range", start_anchor: kind === "end" ? first : "9999#aaa", end_anchor: kind === "end" ? "3#aaa" : "9999#aaa", lines: "X" }]);
@@ -119,7 +119,7 @@ test("feedback recovery diagnostics preserve safety and give actionable next ste
 			assert.doesNotMatch(result.content[0]!.text, /Remaining read windows|offset: 9999/);
 			assert.equal(await readFile(join(directory, path), "utf8"), kind === "empty" ? "" : "one\ntwo\n");
 		}
-		const last = await read("range-start.txt", { offset: 2, limit: 2000 });
+		const last = await read("range-start.txt", [{ offset: 2, limit: 2000 }]);
 		assert.equal(last.details.read!.actual.lineCount, 1);
 		assert.equal(last.details.read!.eof, true);
 	});
@@ -219,12 +219,12 @@ test("read and search tools return structured ranges and actionable EOF errors",
 	await writeFile(join(directory, "target.txt"), "one\ntwo\nthree\n", "utf8");
 	const context = { cwd: directory };
 
-	const readResult = await readTool.execute("read", { path: "target.txt", offset: 2, limit: 1 } as never, undefined, undefined, context);
+	const readResult = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 2, limit: 1 }] } as never, undefined, undefined, context);
 	assert.equal(readResult.details.disposition, "succeeded");
 	assert.equal(readResult.isError, false);
 	assert.deepEqual(readResult.details.read?.actual, { firstLine: 2, lastLine: 2, lineCount: 1, totalLines: 3 });
 	assert.equal(readResult.details.read?.nextOffset, 3);
-	assert.match(readResult.content[0]?.text ?? "", /Showing lines 2-2 of 3; continue with offset 3/);
+	assert.match(readResult.content[0]?.text ?? "", /Showing lines 2-2 of 3; continue with windows: \[\{ offset: 3, limit: 1 \}\]/);
 
 	const searchResult = await searchTool.execute(
 		"search",
@@ -252,7 +252,7 @@ test("read and search tools return structured ranges and actionable EOF errors",
 	assert.deepEqual(ignoreCaseResult.details.read?.lines.map((line) => line.text), ["two"]);
 	assert.equal(ignoreCaseResult.details.read?.requested.ignoreCase, true);
 
-	const rangeError = await readTool.execute("read", { path: "target.txt", offset: 4, limit: 1 } as never, undefined, undefined, context);
+	const rangeError = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 4, limit: 1 }] } as never, undefined, undefined, context);
 	assert.equal(rangeError.details.disposition, "rejected");
 	assert.equal(rangeError.isError, true);
 	assert.equal(rangeError.details.error?.message, "Starting line 4 is outside the file range (3 total lines).");
@@ -266,13 +266,16 @@ test("read and search continue after an oversized source line", async (t) => {
 	await writeFile(join(directory, "target.txt"), `${"x".repeat(70_000)}\nother\nlater\n`);
 	for (const name of [HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL]) {
 		const tool = registeredTools.get(name)!;
-		const params = { path: "target.txt", offset: 1, limit: 10, ...(name === HLEDIT_SEARCH_ANCHORS_TOOL ? { pattern: "x|later" } : {}) };
-		const first = await tool.execute("first", params as never, undefined, undefined, { cwd: directory });
+		const params = (offset: number) => name === HLEDIT_READ_ANCHORS_TOOL
+			? { path: "target.txt", windows: [{ offset, limit: 10 }] }
+			: { path: "target.txt", pattern: "x|later", offset, limit: 10 };
+		const first = await tool.execute("first", params(1) as never, undefined, undefined, { cwd: directory });
 		assert.equal(first.details.disposition, "succeeded");
 		assert.equal(first.details.read?.textTruncated, true);
 		assert.equal(first.details.read?.nextOffset, 2);
-		assert.match(first.content[0]!.text, /continue with offset 2/);
-		const next = await tool.execute("next", { ...params, offset: first.details.read!.nextOffset } as never, undefined, undefined, { cwd: directory });
+		assert.match(first.content[0]!.text, name === HLEDIT_READ_ANCHORS_TOOL
+			? /continue with windows: \[\{ offset: 2, limit: 10 \}\]/ : /continue with offset 2/);
+		const next = await tool.execute("next", params(first.details.read!.nextOffset!) as never, undefined, undefined, { cwd: directory });
 		assert.equal(next.details.disposition, "succeeded");
 		assert.equal(next.details.read?.textTruncated, false);
 		assert.equal(next.details.read?.lines.at(-1)?.text, "later");
@@ -355,7 +358,7 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 	await writeFile(join(directory, "target.txt"), "one\ntwo\nthree\n", "utf8");
 	const context = { cwd: directory };
 
-	const readResult = await readTool.execute("read", { path: "target.txt", offset: 2, limit: 1 } as never, undefined, undefined, context);
+	const readResult = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 2, limit: 1 }] } as never, undefined, undefined, context);
 	const anchor = readResult.details.read?.lines[0]?.anchor;
 	assert.ok(anchor);
 	assert.ok(readResult.details.proofId);
@@ -396,7 +399,7 @@ test("apply tool reports a no-op without touching the target", async (t) => {
 	const before = await stat(target);
 	const context = { cwd: directory };
 
-	const readResult = await readTool.execute("read", { path: "target.txt", offset: 2, limit: 1 } as never, undefined, undefined, context);
+	const readResult = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 2, limit: 1 }] } as never, undefined, undefined, context);
 	const anchor = readResult.details.read?.lines[0]?.anchor;
 	assert.ok(anchor);
 	const applyResult = await applyTool.execute(
@@ -429,7 +432,7 @@ test("apply tool returns a complete produced span for a long-line file", async (
 	await writeFile(target, `${originalLines.join("\n")}\n`, "utf8");
 	const context = { cwd: directory };
 
-	const readResult = await readTool.execute("read", { path: "target.txt", offset: 5, limit: 1 } as never, undefined, undefined, context);
+	const readResult = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 5, limit: 1 }] } as never, undefined, undefined, context);
 	const anchor = readResult.details.read?.lines[0]?.anchor;
 	assert.ok(anchor);
 	const applyResult = await applyTool.execute(
@@ -464,7 +467,7 @@ test("apply tool lists only produced lines for a wide multi-change batch", async
 	await writeFile(target, `${Array.from({ length: 200 }, (_, index) => `line ${index + 1}`).join("\n")}\n`, "utf8");
 	const context = { cwd: directory };
 
-	const readResult = await readTool.execute("read", { path: "target.txt", offset: 1, limit: 200 } as never, undefined, undefined, context);
+	const readResult = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 200 }] } as never, undefined, undefined, context);
 	const anchorAt = (line: number) => readResult.details.read?.lines.find((entry) => entry.line === line)?.anchor;
 	const first = anchorAt(10);
 	const last = anchorAt(180);
@@ -510,7 +513,7 @@ test("apply tool deleting the only line leaves an empty file", async (t) => {
 	await writeFile(target, "only\n", "utf8");
 	const context = { cwd: directory };
 
-	const readResult = await readTool.execute("read", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
+	const readResult = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 1 }] } as never, undefined, undefined, context);
 	const anchor = readResult.details.read?.lines[0]?.anchor;
 	assert.ok(anchor);
 	const applyResult = await applyTool.execute(
@@ -544,7 +547,7 @@ test("apply tool accepts batched single-line expansions with replacement semanti
 	const target = join(directory, "target.txt");
 	await writeFile(target, "one\ntwo\nthree\nfour\nfive\n", "utf8");
 	const context = { cwd: directory };
-	const readResult = await readTool.execute("read", { path: "target.txt", offset: 2, limit: 3 } as never, undefined, undefined, context);
+	const readResult = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 2, limit: 3 }] } as never, undefined, undefined, context);
 	const first = readResult.details.read?.lines[0]?.anchor;
 	const second = readResult.details.read?.lines[2]?.anchor;
 	assert.ok(first && second);
@@ -592,7 +595,7 @@ test("apply tool rejects an anchor token pasted into lines instead of writing it
 	await writeFile(target, "const a = 1;\nconst b = 2;\nconst c = 3;\n", "utf8");
 	const context = { cwd: directory };
 
-	const readResult = await readTool.execute("read", { path: "target.txt", offset: 2, limit: 1 } as never, undefined, undefined, context);
+	const readResult = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 2, limit: 1 }] } as never, undefined, undefined, context);
 	const anchor = readResult.details.read?.lines[0]?.anchor;
 	assert.ok(anchor);
 
@@ -631,7 +634,7 @@ test("apply tool rejects read output pasted into an insert even when the tokens 
 	await writeFile(target, original, "utf8");
 	const context = { cwd: directory };
 
-	const readResult = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const readResult = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
 	const [first, second, third] = readResult.details.read!.lines;
 	const applyResult = await applyTool.execute(
 		"apply",
@@ -663,7 +666,7 @@ test("zero-match search keeps same-revision proof and echoes the current proof_i
 	await writeFile(target, "one\ntwo\nthree\n", "utf8");
 	const context = { cwd: directory };
 
-	const readResult = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const readResult = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
 	const proofId = readResult.details.proofId;
 	assert.ok(proofId);
 	const searchResult = await searchTool.execute("search", { path: "target.txt", pattern: "missing", literal: true } as never, undefined, undefined, context);
@@ -701,8 +704,8 @@ test("same-epoch read proofs stay valid while externally invalidated proofs requ
 	await writeFile(target, "one\ntwo\nthree\n", "utf8");
 	const context = { cwd: directory };
 
-	const page1 = await readTool.execute("read", { path: "target.txt", offset: 1, limit: 2 } as never, undefined, undefined, context);
-	const page2 = await readTool.execute("read", { path: "target.txt", offset: 3, limit: 1 } as never, undefined, undefined, context);
+	const page1 = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 2 }] } as never, undefined, undefined, context);
+	const page2 = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 3, limit: 1 }] } as never, undefined, undefined, context);
 	assert.notEqual(page1.details.proofId, page2.details.proofId);
 	const anchor = page2.details.read!.lines[0]!.anchor;
 	const applyWithFirstPage = await applyTool.execute(
@@ -716,7 +719,7 @@ test("same-epoch read proofs stay valid while externally invalidated proofs requ
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nTHREE\n");
 
 	await writeFile(target, "one\ntwo\nTHREE\nfour\n", "utf8");
-	const fresh = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const fresh = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
 	const expired = await applyTool.execute(
 		"apply",
 		{ path: "target.txt", proof_id: page1.details.proofId, changes: [{ operation: "replace_range", start_anchor: fresh.details.read!.lines[3]!.anchor, end_anchor: fresh.details.read!.lines[3]!.anchor, lines: "FOUR" }] } as never,
@@ -743,7 +746,7 @@ test("revision snapshots support explicit continuation both live and after branc
 			const lines = Array.from({ length: 11002 }, (_, index) => `line-${index + 1}`);
 			await writeFile(target, lines.join("\n") + "\n");
 			const context = { cwd: directory };
-			const read = await readTool.execute("read", { path: "target.txt", offset: 11000, limit: 1 } as never, undefined, undefined, context);
+			const read = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 11000, limit: 1 }] } as never, undefined, undefined, context);
 			const anchor = read.details.read!.lines[0]!.anchor;
 			lines[0] = "external change";
 			const changed = lines.join("\n") + "\n";
@@ -787,7 +790,7 @@ test("apply tool rejects a reversed anchor range with a swap instruction instead
 	await writeFile(target, "one\ntwo\nthree\n", "utf8");
 	const context = { cwd: directory };
 
-	const readResult = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const readResult = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
 	const first = readResult.details.read?.lines[0]?.anchor;
 	const third = readResult.details.read?.lines[2]?.anchor;
 	assert.ok(first && third);
@@ -832,7 +835,7 @@ test("apply tool rejects an anchor that does not match its read proof before sta
 	await writeFile(target, original, "utf8");
 	const context = { cwd: directory };
 
-	const readResult = await readTool.execute("read", { path: "target.txt", offset: 2, limit: 1 } as never, undefined, undefined, context);
+	const readResult = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 2, limit: 1 }] } as never, undefined, undefined, context);
 	const currentAnchor = readResult.details.read?.lines[0]?.anchor;
 	assert.ok(currentAnchor);
 	const staleHash = currentAnchor.slice(-3);
@@ -869,7 +872,7 @@ test("proof recovery stops on source-line truncation", async (t) => {
 	const original = `${"x".repeat(60_000)}\n`;
 	await writeFile(target, original, "utf8");
 	const context = { cwd: directory };
-	const read = await readTool.execute("read", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
+	const read = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 1 }] } as never, undefined, undefined, context);
 	const anchor = read.details.read?.lines[0]?.anchor;
 	assert.ok(anchor);
 
@@ -898,8 +901,8 @@ test("truncated recovery preserves its source budget and proof across session re
 	const original = `top\n${"x".repeat(49 * 1024)}\n${"中🙂".repeat(16_000)}\nbottom\n`;
 	await writeFile(target, original);
 	const context = { cwd: directory };
-	const first = await readTool.execute("first", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
-	const last = await readTool.execute("last", { path: "target.txt", offset: 4, limit: 1 } as never, undefined, undefined, context);
+	const first = await readTool.execute("first", { path: "target.txt", windows: [{ offset: 1, limit: 1 }] } as never, undefined, undefined, context);
+	const last = await readTool.execute("last", { path: "target.txt", windows: [{ offset: 4, limit: 1 }] } as never, undefined, undefined, context);
 	const apply = await applyTool.execute("apply", {
 		path: "target.txt", proof_id: last.details.proofId,
 		changes: [{ operation: "replace_range", start_anchor: first.details.read!.lines[0]!.anchor, end_anchor: last.details.read!.lines[0]!.anchor, lines: "replacement" }],
@@ -953,7 +956,7 @@ test("successive single-line edits use published proof generations and preserve 
 	const target = join(directory, "target.txt");
 	await writeFile(target, "a\rb\nkeep\n");
 	const context = { cwd: directory };
-	const read = await readTool.execute("read", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
+	const read = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 1 }] } as never, undefined, undefined, context);
 	let anchor = read.details.read!.lines[0]!.anchor;
 	let proof = read.details.proofId;
 	for (const lines of ["a\rB", "a\rC"]) {
@@ -999,8 +1002,8 @@ test("multi-page proof recovery completes internally before apply is retried", a
 	// 1,100 行落在补读跨度预算内，但 CLI 每页 50 KiB 的截断仍会把它拆成多页。
 	await writeFile(target, `${Array.from({ length: 1_100 }, (_, index) => `line-${index + 1}`).join("\n")}\n`, "utf8");
 	const context = { cwd: directory };
-	const first = await readTool.execute("first", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
-	const last = await readTool.execute("last", { path: "target.txt", offset: 1_100, limit: 1 } as never, undefined, undefined, context);
+	const first = await readTool.execute("first", { path: "target.txt", windows: [{ offset: 1, limit: 1 }] } as never, undefined, undefined, context);
+	const last = await readTool.execute("last", { path: "target.txt", windows: [{ offset: 1_100, limit: 1 }] } as never, undefined, undefined, context);
 	const startAnchor = first.details.read?.lines[0]?.anchor;
 	const endAnchor = last.details.read?.lines[0]?.anchor;
 	assert.ok(startAnchor && endAnchor);
@@ -1038,8 +1041,8 @@ test("an oversized proof gap is refused without reading anything back", async (t
 	const original = `${Array.from({ length: 3_000 }, (_, index) => `line-${index + 1}`).join("\n")}\n`;
 	await writeFile(target, original, "utf8");
 	const context = { cwd: directory };
-	const first = await readTool.execute("first", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
-	const last = await readTool.execute("last", { path: "target.txt", offset: 3_000, limit: 1 } as never, undefined, undefined, context);
+	const first = await readTool.execute("first", { path: "target.txt", windows: [{ offset: 1, limit: 1 }] } as never, undefined, undefined, context);
+	const last = await readTool.execute("last", { path: "target.txt", windows: [{ offset: 3_000, limit: 1 }] } as never, undefined, undefined, context);
 	const startAnchor = first.details.read?.lines[0]?.anchor;
 	const endAnchor = last.details.read?.lines[0]?.anchor;
 	assert.ok(startAnchor && endAnchor);
@@ -1057,7 +1060,7 @@ test("an oversized proof gap is refused without reading anything back", async (t
 	const text = apply.content[0]?.text ?? "";
 	assert.match(text, /spans 2998 lines, above the 1200-line automatic recovery budget/);
 	assert.match(text, /No recovery read was started/);
-	assert.match(text, /Call hledit_read_anchors\(\{ path: "target\.txt", offset: \d+, limit: \d+ \}\)/);
+	assert.match(text, /Call hledit_read_anchors\(\{ path: "target\.txt", windows: \[\{ offset: \d+, limit: \d+ \}\] \}\)/);
 	assert.match(text, /current anchors and the latest proof_id/);
 	// 关键：拒绝的正文里不得夹带任何源码行，否则预算就白设了。
 	assert.doesNotMatch(text, /^\d+#[A-Za-z0-9_-]{3}:/m);
@@ -1077,8 +1080,8 @@ test("proof recovery stops at its byte budget and keeps the pages it already rea
 	const original = `${Array.from({ length: 1_200 }, (_, index) => `${index + 1}-${"x".repeat(200)}`).join("\n")}\n`;
 	await writeFile(target, original, "utf8");
 	const context = { cwd: directory };
-	const first = await readTool.execute("first", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
-	const last = await readTool.execute("last", { path: "target.txt", offset: 1_200, limit: 1 } as never, undefined, undefined, context);
+	const first = await readTool.execute("first", { path: "target.txt", windows: [{ offset: 1, limit: 1 }] } as never, undefined, undefined, context);
+	const last = await readTool.execute("last", { path: "target.txt", windows: [{ offset: 1_200, limit: 1 }] } as never, undefined, undefined, context);
 	const startAnchor = first.details.read?.lines[0]?.anchor;
 	const endAnchor = last.details.read?.lines[0]?.anchor;
 	assert.ok(startAnchor && endAnchor);
@@ -1120,7 +1123,7 @@ test("a failed recovery read surfaces the read error instead of a proof gap", as
 	const target = join(directory, "target.txt");
 	await writeFile(target, "one\ntwo\nthree\nfour\nfive\n", "utf8");
 	const context = { cwd: directory };
-	const read = await readTool.execute("read", { path: "target.txt", offset: 1, limit: 2 } as never, undefined, undefined, context);
+	const read = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 2 }] } as never, undefined, undefined, context);
 	const startAnchor = read.details.read?.lines[0]?.anchor;
 	assert.ok(startAnchor);
 
@@ -1151,8 +1154,8 @@ test("multi-page proof continuation completes without rereading the payload", as
 	const target = join(directory, "target.txt");
 	await writeFile(target, `${Array.from({ length: 1_100 }, (_, index) => `line-${index + 1}`).join("\n")}\n`, "utf8");
 	const context = { cwd: directory };
-	const first = await readTool.execute("first", { path: "target.txt", offset: 1, limit: 1 } as never, undefined, undefined, context);
-	const last = await readTool.execute("last", { path: "target.txt", offset: 1_100, limit: 1 } as never, undefined, undefined, context);
+	const first = await readTool.execute("first", { path: "target.txt", windows: [{ offset: 1, limit: 1 }] } as never, undefined, undefined, context);
+	const last = await readTool.execute("last", { path: "target.txt", windows: [{ offset: 1_100, limit: 1 }] } as never, undefined, undefined, context);
 	const startAnchor = first.details.read?.lines[0]?.anchor;
 	const endAnchor = last.details.read?.lines[0]?.anchor;
 	assert.ok(startAnchor && endAnchor);
@@ -1180,7 +1183,7 @@ test("apply tool preserves unselected lines between an expansion and a separate 
 	await writeFile(target, original, "utf8");
 	const context = { cwd: directory };
 
-	const readResult = await readTool.execute("read", { path: "target.txt", offset: 2, limit: 5 } as never, undefined, undefined, context);
+	const readResult = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 2, limit: 5 }] } as never, undefined, undefined, context);
 	const anchors = readResult.details.read?.lines.map((line) => line.anchor);
 	assert.equal(anchors?.length, 5);
 	const replacementAnchor = anchors![0]!;
@@ -1224,7 +1227,7 @@ test("apply tool preserves untouched terminators in a mixed line ending file", a
 	await writeFile(target, "a\r\nb\nc\r\nd\n", "utf8");
 	const context = { cwd: directory };
 
-	const read = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const read = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
 	assert.equal(read.details.disposition, "succeeded");
 	const anchor = read.details.read?.lines.find((line) => line.text === "b")?.anchor;
 	assert.ok(anchor);
@@ -1256,7 +1259,7 @@ test("queued same-file apply sees the previous apply's remapped evidence", async
 	await writeFile(target, "one\ntwo\nthree\nfour\n", "utf8");
 	const context = { cwd: directory };
 
-	const read = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const read = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
 	assert.equal(read.details.disposition, "succeeded");
 	const anchorAt = (line: number) => {
 		const anchor = read.details.read?.lines.find((entry) => entry.line === line)?.anchor;
@@ -1316,7 +1319,7 @@ test("path aliases share the canonical apply queue", async (t) => {
 		throw error;
 	}
 	const context = { cwd: directory };
-	const read = await readTool.execute("read-alias", { path: "alias.txt" } as never, undefined, undefined, context);
+	const read = await readTool.execute("read-alias", { path: "alias.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
 	assert.equal(read.details.disposition, "succeeded");
 	const anchorAt = (line: number) => {
 		const anchor = read.details.read?.lines.find((entry) => entry.line === line)?.anchor;
@@ -1360,7 +1363,7 @@ test("identical inserted and surviving lines remain distinct under their origina
 	await writeFile(target, "before\nneedle\nafter\n", "utf8");
 	const context = { cwd: directory };
 
-	const initialRead = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const initialRead = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
 	const oldAnchor = initialRead.details.read?.lines.find((line) => line.line === 2)?.anchor;
 	assert.ok(oldAnchor);
 	const inserted = await applyTool.execute(
@@ -1406,7 +1409,7 @@ test("consumed historical targets stay rejected even after rereading a shifted d
 	await writeFile(target, "before\nneedle\nneedle\nafter\n", "utf8");
 	const context = { cwd: directory };
 
-	const initialRead = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const initialRead = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
 	const consumedAnchor = initialRead.details.read?.lines.find((line) => line.line === 2)?.anchor;
 	assert.ok(consumedAnchor);
 	const deleted = await applyTool.execute(
@@ -1430,7 +1433,7 @@ test("consumed historical targets stay rejected even after rereading a shifted d
 	assert.equal(ambiguous.details.error?.code, "target_consumed");
 	assert.equal(await readFile(target, "utf8"), "before\nneedle\nafter\n");
 
-	const explicitRead = await readTool.execute("read-current", { path: "target.txt", offset: 2, limit: 1 } as never, undefined, undefined, context);
+	const explicitRead = await readTool.execute("read-current", { path: "target.txt", windows: [{ offset: 2, limit: 1 }] } as never, undefined, undefined, context);
 	assert.equal(explicitRead.details.read?.lines[0]?.anchor, consumedAnchor);
 	const stillConsumed = await applyTool.execute("old-after-reread", { path: "target.txt", proof_id: initialRead.details.proofId, changes: [{ operation: "delete_range", start_anchor: consumedAnchor, end_anchor: consumedAnchor }] } as never, undefined, undefined, context);
 	assert.equal(stillConsumed.details.error?.code, "target_consumed");
@@ -1526,7 +1529,7 @@ test("apply tool attaches a commit-bound change preview instead of a full-file d
 	await writeFile(target, "one\ntwo\nthree\nfour\nfive\nsix\n", "utf8");
 	const context = { cwd: directory };
 
-	const read = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const read = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
 	assert.equal(read.details.disposition, "succeeded");
 	const anchorAt = (line: number) => {
 		const anchor = read.details.read?.lines.find((entry) => entry.line === line)?.anchor;
@@ -1579,7 +1582,7 @@ test("no-op apply carries an empty commit-bound preview", async (t) => {
 	await writeFile(target, "one\ntwo\nthree\n", "utf8");
 	const context = { cwd: directory };
 
-	const read = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const read = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
 	const anchor = read.details.read?.lines.find((entry) => entry.line === 2)?.anchor;
 	assert.ok(anchor);
 
@@ -1612,7 +1615,7 @@ test("text boundary edits return anchors usable without an intervening read", as
 			const target = join(directory, "target.txt");
 			await writeFile(target, fixture.source, "utf8");
 			const context = { cwd: directory };
-			const read = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+			const read = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
 			const anchor = read.details.read!.lines[0]!.anchor;
 			const change = fixture.insert
 				? { operation: "insert_after", anchor, lines: fixture.text }
@@ -1630,7 +1633,7 @@ test("text boundary edits return anchors usable without an intervening read", as
 				changes: [{ operation: "replace_range", start_anchor: updated.anchor, end_anchor: updated.anchor, lines: "verified" }],
 			} as never, undefined, undefined, context);
 			assert.equal(next.details.disposition, "succeeded", next.content[0]?.text);
-			const reread = await readTool.execute("verify", { path: "target.txt" } as never, undefined, undefined, context);
+			const reread = await readTool.execute("verify", { path: "target.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
 			assert.equal(reread.details.read!.lines[updated.line - 1]!.text, "verified");
 		});
 	}
@@ -1645,7 +1648,7 @@ test("text boundary rejections preserve the file and provide input-specific guid
 	const target = join(directory, "target.txt");
 	await writeFile(target, "old\nkeep\n", "utf8");
 	const context = { cwd: directory };
-	const read = await readTool.execute("read", { path: "target.txt" } as never, undefined, undefined, context);
+	const read = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
 	const first = read.details.read!.lines[0]!.anchor;
 	const second = read.details.read!.lines[1]!.anchor;
 	const nul = await applyTool.execute("nul", {
@@ -1686,7 +1689,7 @@ test("disjoint changes recover all missing ranges before an explicit batch retry
 	const recovered = await apply.execute("recover", { path: "target.txt", proof_id: read.details.proofId, changes } as never, undefined, undefined, context);
 	assert.equal(recovered.details.disposition, "rejected");
 	assert.deepEqual(recovered.details.recoveredReads?.flatMap((page) => page.lines.map((line) => line.line)), [2, 1599]);
-	assert.doesNotMatch(recovered.content[0]!.text, /continue with offset/);
+	assert.doesNotMatch(recovered.content[0]!.text, /continue with (?:offset|windows)/);
 	assert.equal(await readFile(target, "utf8"), original.join("\n") + "\n");
 	const result = await apply.execute("retry", { path: "target.txt", proof_id: recovered.details.proofId, changes } as never, undefined, undefined, context);
 	assert.equal(result.details.disposition, "succeeded");
@@ -1703,7 +1706,7 @@ test("historical ranges never consume inserted or replaced interior lines, but s
 		await t.test(operation, async () => {
 			const path = `${operation}.txt`;
 			await writeFile(join(directory, path), "one\ntwo\nthree\n");
-			const initial = await call(HLEDIT_READ_ANCHORS_TOOL, { path });
+			const initial = await call(HLEDIT_READ_ANCHORS_TOOL, { path, windows: [{ offset: 1, limit: 160 }] });
 			const [first, middle, last] = initial.details.read!.lines;
 			const change = operation === "insert_after"
 				? { operation, anchor: first!.anchor, lines: "inserted" }

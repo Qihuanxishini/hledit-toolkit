@@ -420,7 +420,7 @@ test("model body snapshot: plugin-side proof failure with targeted reread", () =
 		formatReadProofFailure("target.txt", selection.failure),
 		"Valid read proof does not cover every source line required by this change. Batch was not started and no content was written.\n" +
 		"Reason: Change 1 (replace_range 3-5) requires complete read proof for every source line in the inclusive range; missing lines 4-5. Endpoint anchors alone are insufficient.\n" +
-		'Call hledit_read_anchors({ path: "target.txt", offset: 2, limit: 12 }) first and confirm all required source lines for change 1 through line 5.\n' +
+		'Call hledit_read_anchors({ path: "target.txt", windows: [{ offset: 2, limit: 12 }] }) first and confirm all required source lines for change 1 through line 5.\n' +
 		"After the read succeeds, use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.",
 	);
 });

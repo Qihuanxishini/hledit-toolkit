@@ -36,7 +36,6 @@ function parseWindows(value: unknown): ReadWindow[] | undefined {
 }
 
 export function normalizeWindowsRequest(params: ReadAnchorsParams): WindowsRequest | undefined {
-	if (params.offset !== undefined || params.limit !== undefined) return undefined;
 	const windows = parseWindows(params.windows);
 	return windows ? { path: normalizeToolPath(params.path), windows } : undefined;
 }

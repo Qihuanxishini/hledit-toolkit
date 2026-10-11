@@ -8,7 +8,7 @@
 
 插件注册三个职责明确的工具：
 
-- `hledit_read_anchors`（TUI 显示为 `Read for Edit`）：读取单个连续范围，或以 `windows: [{offset, limit}, ...]` 一次读取同文件多段范围，返回 `LN#HASH` 锚点；模式定位使用 `hledit_search_anchors`。
+- `hledit_read_anchors`（TUI 显示为 `Read for Edit`）：统一使用 `{path, windows: [{offset, limit}, ...]}` 读取同文件 1–8 段范围，单窗口使用一个数组元素，返回 `LN#HASH` 锚点；模式定位使用 `hledit_search_anchors`。
 - `hledit_search_anchors`（TUI 显示为 `Search Anchors`）：按 RE2 正则或字面量模式搜索，并返回带锚点的匹配/上下文行。
 - `hledit_apply_file_changes`：对一个文件原子提交一组非冲突修改，并直接返回修改后的新锚点。
 
@@ -19,7 +19,7 @@
 - 三个工具统一展开 `~`、`~/` 主目录路径（Windows 同时支持 `~\`），并处理 `@` 前缀和 Windows MSYS 盘符路径。
 - 编辑现有非空文本文件前，使用 `hledit_read_anchors` 读取会被消费的连续原始行，或使用 `hledit_search_anchors` 定位并读取匹配/上下文行；普通 `read` 只用于参考文件或尚未确定修改目标的探索。`write` 只用于新文件、空文件或读取工具报告 source-line truncation 的例外场景。
 - 规范锚点是 `LN#[A-Za-z0-9_-]{3}` token。公开 change 只复制范围首尾或 insert 依附行；区间内部 proof 由插件从 evidence 注入。apply 使用严格输入，不剥离带源码后缀的 anchor，也不迁移旧字段或包装形状。
-- 公开修改协议只有 `replace_range`、`delete_range`、`insert_before` 和 `insert_after`。范围操作同时提供 `start_anchor` 与 `end_anchor`；单行范围使用同一锚点。旧 operation 与内容匹配替换不迁移。
+- 公开修改协议只有 `replace_range`、`delete_range`、`insert_before` 和 `insert_after`。范围操作同时提供 `start_anchor` 与 `end_anchor`，首尾均包含；单行范围使用同一锚点。旧 operation 与内容匹配替换不迁移。
 - 所有 change 都使用本批编辑前的快照坐标。`replace_range` 精确替换指定范围，可将一行扩为多行，也可在输出中保留原行；`insert_before` / `insert_after` 不消费依附行，`delete_range` 删除指定范围。插件不猜测待替换代码块，也不自动扩大范围或转换操作。
 - `replace_range`、`insert_before` 和 `insert_after` 的 `lines` 只接受换行分隔字符串；一个末尾换行仅终止末行，空字符串表示一行空文本。`delete_range` 不接受 `lines`。
 - 单次 batch 限 1–200 个 changes、1 MiB replacement UTF-8 bytes 和 20,000 个输出行。batch 是原子的：任一 change 非法、冲突、proof 不完整或 stale 时均不写入。
@@ -27,8 +27,8 @@
 - `insufficient_read_proof` 会在同一 canonical file queue 内自动分页执行定向只读，直到目标缺口完整覆盖或触及恢复预算。结果返回全部 `recoveredReads`、最新 evidence 和一个权威 `proof_id`，但不会自动重放修改；审阅当前源码与端点锚点后再显式重提 apply。
 - 定向补读按整批实际缺口规划，共享 1,200 行、4 页、96 KiB 正文预算；预算耗尽后保留已返回页并列出合法的剩余窗口。目标越界、被消费或旧范围不再连续时停止计划，要求重新定位；补读期间 revision 变化则丢弃本次页面并失效旧证据。截断源码不可建立 proof，补读不会自动执行编辑。
 - 读取错误一律给出可操作正文：`pattern` 转发 RE2 编译原文并说明 RE2 不支持 lookahead/lookbehind/backreference（可改用 `literal:true`），`broad_pattern` 指向 `hledit_read_anchors`。
-- read/search 仅在省略参数时使用默认值，非法 offset/limit 由 schema 拒绝，不静默回落或截断。搜索明确区分全文件匹配数与本页源行数；offset 是返回源行下界，前面的匹配仍可贡献后置上下文。
-- `windows` 与顶层 `offset` / `limit` 互斥，最多 8 个窗口。CLI 单次加载 `Snapshot`，按物理位置合并重叠或相邻窗口，并共享 2,000 行 / 96 KiB JSON 预算。只有所有请求段均完整返回时才登记联合证据；任一段不完整则本次结果仅供预览，不发 proof，应分小批重新读取，包括先前已完成段。
+- read 要求每个窗口显式提供 `offset` 与 `limit`，不接受顶层范围字段或无窗口调用；search 仅在省略参数时使用默认值。非法 offset/limit 由 schema 拒绝，不静默回落或截断。搜索明确区分全文件匹配数与本页源行数；offset 是返回源行下界，前面的匹配仍可贡献后置上下文。
+- 单窗口复用连续读取的分页和 proof 规则。多个窗口由 CLI 单次加载 `Snapshot`，按物理位置合并重叠或相邻窗口，并共享 2,000 行 / 96 KiB JSON 预算。只有所有请求段均完整返回时才登记联合证据；任一段不完整则本次结果仅供预览，不发 proof，应分小批重新读取，包括先前已完成段。
 - 超过单页预算的源行会标记 `textTruncated`，不能作为编辑 proof；若后面还有待读行或匹配，结果仍提供 `nextOffset` 和续读提示。
 - CLI 在临时文件同步后、原子替换前复检原始字节 revision。`source_changed_before_commit` 是确认零写入；已启动进程的取消、超时、输出超限或异常响应属于 `outcome_unknown`，必须重新读取。
 - 改变文件的成功 apply 建立新证据代并返回新 `proof_id`。CLI span 与实际执行文本逐行一致且完整时，仅回显 change 编号、新锚点首尾和行数；完整 span 保存在 `details`。返回的端点可直接续编，中间新行按需精确读取。旧 proof/token 对只迁移逐行存续且连续的目标；已消费身份不会因内容恢复而复活，无变化批次不推进证据代。

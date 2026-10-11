@@ -38,9 +38,26 @@ function highlightText(text: string, language: string | undefined): HighlightedT
 	}
 }
 
-// 按行对象身份缓存高亮结果：同一批行会在多次重绘（不同宽度、展开切换）中反复渲染，
-// 而高亮与宽度只取决于行文本。WeakMap 让被替换的行自动释放，组件 invalidate() 时整体丢弃。
-// 缓存键与被高亮的文本必须来自同一个对象，因此这里直接要求 { content }，不接受分开传入。
+// [喵喵喵]: 受控简化 — 按行内容缓存高亮，键为“语言 NUL 行文本”；上限 4096 条 LRU。
+// 边界：宿主每轮 updateDisplay 重建组件，行对象身份缓存必然 miss，跨重建复用只能靠内容键。
+// 升级：多语言大文件会话中仍现卡顿 → 按语言分组分代。
+// 主题或语言可用性变化无法经参数感知（theme 是全局 Proxy，onThemeChange 单槽已被宿主占用），
+// 以哨兵输出的前后比较作失效信号；漏检的极端情形只是颜色不刷新，下次失效自愈。
+const MAX_CACHE_ENTRIES = 4096;
+const SENTINEL_TEXT = 'const s = 42; if (s) { f("x"); } // c';
+const sentinelOutputs = new Map<string, string>();
+const highlightedTextEntries = new Map<string, HighlightedText>();
+
+function refreshHighlightCache(languageKey: string, language: string | undefined): void {
+	const sentinel = highlightText(SENTINEL_TEXT, language).text;
+	if (sentinelOutputs.get(languageKey) === sentinel) return;
+	const prefix = `${languageKey}\0`;
+	for (const key of highlightedTextEntries.keys()) {
+		if (key.startsWith(prefix)) highlightedTextEntries.delete(key);
+	}
+	sentinelOutputs.set(languageKey, sentinel);
+}
+
 export type HighlightedTextCache = {
 	highlight(line: { content: string }): HighlightedText;
 	clear(): void;
@@ -48,17 +65,30 @@ export type HighlightedTextCache = {
 
 export function createHighlightedTextCache(path: string | undefined): HighlightedTextCache {
 	const language = resolveLanguage(path);
-	let cache = new WeakMap<object, HighlightedText>();
+	const languageKey = language ?? "";
+	refreshHighlightCache(languageKey, language);
 	return {
 		highlight(line: { content: string }): HighlightedText {
-			const cached = cache.get(line);
-			if (cached) return cached;
+			const key = `${languageKey}\0${line.content}`;
+			const cached = highlightedTextEntries.get(key);
+			if (cached) {
+				// LRU：命中后重插到末尾，超限时从最旧的键淘汰。
+				highlightedTextEntries.delete(key);
+				highlightedTextEntries.set(key, cached);
+				return cached;
+			}
 			const highlighted = highlightText(line.content, language);
-			cache.set(line, highlighted);
+			if (highlightedTextEntries.size >= MAX_CACHE_ENTRIES) {
+				const oldest = highlightedTextEntries.keys().next().value;
+				if (oldest !== undefined) highlightedTextEntries.delete(oldest);
+			}
+			highlightedTextEntries.set(key, highlighted);
 			return highlighted;
 		},
 		clear(): void {
-			cache = new WeakMap<object, HighlightedText>();
+			// invalidate() 不区分宽度、主题与语言加载，统一重验一次哨兵；输出未变时内容缓存保留，
+			// 布局重置由 component() 自身的行缓存负责。
+			refreshHighlightCache(languageKey, language);
 		},
 	};
 }

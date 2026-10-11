@@ -123,12 +123,11 @@ test("renderHleditCall labels literal and case-insensitive search", () => {
 	]);
 });
 
-// [喵喵喵]: Phase 2.4 回归——limit 省略时实际 CLI 请求默认 160 行，标题不得显示 1-2000 (2026-07-25)
-test("renderHleditCall shows the actual 160-line default range when limit is omitted", () => {
+test("renderHleditCall shows only explicit read windows without guessing a default range", () => {
 	assert.deepEqual(render(renderHleditCall("read_anchors", { path: "src/a.ts" }, theme)), [
-		"read for edit src/a.ts:1-160",
+		"read for edit src/a.ts",
 	]);
-	assert.deepEqual(render(renderHleditCall("read_anchors", { path: "src/a.ts", offset: 41 }, theme)), [
+	assert.deepEqual(render(renderHleditCall("read_anchors", { path: "src/a.ts", windows: [{ offset: 41, limit: 160 }] }, theme)), [
 		"read for edit src/a.ts:41-200",
 	]);
 });
@@ -137,7 +136,7 @@ test("renderHleditCall hyperlinks paths when the terminal supports them", () => 
     const previous = getCapabilities();
     setCapabilities({ ...previous, hyperlinks: true });
     try {
-        const output = render(renderHleditCall("read_anchors", { path: "src/a.ts", offset: 1, limit: 2 }, theme, { cwd: process.cwd() }));
+        const output = render(renderHleditCall("read_anchors", { path: "src/a.ts", windows: [{ offset: 1, limit: 2 }] }, theme, { cwd: process.cwd() }));
         assert.match(output[0] ?? "", /\x1b\]8;;file:/);
         assert.match(output[0] ?? "", /src\/a\.ts/);
     } finally {

@@ -98,7 +98,7 @@ test("anchored editing tools stay active regardless of current read evidence", a
 	assert.ok(readTool);
 	const failedRead = await readTool.execute(
 		"failed-read",
-		{ path: "target.txt", offset: 99, limit: 1 } as never,
+		{ path: "target.txt", windows: [{ offset: 99, limit: 1 }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -108,7 +108,7 @@ test("anchored editing tools stay active regardless of current read evidence", a
 
 	const successfulRead = await readTool.execute(
 		"read",
-		{ path: "target.txt", offset: 2, limit: 1 } as never,
+		{ path: "target.txt", windows: [{ offset: 2, limit: 1 }] } as never,
 		undefined,
 		undefined,
 		context,

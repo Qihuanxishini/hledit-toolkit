@@ -87,15 +87,11 @@ CLI 对 `updatedAnchorSpans` 的共享预算需要从现有 80 行 / 16 KiB 上�
 
 ### 5.1 调用形状
 
-扩展 `hledit_read_anchors`，保留原有单窗口调用：
+`hledit_read_anchors` 只接受 `{ path, windows }`，单窗口与多窗口使用同一种形状：
 
 ```ts
-{ path, offset?, limit? }
-```
+{ path, windows: [{ offset: 35, limit: 18 }] }
 
-并新增互斥的多窗口形状：
-
-```ts
 {
   path,
   windows: [
@@ -106,7 +102,9 @@ CLI 对 `updatedAnchorSpans` 的共享预算需要从现有 80 行 / 16 KiB 上�
 }
 ```
 
-`windows` 与顶层 `offset` / `limit` 不可同时出现。单窗口保持原有 wire 与输出格式，避免无意义的兼容性变更。
+`windows` 必填，包含 1–8 个窗口；每项必须显式提供 `offset` 与 `limit`。不接受顶层 `offset` / `limit`，也不将旧调用转换为新形状。统一入口消除已实际出现的双参数冲突，不依赖对象 union 或条件 schema 表达互斥关系。
+
+单窗口复用 `read-range` 的分页、输出与 proof 规则；多个窗口使用下述 `read-windows` 同快照协议。公开参数统一不改变 CLI wire 或历史结果回放格式。
 
 ### 5.2 CLI 协议
 
@@ -122,9 +120,9 @@ CLI 对窗口执行如下规范化：
 
 初始共享预算为 **2,000 行 / 96 KiB JSON 正文**，仍低于插件 wrapper 的 1 MiB 上限。单一超长源行沿用 `textTruncated:true`；这种行及所在不完整窗口不得作为 proof。
 
-### 5.3 插件 proof 规则与回包
+### 5.3 多窗口联合 proof 规则与回包
 
-插件仅在所有被返回、准备登记的窗口：
+对于包含多个窗口的请求，插件仅在所有被返回、准备登记的窗口：
 
 - 同属 CLI 回执中的一个 revision；
 - 文本完整、无 `textTruncated`；
@@ -154,7 +152,7 @@ CLI 对窗口执行如下规范化：
 
 ### 多窗口读取
 
-- 单窗口调用的参数、CLI wire、输出与 proof 语义维持兼容。
+- 单窗口和多窗口均使用 `{ path, windows }`；旧顶层范围字段必须被拒绝。单窗口 CLI wire、分页与 proof 规则保持不变，续读建议必须使用新参数形状。
 - 多个非邻接窗口在单次 CLI `Snapshot` 内返回同一 revision。
 - 重叠、相邻和乱序请求都不会重复登记同一物理源行。
 - 部分截断、超长源行、越界、二进制和文件变更均不能错误创建可写 proof。

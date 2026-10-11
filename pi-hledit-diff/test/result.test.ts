@@ -30,7 +30,7 @@ test("readAnchorsResult exposes actual range, total lines, and continuation", ()
         { path: "src/a.ts", offset: 2, limit: 2 },
     );
 
-	assert.match(result.content[0]?.text ?? "", /^proof_id: [A-Za-z0-9_-]{16}\.\d+\n2#BHJ:two\n3#BJL:three\n-- Showing lines 2-3 of 5; continue with offset 4 --$/);
+	assert.match(result.content[0]?.text ?? "", /^proof_id: [A-Za-z0-9_-]{16}\.\d+\n2#BHJ:two\n3#BJL:three\n-- Showing lines 2-3 of 5; continue with windows: \[\{ offset: 4, limit: 2 \}\] --$/);
 	assert.equal(result.details.disposition, "succeeded");
 	assert.match(result.details.proofId ?? "", /^[A-Za-z0-9_-]{16}\.\d+$/);
 	assert.deepEqual(result.details.read?.requested, { offset: 2, limit: 2 });
@@ -142,7 +142,9 @@ for (const pattern of [undefined, "prefix|later"]) {
 		assert.equal(result.details.read?.nextOffset, 2);
 		assert.equal(result.details.read?.textTruncated, true);
 		assert.match(result.content[0]!.text, /Truncated lines cannot establish edit proof/);
-		assert.match(result.content[0]!.text, /To read later lines, continue with offset 2/);
+		assert.match(result.content[0]!.text, pattern
+			? /To read later lines, continue with offset 2/
+			: /To read later lines, continue with windows: \[\{ offset: 2, limit: 3 \}\]/);
 	});
 }
 
@@ -455,7 +457,7 @@ test("applyFileChangesResult falls back to rereading when a stale snapshot is un
 
     assert.match(result.content[0]?.text ?? "", /^The atomic batch was rejected; no content was written\.\nReason: Change 1 uses a stale anchor\.\nError code: stale/m);
     assert.match(result.content[0]?.text ?? "", /2#BHJ -> 2#BBK/);
-    assert.match(result.content[0]?.text ?? "", /Before retrying, call hledit_read_anchors\(\{ path: "src\/a\.ts", offset: 1, limit: 12 \}\)/);
+    assert.match(result.content[0]?.text ?? "", /Before retrying, call hledit_read_anchors\(\{ path: "src\/a\.ts", windows: \[\{ offset: 1, limit: 12 \}\] \}\)/);
     assert.deepEqual(result.details, {
 		disposition: "rejected",
 		path: "src/a.ts",
@@ -557,7 +559,7 @@ test("model body snapshot: CLI insufficient_read_proof rejection", () => {
 		"Reason: Read proof does not cover every original source line required by this change.\n" +
 		"Error code: insufficient_read_proof\n" +
 		"Failed change: 1\n" +
-		'Call hledit_read_anchors({ path: "src/a.ts", offset: 1, limit: 12 }) to reread every source line required by change 1, then use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.',
+		'Call hledit_read_anchors({ path: "src/a.ts", windows: [{ offset: 1, limit: 12 }] }) to reread every source line required by change 1, then use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.',
 	);
 	assert.equal(result.details.disposition, "rejected");
 });

@@ -103,6 +103,14 @@ type RequestedChangeEvidence = {
 
 const MAX_REPORTED_MISSING_LINES = 20;
 
+// [喵喵喵]: 这些失败码意味着目标已随编辑漂移，出路是重新定位目标行，补读原坐标也无法授权。
+const RELOCATE_TARGET_FAILURE_CODES: ReadonlySet<string> = new Set([
+	"target_consumed",
+	"target_changed",
+	"proof_source_unavailable",
+	"invalid_anchor_range",
+]);
+
 function requestedChangeEvidence(changes: FileChangeParams["changes"]): RequestedChangeEvidence | undefined {
 	const sourceRanges: RequestedSourceRange[] = [];
 	const endpointAnchors: RequestedEndpointAnchor[] = [];
@@ -316,12 +324,11 @@ function consumedEvidenceLines(coveredLines: number[], evidenceLines: Map<number
 	return consumed;
 }
 
-// 对同一份证据评估一次请求的逐行 coverage 与每个提交端点；selectProof 用它分别
-// 评估原始请求与"更名替换后"的 what-if 请求。
+// 对当前证据代评估一次请求的逐行 coverage 与每个提交端点；端点不匹配时由
+// selectProof 的历史迁移分支决定重命名或拒绝。
 function evaluateProofAgainstEvidence(
 	requested: RequestedChangeEvidence,
 	evidenceLines: Map<number, EvidenceLine>,
-	renames: Map<string, string>,
 ): EvidenceProofEvaluation {
 	const coverage = collectProofCoverage(requested.ranges, evidenceLines);
 	if (coverage.reportedMissingLines.length > 0) {
@@ -345,9 +352,7 @@ function evaluateProofAgainstEvidence(
 		if (evidenceLines.get(endpoint.line)?.anchor !== endpoint.anchor) {
 			return {
 				failure: {
-					message: renames.has(endpoint.anchor)
-						? `Change ${endpoint.changeNumber} (${endpoint.operation}) submitted anchor ${endpoint.anchor} from before this file's last edit; the same unchanged content now has a shifted line number.`
-						: `Change ${endpoint.changeNumber} (${endpoint.operation}) submitted anchor for line ${endpoint.line} does not match the most recently read anchor on this branch.`,
+				message: `Change ${endpoint.changeNumber} (${endpoint.operation}) submitted anchor for line ${endpoint.line} does not match the most recently read anchor on this branch.`,
 					reportedMissingLines: [endpoint.line],
 					suggestedReadRange: { start: endpoint.line, end: endpoint.line },
 					recoveryRanges: recoveryRangesFor(requested, evidenceLines),
@@ -370,7 +375,7 @@ export function formatReadProofDiagnosis(failure: ReadProofFailure): string {
 			`Reason: ${failure.message}`,
 		].join("\n");
 	}
-	if (["target_consumed", "target_changed", "proof_source_unavailable", "invalid_anchor_range"].includes(failure.code)) {
+	if (RELOCATE_TARGET_FAILURE_CODES.has(failure.code)) {
 		return `The target cannot be authorized by this proof. Batch was not started and no content was written.\nReason: ${failure.message}`;
 	}
 	const lines = [
@@ -384,7 +389,7 @@ export function formatReadProofDiagnosis(failure: ReadProofFailure): string {
 export function readProofFailureContext(failure: ReadProofFailure): Pick<HleditErrorMetadata, "changeNumber" | "operation" | "nextAction"> {
 	return {
 		nextAction: failure.code === "evidence_capacity_exceeded" ? "reduce_batch"
-			: ["target_consumed", "target_changed", "proof_source_unavailable", "invalid_anchor_range"].includes(failure.code) ? "relocate_target" : "read_target",
+			: RELOCATE_TARGET_FAILURE_CODES.has(failure.code) ? "relocate_target" : "read_target",
 		...(failure.proofGap ? { changeNumber: failure.proofGap.changeNumber, operation: failure.proofGap.operation } : {}),
 	};
 }
@@ -413,8 +418,8 @@ export function formatReadProofFailure(path: string, failure: ReadProofFailure):
 		? `all required source lines for change ${failure.proofGap.changeNumber} through line ${lastLine}`
 		: firstLine === lastLine ? "the target line" : "the complete target range";
 	const readInstruction = lastSuggestedLine < lastLine
-		? `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: ${limit} }) first, then continue with nextOffset until line ${lastLine} is covered.`
-		: `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, offset: ${offset}, limit: ${limit} }) first and confirm ${completionTarget}.`;
+		? `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, windows: [{ offset: ${offset}, limit: ${limit} }] }) first, then continue with nextOffset until line ${lastLine} is covered.`
+		: `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, windows: [{ offset: ${offset}, limit: ${limit} }] }) first and confirm ${completionTarget}.`;
 	const resubmitInstruction = "After the read succeeds, use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.";
 	if (failure.code === "read_evidence_evicted") {
 		lines.push("Earlier evidence exceeded the per-file cache limit. Use the targeted read below rather than paging the whole file again. If it evicts another required range, stop: narrow the batch or ask whether separate, non-atomic batches are acceptable.");
@@ -476,10 +481,10 @@ export class ReadEvidenceStore {
 	selectProof(path: string, changes: FileChangeParams["changes"], proofId?: string): ReadProofSelection {
 		const file = this.state.get(path);
 		const fail = (code: ReadProofFailure["code"], message: string): ReadProofSelection => ({ failure: { code, message, reportedMissingLines: [] } });
-		if (proofId !== undefined && this.state.owner(proofId) !== path) {
-			const owner = this.state.owner(proofId);
-			return fail("invalid_proof_id", owner
-				? `proof_id ${proofId} was issued for ${JSON.stringify(owner)}, not ${JSON.stringify(path)}. Obtain a proof for the target file.`
+		const proofOwner = proofId !== undefined ? this.state.owner(proofId) : path;
+		if (proofOwner !== path) {
+			return fail("invalid_proof_id", proofOwner
+				? `proof_id ${proofId} was issued for ${JSON.stringify(proofOwner)}, not ${JSON.stringify(path)}. Obtain a proof for the target file.`
 				: `proof_id ${proofId} is unknown or expired on this branch. Obtain fresh target evidence; do not pair old anchors with a different proof.`);
 		}
 		const requested = requestedChangeEvidence(changes);
@@ -495,7 +500,7 @@ export class ReadEvidenceStore {
 		const requiredLines = requested.ranges.reduce((sum, range) => sum + range.end - range.start + 1, 0);
 		if (requiredLines >= MAX_EVIDENCE_RECORDS_PER_FILE) return fail("evidence_capacity_exceeded", `This batch requires ${requiredLines} distinct source lines plus a proof id, exceeding the ${MAX_EVIDENCE_RECORDS_PER_FILE}-record limit. Reading more cannot make it fit.`);
 		const evidenceLines = epoch?.lines ?? new Map<number, EvidenceLine>();
-		const evaluation = evaluateProofAgainstEvidence(requested, evidenceLines, new Map());
+		const evaluation = evaluateProofAgainstEvidence(requested, evidenceLines);
 		if ("failure" in evaluation) {
 			if (historical) return fail("proof_source_unavailable", "The historical proof does not completely identify this target. Relocate and read the target in the current file; old coordinates will not be used for automatic recovery.");
 			return { failure: {

@@ -57,17 +57,15 @@ pi-hledit-diff/
 ```ts
 {
   path: string,
-  offset?: number,
-  limit?: number,
-  windows?: Array<{ offset: number; limit: number }>, // 与顶层 offset/limit 互斥
+  windows: Array<{ offset: number; limit: number }>,
 }
 ```
 
 - 编辑现有非空可读文本文件前，使用该工具读取会被消费的全部连续原始行；普通 `read` 只用于参考或目标未定的探索。
-- 单窗口默认 `limit` 为 160，上限 2000；仅省略参数时使用默认值，非法整数与超限值由 schema 拒绝。读取不接受 grep、literal、context 或 ignore_case。
+- `windows` 必填且包含 1–8 项，单窗口也使用数组；每项显式提供 1-based `offset` 和 `limit`（1–2000）。不接受顶层 `offset` / `limit`，不转换旧调用。非法整数与超限值由 schema 拒绝；读取不接受 grep、literal、context 或 ignore_case。
 - 单窗口调用 `read-range`，多窗口调用 `read-windows`（JSON stdin）。响应验证 revision、总行数、连续性/递增顺序、锚点格式、分页和 source-line truncation；正文与 `details.read` / `details.windowsRead` 由同一已验证结构生成。
-- `windows` 与顶层 `offset` / `limit` 互斥，最多 8 项，乱序、重叠或相邻窗口按物理位置合并，保留原始请求编号。一份 `Snapshot` 共享 2,000 行 / 96 KiB JSON 预算；仅当所有段完整时，一次登记联合证据并发出 proof。任一段不完整，本次全部结果仅供预览，需分小批重读所需范围，包括已完成段。
-- 单行超过 50 KiB JSON 页预算时仅返回截断文本；该行不建立 proof，但后续仍有物理行时提供 `nextOffset`。搜索同样在还有匹配/上下文行时提供续读游标。
+- 多窗口的乱序、重叠或相邻范围按物理位置合并，保留原始请求编号。一份 `Snapshot` 共享 2,000 行 / 96 KiB JSON 预算；仅当所有段完整时，一次登记联合证据并发出 proof。任一段不完整，本次全部结果仅供预览，需分小批重读所需范围，包括已完成段。
+- 单窗口中，单行超过 50 KiB JSON 页预算时仅返回截断文本；该行不建立 proof，但后续仍有物理行时提供 `nextOffset` 和 `windows` 续读参数。搜索同样在还有匹配/上下文行时提供续读游标，但沿用自身的顶层 `offset`。
 - CLI 执行、响应验证和 evidence 更新是同一个 canonical file queue 事务。不得在队列外记录晚到 snapshot。
 
 成功响应示例：
@@ -242,7 +240,7 @@ wrapper 输出上限为 1 MiB，保护异常或不兼容 CLI 输出；单窗口 
 - expanded updated-anchor rows 只来自 `details.updatedAnchorSpans`，不解析模型正文；
 - diff 在组件净宽达到 120 列、两侧行号区之外仍有正文空间时切为 split，与 `pi-tool-display` 的默认自动分栏门槛一致；纯单侧或缺少操作关联的旧预览保持 unified。双栏左旧右新并保留独立行号与续行对齐；
 - 两种布局沿用 `changePreview.lines` 的原文件操作位置顺序，只配对同一 `changeIndex` 的连续片段；单栏按每对旧行、新行依次展开，上下文仅显示一次，多出的行单独显示。双栏复用同一配对；不跨操作同文匹配，也不把 `oldLine` / `newLine` 混为同一套坐标排序。缺少操作关联的旧预览保持原始顺序；
-- 差异使用按深浅主题和 truecolor/256-color 模式选择的独立整行红绿底色，保留语法高亮，不叠加字词级底色；摘要、上下文、空栏、中缝、省略行、边框和折叠提示固定使用 `#283228` 并填满宽度（取自 `pi-tool-display` 使用的 `classic-dark.toolSuccessBg`，256 色模式由宿主量化）。摘要保留 `↳ diff`、增删计数和按比例分配红绿段的色条；窄屏先为色条留位，再按完整信息单元缩略辅助说明，增删计数与局部预览状态放不下时色条让位，不截断数字或状态文本。续行留空标记与行号，不显示箭头。`theme.style()` 处理内部 reset，单元格末尾恢复工具容器背景；主题色、布局和高亮缓存必须在 `invalidate()` 正确清理；
+- 差异使用按深浅主题和 truecolor/256-color 模式选择的独立整行红绿底色，保留语法高亮，不叠加字词级底色；摘要、上下文、空栏、中缝、省略行、边框和折叠提示固定使用 `#283228` 并填满宽度（取自 `pi-tool-display` 使用的 `classic-dark.toolSuccessBg`，256 色模式由宿主量化）。摘要保留 `↳ diff`、增删计数和按比例分配红绿段的色条；窄屏先为色条留位，再按完整信息单元缩略辅助说明，增删计数与局部预览状态放不下时色条让位，不截断数字或状态文本。续行留空标记与行号，不显示箭头。`theme.style()` 处理内部 reset，单元格末尾恢复工具容器背景；布局缓存必须在 `invalidate()` 正确清理；高亮缓存按“语言 + 行文本”内容键跨组件复用，`invalidate()` 时重验哨兵输出，主题或语言可用性变化才整体丢弃；
 - 语法高亮只处理规范化显示行不超过 8,192 UTF-16 code units 的内容；超长行保留完整纯文本、控制字符转义与宽度计算，只跳过同步语法着色。预算不影响源码、proof 或模型正文；
 - `session_before_compact` 从三个工具的结构化结果补充 fileOps：read/search 成功 → read；已验证且返回过源码的不完整多窗口预览 → read（不授予 proof）；带严格验证 `recoveredReads` 的零写入 apply → read；apply content change → modified；apply no-op → read；`outcome_unknown` → modified；其余确认零写入结果不记录。
 

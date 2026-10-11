@@ -1,7 +1,7 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { ANCHOR_PATTERN } from "./anchor.ts";
-import { DEFAULT_READ_LIMIT, DEFAULT_SEARCH_LIMIT, MAX_READ_LIMIT, MAX_SEARCH_LIMIT, MAX_READ_WINDOWS } from "./read-args.ts";
+import { DEFAULT_SEARCH_LIMIT, MAX_READ_LIMIT, MAX_SEARCH_LIMIT, MAX_READ_WINDOWS } from "./read-args.ts";
 
 const STRICT_OBJECT = { additionalProperties: false };
 
@@ -16,57 +16,38 @@ const REPLACEMENT_TEXT_SCHEMA = Type.String({
 	description: "Raw text; \\n separates lines; no LN#HASH prefixes.",
 });
 
-const REPLACE_RANGE_CHANGE_SCHEMA = Type.Object(
+// [喵喵喵]: 平面对象兼容 Pi 的 strict schema 转换，并避免对象 union 的跨分支错误噪声。
+// 操作相关的字段组合由 decodeFileChangeInput 校验；类型、格式与额外字段仍由宿主 schema 拒绝。
+const CHANGE_SCHEMA = Type.Object(
 	{
-		operation: StringEnum(["replace_range"] as const),
-		start_anchor: ANCHOR_SCHEMA,
-		end_anchor: ANCHOR_SCHEMA,
-		lines: REPLACEMENT_TEXT_SCHEMA,
+		operation: StringEnum(
+			["replace_range", "delete_range", "insert_before", "insert_after"] as const,
+			{
+				description:
+					"replace_range / delete_range use inclusive start_anchor + end_anchor (repeat the same token for a single line); insert_before / insert_after use anchor. replace_range and both inserts require lines; delete_range takes none."
+			},
+		),
+		start_anchor: Type.Optional(ANCHOR_SCHEMA),
+		end_anchor: Type.Optional(ANCHOR_SCHEMA),
+		anchor: Type.Optional(ANCHOR_SCHEMA),
+		lines: Type.Optional(REPLACEMENT_TEXT_SCHEMA),
 	},
 	{
 		...STRICT_OBJECT,
-		description: "Replace the inclusive source range; repeat the token for one line. May retain source text and change line count.",
-	},
-);
-
-const DELETE_RANGE_CHANGE_SCHEMA = Type.Object(
-	{
-		operation: StringEnum(["delete_range"] as const),
-		start_anchor: ANCHOR_SCHEMA,
-		end_anchor: ANCHOR_SCHEMA,
-	},
-	{
-		...STRICT_OBJECT,
-		description: "Delete the inclusive source range; repeat the token for one line.",
-	},
-);
-
-// [喵喵喵]: 两个 insert 变体除 operation 取值外字段完全相同，合并为一个 variant——
-// required 集合与 additionalProperties 约束不变，模型看到的 schema 不再重复同一份定义。
-const INSERT_CHANGE_SCHEMA = Type.Object(
-	{
-		operation: StringEnum(["insert_before", "insert_after"] as const),
-		anchor: ANCHOR_SCHEMA,
-		lines: REPLACEMENT_TEXT_SCHEMA,
-	},
-	{
-		...STRICT_OBJECT,
-		description: "Insert new text before/after anchor; existing text remains. Do not copy context unless duplication is intended.",
+		description: "One edit in pre-edit coordinates; field pairs are operation-specific. replace_range rewrites the whole range, may retain source text and change line count; inserts add text beside the anchor without copying it.",
 	},
 );
 
 export const HLEDIT_READ_ANCHORS_PARAMS_SCHEMA = Type.Object(
 	{
 		path: PATH_SCHEMA,
-		offset: Type.Optional(Type.Integer({ minimum: 1, description: "First line (1-based; default 1)." })),
-		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_READ_LIMIT, description: `Maximum lines (default ${DEFAULT_READ_LIMIT}).` })),
-		windows: Type.Optional(Type.Array(Type.Object({
+		windows: Type.Array(Type.Object({
 			offset: Type.Integer({ minimum: 1 }),
 			limit: Type.Integer({ minimum: 1, maximum: MAX_READ_LIMIT }),
 		}, STRICT_OBJECT), {
 			minItems: 1, maxItems: MAX_READ_WINDOWS,
-			description: "Same-file windows with 1-based offset and line count; mutually exclusive with top-level offset/limit. Shared 2000-line/96 KiB budget.",
-		})),
+			description: "Same-file ranges; use one entry for a single range. offset is 1-based; limit is a line count. Multiple windows share a 2000-line/96 KiB budget.",
+		}),
 	},
 	STRICT_OBJECT,
 );
@@ -89,7 +70,7 @@ export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 		path: PATH_SCHEMA,
 		proof_id: Type.String({ minLength: 1, description: "Proof for these anchors' file and generation." }),
 		changes: Type.Array(
-			Type.Union([REPLACE_RANGE_CHANGE_SCHEMA, DELETE_RANGE_CHANGE_SCHEMA, INSERT_CHANGE_SCHEMA]),
+			CHANGE_SCHEMA,
 			{
 				minItems: 1,
 				maxItems: MAX_FILE_CHANGE_COUNT,

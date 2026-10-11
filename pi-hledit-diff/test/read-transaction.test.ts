@@ -36,7 +36,7 @@ test("read CLI validation and evidence update hold the canonical file queue", as
 
 	const evidence = new ReadEvidenceStore();
 	const readPromise = runReadAnchorsTransaction(
-		{ path: "target.txt", offset: 1, limit: 1 },
+		{ path: "target.txt", windows: [{ offset: 1, limit: 1 }] },
 		directory,
 		undefined,
 		evidence,

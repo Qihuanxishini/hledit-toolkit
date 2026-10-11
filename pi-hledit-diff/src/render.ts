@@ -2,7 +2,7 @@ import { keyHint, type AgentToolResult, type ToolRenderResultOptions } from "@ea
 import { getCapabilities, hyperlink, sliceByColumn, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { changePreviewDiffText, parseChangePreview } from "./change-preview.ts";
+import { changePreviewDiffText, parseChangePreview, type VerifiedChangePreview } from "./change-preview.ts";
 import {
 	renderStandaloneDiff,
 	type DiffSummaryStats,
@@ -10,8 +10,8 @@ import {
 	type HleditRenderTheme,
 } from "./diff-renderer.ts";
 import { fileChangeLineRanges } from "./file-changes.ts";
-import { DEFAULT_READ_LIMIT, normalizeToolPath } from "./read-args.ts";
-import { parseUpdatedAnchorSpans } from "./post-edit-context.ts";
+import { normalizeToolPath } from "./read-args.ts";
+import { parseUpdatedAnchorSpans, type BatchAnchorContext } from "./post-edit-context.ts";
 import { createHighlightedTextCache, escapeTerminalControls } from "./syntax-highlight.ts";
 import type { HleditErrorMetadata, HleditToolKind, TextResult } from "./result.ts";
 
@@ -190,7 +190,7 @@ export function renderHleditCall(
 			? [formatLineRange(window.offset, window.offset + window.limit - 1)] : []).filter(Boolean).join(", ")
 		: undefined;
 	const range = kind === "read_anchors"
-		? windowRanges || formatLineRange(offset ?? 1, (offset ?? 1) + (limit ?? DEFAULT_READ_LIMIT) - 1)
+		? windowRanges
 		: kind === "apply_file_changes" ? fileChangeLineRanges(input.changes) : undefined;
 	const operationCount = kind === "apply_file_changes" && Array.isArray(input.changes) ? input.changes.length : undefined;
 	const searchContext = kind === "search_anchors" && typeof input.context === "number" && Number.isInteger(input.context) && input.context > 0 ? input.context : undefined;
@@ -316,6 +316,24 @@ function successfulChangeSummary(result: RenderResult, theme: RenderTheme): stri
 	return pieces.join(" ");
 }
 
+type ApplyRenderDetails = {
+	changePreview: VerifiedChangePreview | undefined;
+	diff: string;
+	updatedAnchorSpans: BatchAnchorContext[];
+};
+
+// [喵喵喵]: 宿主每轮 updateDisplay 都会重建组件；结构解析与 diff 文本化是纯函数，按 details
+// 对象身份缓存复用。updateResult 会传入新的 details 对象，缓存随之自然失效。
+const applyParsedDetailsCache = new WeakMap<object, ApplyRenderDetails>();
+
+function parseApplyRenderDetails(details: Record<string, unknown>): ApplyRenderDetails {
+	const changePreview = parseChangePreview(details.changePreview);
+	return {
+		changePreview,
+		diff: changePreview ? changePreviewDiffText(changePreview) : "",
+		updatedAnchorSpans: parseUpdatedAnchorSpans(details.updatedAnchorSpans) ?? [],
+	};
+}
 export function renderFileChangesResult(
 	result: RenderResult,
 	options: ToolRenderResultOptions,
@@ -331,8 +349,12 @@ export function renderFileChangesResult(
 
 	const path = pathFromContext(context);
 	const diffWarning = typeof result.details.previewError === "string" ? result.details.previewError : undefined;
-	const changePreview = parseChangePreview(result.details.changePreview);
-	const diff = changePreview ? changePreviewDiffText(changePreview) : "";
+	let parsedDetails = applyParsedDetailsCache.get(result.details);
+	if (!parsedDetails) {
+		parsedDetails = parseApplyRenderDetails(result.details);
+		applyParsedDetailsCache.set(result.details, parsedDetails);
+	}
+	const { changePreview, diff } = parsedDetails;
 	const writeWarnings = Array.isArray(result.details.warnings)
 		? result.details.warnings.filter((warning): warning is string => typeof warning === "string")
 		: [];
@@ -348,7 +370,7 @@ export function renderFileChangesResult(
 		return [truncateToWidth(successfulChangeSummary(result, theme), width, "")];
 	});
 
-	const updatedAnchorSpans = parseUpdatedAnchorSpans(result.details.updatedAnchorSpans) ?? [];
+	const updatedAnchorSpans = parsedDetails.updatedAnchorSpans;
 	const spanRanges = updatedAnchorSpans.map((span) => {
 		const last = span.offset + span.desiredLimit - 1;
 		return last === span.offset ? `第 ${span.offset} 行` : `第 ${span.offset}-${last} 行`;

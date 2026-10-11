@@ -8,6 +8,18 @@ export const MAX_EVIDENCE_RECORDS_PER_SESSION = 50_000;
 export const MAX_EVIDENCE_BYTES_PER_SESSION = 16 * 1024 * 1024;
 
 export type EvidenceLine = Readonly<{ anchor: string; text: string }>;
+
+// [喵喵喵]: EvidenceLine 不可变，anchor/text 的 UTF-8 字节数按对象缓存；usage() 在每次
+// 读取与容量淘汰后全量重算，行字节数的重复计算是其成本的大头。
+const evidenceLineBytesCache = new WeakMap<EvidenceLine, number>();
+function evidenceLineBytes(line: EvidenceLine): number {
+	let bytes = evidenceLineBytesCache.get(line);
+	if (bytes === undefined) {
+		bytes = Buffer.byteLength(line.anchor, "utf8") + Buffer.byteLength(line.text, "utf8");
+		evidenceLineBytesCache.set(line, bytes);
+	}
+	return bytes;
+}
 export type ProofEpoch = {
 	revision: string;
 	proofId: string;
@@ -53,7 +65,7 @@ function usage(path: string, current: ProofEpoch, history: readonly HistoricalPr
 		records += item.positions.size;
 		bytes += item.positions.size * 16;
 	}
-	for (const line of texts) bytes += Buffer.byteLength(line.anchor, "utf8") + Buffer.byteLength(line.text, "utf8");
+	for (const line of texts) bytes += evidenceLineBytes(line);
 	return { records, bytes };
 }
 

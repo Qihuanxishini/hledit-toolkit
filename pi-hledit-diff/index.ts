@@ -241,7 +241,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		description: "Read precise text windows from one snapshot with LN#HASH anchors and a file-bound proof_id for editing.",
 		promptGuidelines: [
 			"For planned edits, use hledit_read_anchors directly, not ordinary read/grep. Reuse complete hledit_search_anchors output or verified updated anchors covering the target.",
-			"In hledit_read_anchors, cover every consumed source line; sparse endpoints and truncated text are not proof. Use the smallest semantically complete ranges; windows combine distant targets. Follow continuation guidance.",
+			"In hledit_read_anchors, cover every consumed source line; sparse endpoints and truncated text are not proof. Supply windows for one or more smallest semantically complete ranges. Follow continuation guidance.",
 		],
 		parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 		// provider 侧按 schema 约束采样，从源头消除畸形参数；不支持的模型自动回落普通调用。

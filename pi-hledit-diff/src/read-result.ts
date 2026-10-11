@@ -277,24 +277,27 @@ export function formatReadMetadata(read: HleditReadMetadata, proofId?: string, m
 	const anchoredLines = read.lines.map((line) => `${line.anchor}:${line.text}`);
 	const { firstLine, lastLine, lineCount, totalLines } = read.actual;
 	const pattern = read.requested.pattern;
+	const continuation = read.nextOffset === undefined ? undefined : pattern === undefined
+		? `windows: [{ offset: ${read.nextOffset}, limit: ${read.requested.limit} }]`
+		: `offset ${read.nextOffset}`;
 	let notice: string;
 
 	// [喵喵喵]: 补读的下一步由整批协调器统一给出，不能沿用已经完成的中间页续读指令。
 	if (mode === "recovery") {
 		notice = `-- Recovery lines ${firstLine}-${lastLine}${read.textTruncated ? "; source text truncated, this page cannot establish proof" : ""} --`;
 	} else if (read.textTruncated) {
-		notice = `-- Source line text was truncated${lastLine !== undefined ? `; the last returned line is ${lastLine}` : ""} (${totalLines} lines total); rereading line ranges cannot recover the omitted in-line text. Truncated lines cannot establish edit proof; if the edit target includes such a line, rewrite the file with write instead.${read.nextOffset !== undefined ? ` To read later lines, continue with offset ${read.nextOffset}.` : ""} --`;
+		notice = `-- Source line text was truncated${lastLine !== undefined ? `; the last returned line is ${lastLine}` : ""} (${totalLines} lines total); rereading line ranges cannot recover the omitted in-line text. Truncated lines cannot establish edit proof; if the edit target includes such a line, rewrite the file with write instead.${continuation !== undefined ? ` To read later lines, continue with ${continuation}.` : ""} --`;
 	} else if (pattern !== undefined) {
 		const counts = `${read.totalMatches !== undefined ? `${read.totalMatches} matches in file; ` : ""}search offset ${read.requested.offset}; ${totalLines} lines total`;
 		if (lineCount === 0) {
 			notice = `-- No lines matching ${JSON.stringify(pattern)} were found at or after line ${read.requested.offset} (${counts}) --`;
 		} else if (read.nextOffset !== undefined) {
-			notice = `-- Returned ${lineCount} source lines (matches and context), ending at line ${lastLine} (${counts}); continue with offset ${read.nextOffset} --`;
+			notice = `-- Returned ${lineCount} source lines (matches and context), ending at line ${lastLine} (${counts}); continue with ${continuation} --`;
 		} else {
 			notice = `-- Returned ${lineCount} source lines (matches and context) (${counts}) --`;
 		}
 	} else if (read.nextOffset !== undefined) {
-		notice = `-- Showing lines ${firstLine}-${lastLine} of ${totalLines}; continue with offset ${read.nextOffset} --`;
+		notice = `-- Showing lines ${firstLine}-${lastLine} of ${totalLines}; continue with ${continuation} --`;
 	} else {
 		notice = `-- Showing lines ${firstLine}-${lastLine} of ${totalLines}; end of file --`;
 	}

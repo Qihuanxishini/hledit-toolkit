@@ -24,7 +24,7 @@ import {
 	changeShapeIssueResult,
 	findChangeShapeIssue,
 } from "./src/file-changes.ts";
-import { decodeFileChangeInput, prepareReadAnchorsArguments, prepareSearchAnchorsArguments } from "./src/prepare-arguments.ts";
+import { decodeFileChangeInput, prepareFileChangeArguments } from "./src/prepare-arguments.ts";
 import {
 	formatReadProofFailure,
 	ReadEvidenceStore,
@@ -244,9 +244,6 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			"In hledit_read_anchors, cover every consumed source line; sparse endpoints and truncated text are not proof. Supply windows for one or more smallest semantically complete ranges. Follow continuation guidance.",
 		],
 		parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
-		// provider 侧按 schema 约束采样，从源头消除畸形参数；不支持的模型自动回落普通调用。
-		constrainedSampling: { type: "json_schema", strict: "prefer" },
-		prepareArguments: prepareReadAnchorsArguments,
 		renderCall(args, theme, context) {
 			return renderHleditCall("read_anchors", args, theme, context);
 		},
@@ -271,8 +268,6 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			"In hledit_search_anchors, literal:true means verbatim substring search: do not add regex anchors or regex-only escaping. If no match, check mode, pattern and offset.",
 		],
 		parameters: HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA,
-		constrainedSampling: { type: "json_schema", strict: "prefer" },
-		prepareArguments: prepareSearchAnchorsArguments,
 		renderCall(args, theme, context) {
 			return renderHleditCall("search_anchors", args, theme, context);
 		},
@@ -299,7 +294,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			"After hledit_apply_file_changes, never replay success. Rejected batches made no write; fix the cause and review recovered reads before retrying. Recovery reads do not apply edits. On outcome_unknown, inspect the file and follow recovery guidance before writing.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
-		constrainedSampling: { type: "json_schema", strict: "prefer" },
+		prepareArguments: prepareFileChangeArguments,
 		renderCall(args, theme, context) {
 			return renderHleditCall("apply_file_changes", args, theme, context);
 		},

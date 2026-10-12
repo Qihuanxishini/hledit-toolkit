@@ -1,7 +1,7 @@
 import { anchorTokenLine, lineFromAnchor } from "./anchor.ts";
 import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
 import { formatUpdatedAnchorSpans, formatVerifiedOutputAnchors, limitVisibleAnchorSpans, parseAnchorContext, parseUpdatedAnchorSpans, type BatchAnchorContext } from "./post-edit-context.ts";
-import { suggestedReadWindow } from "./read-args.ts";
+import { formatReadCall, suggestedReadWindow } from "./read-args.ts";
 import {
 	isIntegerAtLeast,
 	isRawRevision,
@@ -178,7 +178,7 @@ function staleReadInstruction(result: Record<string, unknown>, context: ApplyRes
 	if (targetLines.length === 0) return genericInstruction;
 	const end = Math.max(...targetLines);
 	const { offset, limit, lastLine } = suggestedReadWindow(Math.min(...targetLines), end);
-	return `Before retrying, call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, windows: [{ offset: ${offset}, limit: ${limit} }] })${lastLine < end ? `, then continue with nextOffset through line ${end}` : ""}. Reconfirm the intended target; prior line numbers may have shifted. Do not reuse anchors from before the change.`;
+	return `Before retrying, call ${formatReadCall(context.path, { offset, limit })}${lastLine < end ? `, then continue with nextOffset through line ${end}` : ""}. Reconfirm the intended target; prior line numbers may have shifted. Do not reuse anchors from before the change.`;
 }
 
 function localizeInvalidApplyMessage(rawMessage: string, failedChange: number | undefined): string {
@@ -321,9 +321,10 @@ function appendInsufficientReadProofRecovery(
 
 	const changeNumber = failedIndex + 1;
 	const { offset, limit, lastLine: lastSuggestedLine } = suggestedReadWindow(start, end);
+	const readCall = formatReadCall(context.path, { offset, limit });
 	lines.push(lastSuggestedLine < end
-		? `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, windows: [{ offset: ${offset}, limit: ${limit} }] }) first, continue with nextOffset until line ${end} is covered, then ${resubmitInstruction}`
-		: `Call hledit_read_anchors({ path: ${JSON.stringify(context.path)}, windows: [{ offset: ${offset}, limit: ${limit} }] }) to reread every source line required by change ${changeNumber}, then ${resubmitInstruction}`);
+		? `Call ${readCall} first, continue with nextOffset until line ${end} is covered, then ${resubmitInstruction}`
+		: `Call ${readCall} to reread every source line required by change ${changeNumber}, then ${resubmitInstruction}`);
 }
 function formatApplyFailureResult(
 	result: Record<string, unknown>,

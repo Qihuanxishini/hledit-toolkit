@@ -64,7 +64,7 @@ test("readAnchorsResult returns actionable structured range errors", () => {
         { path: "src/a.ts", offset: 600, limit: 40 },
     );
 
-    assert.equal(result.content[0]?.text, "Starting line 600 is outside the file range (599 total lines).\nSuggestion: Set offset to an integer from 1 through 599.\nError code: range");
+    assert.equal(result.content[0]?.text, "Starting line 600 is outside the file range (599 total lines).\nSuggestion: Set windows[].offset to an integer from 1 through 599.\nError code: range");
     assert.deepEqual(result.details, {
         disposition: "rejected",
         path: "src/a.ts",
@@ -72,7 +72,7 @@ test("readAnchorsResult returns actionable structured range errors", () => {
             code: "range",
             message: "Starting line 600 is outside the file range (599 total lines).",
 			rawMessage: "offset 600 exceeds file length 599",
-            hint: "Set offset to an integer from 1 through 599.",
+            hint: "Set windows[].offset to an integer from 1 through 599.",
             requestedOffset: 600,
             totalLines: 599,
         },

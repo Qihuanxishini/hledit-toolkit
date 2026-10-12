@@ -113,6 +113,15 @@ export function buildSearchArgs(request: NormalizedSearchRequest): string[] {
 	return args;
 }
 
+// [喵喵喵]: 只统一 read 的参数语法；分页与恢复动作由调用方决定，search 仍使用顶层 offset。
+export function formatReadWindow(window: Pick<NormalizedReadRequest, "offset" | "limit">): string {
+	return `windows: [{ offset: ${window.offset}, limit: ${window.limit} }]`;
+}
+
+export function formatReadCall(path: string, window: Pick<NormalizedReadRequest, "offset" | "limit">): string {
+	return `hledit_read_anchors({ path: ${JSON.stringify(path)}, ${formatReadWindow(window)} })`;
+}
+
 export type SuggestedReadWindow = {
 	offset: number;
 	limit: number;

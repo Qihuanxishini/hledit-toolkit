@@ -10,6 +10,7 @@ import { HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH
 import { formatReadMetadata } from "../src/read-result.ts";
 import type { TextResult } from "../src/result.ts";
 import { MAX_RECOVERY_TEXT_BYTES } from "../src/read-recovery.ts";
+import { prepareFileChangeArguments } from "../src/prepare-arguments.ts";
 
 type ExtensionEventListener = (event: never, context: never) => unknown;
 type RegisteredTool = {
@@ -157,6 +158,7 @@ test("registered tool metadata explains the contract within its budget and names
 	assert.ok(readTool?.description && readTool.promptGuidelines);
 	assert.ok(searchTool?.description && searchTool.promptGuidelines);
 	assert.ok(applyTool?.description && applyTool.promptGuidelines);
+	assert.equal(applyTool.prepareArguments, prepareFileChangeArguments);
 
 	assert.equal(readTool.label, "Read for Edit");
 	assert.equal(readTool.promptGuidelines.length, 2);

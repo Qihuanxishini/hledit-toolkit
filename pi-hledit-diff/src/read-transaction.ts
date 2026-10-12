@@ -3,7 +3,7 @@ import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL } from "./active-tools.ts";
 import type { HleditRun } from "./cli.ts";
 import { ReadEvidenceStore, resolveReadEvidencePath } from "./read-evidence.ts";
-import { buildReadArgs, buildSearchArgs, normalizeSearchRequest } from "./read-args.ts";
+import { buildReadArgs, buildSearchArgs, DEFAULT_READ_LIMIT, formatReadWindow, MAX_READ_LIMIT, MAX_READ_WINDOWS, normalizeSearchRequest } from "./read-args.ts";
 import { readAnchorsResult } from "./read-result.ts";
 import { normalizeWindowsRequest, readWindowsResult } from "./read-windows.ts";
 import { rejectedToolResult, type TextResult } from "./result.ts";
@@ -26,7 +26,7 @@ export async function runReadAnchorsTransaction(
 ): Promise<TextResult> {
 	const request = normalizeWindowsRequest(params);
 	if (!request) return rejectedToolResult(
-		"Use windows: [{ offset: 1, limit: 160 }] with 1-8 ranges; offsets and limits must be positive safe integers, with limit at most 2000.",
+		`Use ${formatReadWindow({ offset: 1, limit: DEFAULT_READ_LIMIT })} with 1-${MAX_READ_WINDOWS} ranges; offsets and limits must be positive safe integers, with limit at most ${MAX_READ_LIMIT}.`,
 		{ code: "invalid", message: "Invalid read windows." },
 	);
 	const evidencePath = await resolveReadEvidencePath(cwd, request.path);

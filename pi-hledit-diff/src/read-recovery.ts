@@ -1,4 +1,4 @@
-import { buildReadArgs, MAX_READ_LIMIT, normalizeReadRequest, suggestedReadWindow } from "./read-args.ts";
+import { buildReadArgs, formatReadCall, MAX_READ_LIMIT, normalizeReadRequest, suggestedReadWindow } from "./read-args.ts";
 import {
 	formatReadProofDiagnosis,
 	lineRangeDescription,
@@ -87,7 +87,7 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 		const first = pending[0]!;
 		const limit = Math.min(MAX_READ_LIMIT, first.end - first.start + 1);
 		const ranges = pending.slice(0, 8).map(lineRangeDescription).join(", ");
-		return `Remaining read windows: ${ranges}${pending.length > 8 ? `; ${pending.length - 8} more windows` : ""}. Call hledit_read_anchors({ path: ${JSON.stringify(path)}, windows: [{ offset: ${first.start}, limit: ${limit} }] }), continue with nextOffset as needed, and cover all remaining required ranges before resubmitting the batch with current anchors and the latest proof_id.`;
+		return `Remaining read windows: ${ranges}${pending.length > 8 ? `; ${pending.length - 8} more windows` : ""}. Call ${formatReadCall(path, { offset: first.start, limit })}, continue with nextOffset as needed, and cover all remaining required ranges before resubmitting the batch with current anchors and the latest proof_id.`;
 	};
 	const budgetResult = (message: string): TextResult => recoveryResult("proof_recovery_budget_exceeded", message, [
 		`${message} ${reads.length > 0 ? `The ${reads.length} retained page(s) are recorded below; recovery is incomplete.` : "No recovery read was retained, so no source is included below."}`,

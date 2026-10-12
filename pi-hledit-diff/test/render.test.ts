@@ -196,34 +196,51 @@ test("renderReadAnchorsResult shows actual range, total lines, and EOF", () => {
 });
 
 for (const text of ["x".repeat(30_000), "字🙂e\u0301".repeat(2_000)]) {
-	test(`collapsed anchor preview bounds wrapped rows (${text.length} characters)`, () => {
-		const result: TextResult = {
-			content: [{ type: "text", text: `proof_id: test1\n1#AAB:${text}` }],
-			details: {
-				disposition: "succeeded", proofId: "test1",
-				read: {
-					path: "sample.txt", revision: `sha256:${"a".repeat(64)}`,
-					requested: { offset: 1, limit: 1 },
-					actual: { firstLine: 1, lastLine: 1, lineCount: 1, totalLines: 1 },
-					lines: [{ line: 1, anchor: "1#AAB", text, textTruncated: false }],
-					truncated: false, textTruncated: false, eof: true,
+	for (const multiWindow of [false, true]) {
+		test(`collapsed ${multiWindow ? "multi-window" : "single-window"} anchor preview bounds wrapped rows (${text.length} characters)`, () => {
+			const result: TextResult = {
+				content: [{ type: "text", text: `proof_id: test1\n1#AAB:${text}` }],
+				details: {
+					disposition: "succeeded", proofId: "test1",
+					read: {
+						path: "sample.txt", revision: `sha256:${"a".repeat(64)}`,
+						requested: { offset: 1, limit: 1 },
+						actual: { firstLine: 1, lastLine: 1, lineCount: 1, totalLines: 1 },
+						lines: [{ line: 1, anchor: "1#AAB", text, textTruncated: false }],
+						truncated: false, textTruncated: false, eof: true,
+					},
 				},
-			},
-		};
-		const snapshot = JSON.stringify(result);
-		const collapsed = renderReadAnchorsResult(result, options(), theme, { args: { path: "sample.txt" } });
-		for (const width of [18, 40, 100]) {
-			const output = collapsed.render(width);
-			assert.equal(output.length, 16);
-			assert.ok(output.every((line) => visibleWidth(line) <= width));
-			assert.ok(output.some((line) => line.includes("预览已折叠")));
-			assert.strictEqual(collapsed.render(width), output);
-		}
-		const expanded = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "sample.txt" } }), 100);
-		assert.ok(expanded.length > 16);
-		assert.equal(expanded.slice(2).map((line) => line.slice(line.indexOf(" │ ") + 3)).join(""), text);
-		assert.equal(JSON.stringify(result), snapshot);
-	});
+			};
+			if (multiWindow) {
+				const read = result.details.read!;
+				const tail = { line: 3, anchor: "3#CCL", text: "tail", textTruncated: false };
+				result.details.windowsRead = {
+					path: read.path, revision: read.revision, totalLines: 3,
+					requested: [{ offset: 1, limit: 1 }, { offset: 3, limit: 1 }],
+					windows: [
+						{ offset: 1, limit: 1, requestedWindows: [1], lines: read.lines, truncated: false },
+						{ offset: 3, limit: 1, requestedWindows: [2], lines: [tail], truncated: false },
+					],
+					truncated: false,
+				};
+				delete result.details.read;
+				result.content[0]!.text += `\n${tail.anchor}:${tail.text}`;
+			}
+			const snapshot = JSON.stringify(result);
+			const collapsed = renderReadAnchorsResult(result, options(), theme, { args: { path: "sample.txt" } });
+			for (const width of [18, 40, 100]) {
+				const output = collapsed.render(width);
+				assert.ok(output.some((line) => line.includes("预览已折叠")));
+				assert.equal(output.filter((line) => line.includes(" │ ")).length, 12);
+				assert.ok(output.every((line) => visibleWidth(line) <= width));
+				assert.strictEqual(collapsed.render(width), output);
+			}
+			const expanded = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "sample.txt" } }), 100);
+			assert.ok(expanded.length > 16);
+			assert.equal(expanded.filter((line) => line.includes(" │ ")).map((line) => line.slice(line.indexOf(" │ ") + 3)).join(""), text + (multiWindow ? "tail" : ""));
+			assert.equal(JSON.stringify(result), snapshot);
+		});
+	}
 }
 
 test("renderReadAnchorsResult expands structured continuation details", () => {
@@ -252,7 +269,7 @@ test("renderReadAnchorsResult expands structured continuation details", () => {
 
     assert.equal(output[0], "↳ 2 行锚点 • 第 8-9 行 / 共 20 行 • 下一页从第 10 行开始");
     assert.ok(output.includes("8#AAB │ first"));
-    assert.ok(output.some((line) => line.includes("继续读取请使用 offset 10")));
+    assert.ok(output.some((line) => line.includes("继续读取请使用 windows: [{ offset: 10, limit: 2 }]")));
 });
 
 test("renderReadAnchorsResult folds structured errors to the actionable message", () => {

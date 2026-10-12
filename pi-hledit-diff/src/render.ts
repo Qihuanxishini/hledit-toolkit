@@ -10,10 +10,10 @@ import {
 	type HleditRenderTheme,
 } from "./diff-renderer.ts";
 import { fileChangeLineRanges } from "./file-changes.ts";
-import { normalizeToolPath } from "./read-args.ts";
+import { formatReadWindow, normalizeToolPath } from "./read-args.ts";
 import { parseUpdatedAnchorSpans, type BatchAnchorContext } from "./post-edit-context.ts";
 import { createHighlightedTextCache, escapeTerminalControls } from "./syntax-highlight.ts";
-import type { HleditErrorMetadata, HleditToolKind, TextResult } from "./result.ts";
+import type { HleditErrorMetadata, HleditReadLine, HleditToolKind, TextResult } from "./result.ts";
 
 export type RenderComponent = HleditRenderComponent;
 export type RenderTheme = HleditRenderTheme;
@@ -135,6 +135,31 @@ function createAnchoredSourceRowsComponent(
 	});
 }
 
+function createAnchoredPreviewComponent(
+	lines: HleditReadLine[],
+	path: string | undefined,
+	expanded: boolean,
+	theme: RenderTheme,
+): RenderComponent {
+	const visible = expanded ? lines : lines.slice(0, COLLAPSED_ANCHOR_ROWS);
+	// [喵喵喵]: 多渲染一个屏幕行检测换行溢出；单窗口与多窗口共用，不能用源码行数判断长行是否隐藏。
+	const source = createAnchoredSourceRowsComponent(
+		visible.map((line) => ({ anchor: line.anchor, lineNumber: line.line, content: line.text })), path, theme,
+		expanded ? Number.POSITIVE_INFINITY : COLLAPSED_ANCHOR_ROWS + 1,
+	);
+	return component((width) => {
+		if (width === 0) return [];
+		const rows = source.render(width);
+		const wrappedRowsHidden = !expanded && rows.length > COLLAPSED_ANCHOR_ROWS;
+		const hint = wrappedRowsHidden ? "预览已折叠"
+			: !expanded && lines.length > visible.length ? `还有 ${lines.length - visible.length} 行锚点` : undefined;
+		return [
+			...(wrappedRowsHidden ? rows.slice(0, COLLAPSED_ANCHOR_ROWS) : rows),
+			...(hint ? ["", truncateToWidth(theme.fg("muted", `… ${hint} • ${expandHint()}`), width, "")] : []),
+		];
+	}, () => source.invalidate());
+}
+
 function failureReason(error: HleditErrorMetadata | undefined): string | undefined {
 	// [喵喵喵]: I/O 的通用说明不足以区分缺失文件、权限拒绝等原因；仅显示层优先采用原始诊断。
 	return (error?.code === "io" ? error.rawMessage?.trim() : undefined) || error?.message?.trim() || undefined;
@@ -230,30 +255,18 @@ export function renderReadAnchorsResult(
 	const windowsRead = result.details.windowsRead;
 	if (windowsRead) {
 		const lines = windowsRead.windows.flatMap((window) => window.lines);
-		const visible = options.expanded ? lines : lines.slice(0, COLLAPSED_ANCHOR_ROWS);
-		const source = createAnchoredSourceRowsComponent(
-			visible.map((line) => ({ anchor: line.anchor, lineNumber: line.line, content: line.text })), pathFromContext(context), theme,
-			options.expanded ? Number.POSITIVE_INFINITY : COLLAPSED_ANCHOR_ROWS,
-		);
+		const source = createAnchoredPreviewComponent(lines, pathFromContext(context), options.expanded, theme);
 		const ranges = windowsRead.windows.map((window) => formatLineRange(window.offset, window.offset + window.limit - 1)).join(", ");
 		return component((width) => width <= 0 ? [] : [
 			truncateToWidth(theme.fg("toolOutput", `↳ ${lines.length} 行锚点 • ${windowsRead.requested.length} 个窗口 • ${ranges} / 共 ${windowsRead.totalLines} 行`), width, ""),
 			...source.render(width),
-			...(!options.expanded && lines.length > visible.length
-				? [truncateToWidth(theme.fg("muted", `… 还有 ${lines.length - visible.length} 行锚点 • ${expandHint()}`), width, "")]
-				: []),
-		], () => source.invalidate?.());
+		], () => source.invalidate());
 	}
 	const read = result.details.read;
 	if (!read) {
 		return component((width) => [truncateToWidth(theme.fg("warning", "缺少结构化读取结果；请重新读取目标文件"), width, "")]);
 	}
-	const path = pathFromContext(context);
-	const visible = options.expanded ? read.lines : read.lines.slice(0, COLLAPSED_ANCHOR_ROWS);
-	const sourceRowsComponent = createAnchoredSourceRowsComponent(
-		visible.map((line) => ({ anchor: line.anchor, lineNumber: line.line, content: line.text })), path, theme,
-		options.expanded ? Number.POSITIVE_INFINITY : COLLAPSED_ANCHOR_ROWS + 1,
-	);
+	const sourceRowsComponent = createAnchoredPreviewComponent(read.lines, pathFromContext(context), options.expanded, theme);
 	return component((width) => {
 		if (width === 0) return [];
 
@@ -271,23 +284,19 @@ export function renderReadAnchorsResult(
 		].filter(Boolean).join(" ");
 		if (read.lines.length === 0 || width < 18) return [truncateToWidth(header, width, "")];
 
-		const sourceRows = sourceRowsComponent.render(width);
-		const wrappedRowsHidden = !options.expanded && sourceRows.length > COLLAPSED_ANCHOR_ROWS;
 		const output = [
 			truncateToWidth(header, width, ""),
 			theme.fg("dim", "─".repeat(width)),
-			...(wrappedRowsHidden ? sourceRows.slice(0, COLLAPSED_ANCHOR_ROWS) : sourceRows),
+			...sourceRowsComponent.render(width),
 		];
-		if (wrappedRowsHidden) {
-			output.push("", truncateToWidth(theme.fg("muted", `… 预览已折叠 • ${expandHint()}`), width, ""));
-		} else if (!options.expanded && read.lines.length > visible.length) {
-			output.push("", truncateToWidth(theme.fg("muted", `… 还有 ${read.lines.length - visible.length} 行锚点 • ${expandHint()}`), width, ""));
-		}
 		if (read.nextOffset !== undefined) {
-			output.push(truncateToWidth(theme.fg("warning", `继续读取请使用 offset ${read.nextOffset}`), width, ""));
+			const continuation = read.requested.pattern === undefined
+				? formatReadWindow({ offset: read.nextOffset, limit: read.requested.limit })
+				: `offset ${read.nextOffset}`;
+			output.push(truncateToWidth(theme.fg("warning", `继续读取请使用 ${continuation}`), width, ""));
 		}
 		if (read.textTruncated) {
-			output.push(truncateToWidth(theme.fg("warning", "源文件行内容已截断；调整 offset 无法恢复该行被省略的文本"), width, ""));
+			output.push(truncateToWidth(theme.fg("warning", "源文件行内容已截断；调整读取范围无法恢复该行被省略的文本"), width, ""));
 		}
 		return output;
 	}, () => sourceRowsComponent.invalidate());

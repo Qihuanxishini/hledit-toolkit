@@ -22,7 +22,7 @@ import {
 	type HleditErrorMetadata,
 	type HleditReadMetadata,
 } from "./result.ts";
-import { suggestedReadWindow } from "./read-args.ts";
+import { formatReadCall, suggestedReadWindow } from "./read-args.ts";
 import { MAX_FILE_CHANGE_COUNT, type FileChangeParams } from "./schema.ts";
 
 import { ProofState, MAX_EVIDENCE_RECORDS_PER_FILE, type EvidenceLine } from "./proof-state.ts";
@@ -417,9 +417,10 @@ export function formatReadProofFailure(path: string, failure: ReadProofFailure):
 	const completionTarget = failure.proofGap
 		? `all required source lines for change ${failure.proofGap.changeNumber} through line ${lastLine}`
 		: firstLine === lastLine ? "the target line" : "the complete target range";
+	const readCall = formatReadCall(path, { offset, limit });
 	const readInstruction = lastSuggestedLine < lastLine
-		? `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, windows: [{ offset: ${offset}, limit: ${limit} }] }) first, then continue with nextOffset until line ${lastLine} is covered.`
-		: `Call hledit_read_anchors({ path: ${JSON.stringify(path)}, windows: [{ offset: ${offset}, limit: ${limit} }] }) first and confirm ${completionTarget}.`;
+		? `Call ${readCall} first, then continue with nextOffset until line ${lastLine} is covered.`
+		: `Call ${readCall} first and confirm ${completionTarget}.`;
 	const resubmitInstruction = "After the read succeeds, use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.";
 	if (failure.code === "read_evidence_evicted") {
 		lines.push("Earlier evidence exceeded the per-file cache limit. Use the targeted read below rather than paging the whole file again. If it evicts another required range, stop: narrow the batch or ask whether separate, non-atomic batches are acceptable.");

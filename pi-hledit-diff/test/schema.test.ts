@@ -49,9 +49,10 @@ test("apply file changes rejects anchors outside the CLI hash alphabet", () => {
   }
 });
 
-test("apply file changes accepts newline-delimited text", () => {
+test("apply file changes accepts operation-specific inputs", () => {
   for (const change of [
     { operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ", lines: "next" },
+    { operation: "delete_range", start_anchor: "1#BHJ", end_anchor: "1#BHJ" },
     { operation: "insert_before", anchor: "2#BBK", lines: "before\nafter" },
     { operation: "insert_after", anchor: "3#JKL", lines: "after\nnext" },
   ]) {

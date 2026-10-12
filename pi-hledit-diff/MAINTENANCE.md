@@ -44,13 +44,15 @@ pi-hledit-diff/
 | `hledit_search_anchors` | 按 RE2 正则或字面量模式搜索，并返回匹配/上下文锚点行。 |
 | `hledit_apply_file_changes` | 对一个文件提交完整非冲突 change batch，原子应用并返回新锚点。 |
 
-三个工具都声明 `constrainedSampling: { type: "json_schema", strict: "prefer" }`。CLI 健康时，active set 始终保留这三个工具、移除内置 `edit` 并保留无关工具；`session_tree` 和 `/reload` 后重新同步同一策略。CLI 不可用时恢复内置 `edit`。不存在 `/tools` 假设、动态 evidence 可见性、Plan Mode 联动或内置 `edit` 名称 override。
+三个工具通过普通 JSON Schema 声明参数，由宿主和插件在本地验证，基础调用不要求额外配置模型/provider。CLI 健康时，active set 始终保留这三个工具、移除内置 `edit` 并保留无关工具；`session_tree` 和 `/reload` 后重新同步同一策略。CLI 不可用时恢复内置 `edit`。不存在 `/tools` 假设、动态 evidence 可见性、Plan Mode 联动或内置 `edit` 名称 override。
 
 宿主基线为 Pi 0.99.0。三个工具均声明 `exposure: "model-only"`，保证读写结果进入模型转录并可按 branch 重放；Pi 的嵌套调用记录不保存完整工具结果，不能用于恢复 proof。read/search 的 annotations 声明本地只读，apply 声明本地破坏性写入；权限判断仍由宿主及权限扩展执行。
 
 当前公开协议按 `JSON.stringify(parameters) + description + promptGuidelines` 计量，回归上限为 6,000 characters。只保留操作边界、必要字段语义、proof 与失败恢复规则，不加入示例或重复展开次要细节；精确值由测试和最终验证计量，不在文档中固化。
 
 三个工具的路径在进入 CLI 与 canonical queue 前统一经 `normalizeToolPath` 处理：展开 `~` / `~/`（Windows 也支持 `~\`）、去除 `@` 前缀并转换 Windows MSYS 盘符。
+
+read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArguments` 依次执行可选 null 归一化、`Value.Convert` 和 schema 校验；整数转换可能接受数字字符串并截断小数，因此范围约束作用于转换后的值，不承诺拒绝所有原始非整数输入。插件不额外引入严格数值策略。apply 使用按操作分支的 schema，`prepareFileChangeArguments` 在宿主转换和校验前给出字段组合的单条诊断，不补值、删字段或改写操作；必需字段的 null 按缺失拒绝，不适用字段即使为 null 也必须省略。未知操作、字段类型、锚点格式与额外字段仍由宿主 schema 拒绝，decoder 保留组合检查及文本拆分与聚合限制。
 
 ### `hledit_read_anchors`
 
@@ -62,7 +64,7 @@ pi-hledit-diff/
 ```
 
 - 编辑现有非空可读文本文件前，使用该工具读取会被消费的全部连续原始行；普通 `read` 只用于参考或目标未定的探索。
-- `windows` 必填且包含 1–8 项，单窗口也使用数组；每项显式提供 1-based `offset` 和 `limit`（1–2000）。不接受顶层 `offset` / `limit`，不转换旧调用。非法整数与超限值由 schema 拒绝；读取不接受 grep、literal、context 或 ignore_case。
+- `windows` 必填且包含 1–8 项，单窗口也使用数组；每项显式提供 1-based `offset` 和 `limit`（1–2000）。不接受顶层 `offset` / `limit`，不转换旧调用。宿主转换后仍不满足整数与范围约束的值由 schema 拒绝；读取不接受 grep、literal、context 或 ignore_case。
 - 单窗口调用 `read-range`，多窗口调用 `read-windows`（JSON stdin）。响应验证 revision、总行数、连续性/递增顺序、锚点格式、分页和 source-line truncation；正文与 `details.read` / `details.windowsRead` 由同一已验证结构生成。
 - 多窗口的乱序、重叠或相邻范围按物理位置合并，保留原始请求编号。一份 `Snapshot` 共享 2,000 行 / 96 KiB JSON 预算；仅当所有段完整时，一次登记联合证据并发出 proof。任一段不完整，本次全部结果仅供预览，需分小批重读所需范围，包括已完成段。
 - 单窗口中，单行超过 50 KiB JSON 页预算时仅返回截断文本；该行不建立 proof，但后续仍有物理行时提供 `nextOffset` 和 `windows` 续读参数。搜索同样在还有匹配/上下文行时提供续读游标，但沿用自身的顶层 `offset`。
@@ -211,7 +213,7 @@ Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标�
 "succeeded" | "rejected" | "unavailable" | "outcome_unknown"
 ```
 
-- `findChangeShapeIssue` 在 `selectProof` 之前拦截仅凭请求即可判定的自相矛盾：区间锚点倒置（`reversed_anchor_range`）、`lines` 行首粘贴了本次提交过或当前证据中存在的锚点 token（`anchor_token_in_lines`，在 file queue 内通过 `anchorsRequiringRead(path, [anchor])` 按需查询，不构造或复制全文件锚点集合）。这类问题重读文件无法修复，必须让模型改参数，因此不得落到 `insufficient_read_proof` 的补读指令上；正文明确声明重读无效并给出交换/删前缀的具体动作。检测即拒绝，不自动修正——与 `prepareArguments` 只服务 read 的约定一致；
+- `findChangeShapeIssue` 在 `selectProof` 之前拦截仅凭请求即可判定的自相矛盾：区间锚点倒置（`reversed_anchor_range`）、`lines` 行首粘贴了本次提交过或当前证据中存在的锚点 token（`anchor_token_in_lines`，在 file queue 内通过 `anchorsRequiringRead(path, [anchor])` 按需查询，不构造或复制全文件锚点集合）。这类问题重读文件无法修复，必须让模型改参数，因此不得落到 `insufficient_read_proof` 的补读指令上；正文明确声明重读无效并给出交换/删前缀的具体动作。检测即拒绝，不自动修正，不在参数预处理阶段改写编辑语义；
 - CLI 冲突诊断中的零基 edit 下标转换为公开的一基 change 编号，保留冲突双方及范围/插入边界原因；指示合并或消除重叠，不引导调用方用重读修复参数冲突；
 - 三个工具在 `execute()` 返回边界直接设置 Pi `isError`：插件侧 `insufficient_read_proof` 是可恢复补读结果，设为 `false`；其他非成功结果设为 `true`，包括 `source_line_truncated`、`proof_recovery_read_failed`、`proof_recovery_budget_exceeded` 和 `proof_recovery_source_changed`，要求调用方按失败原因调整动作；
 - 读取错误码全集为 `range` / `binary` / `encoding` / `directory` / `io` / `pattern` / `broad_pattern`，每个码都必须有本地化 message，落到兜底分支等于只把错误码丢给模型；message 本身说不清下一步动作时再补 hint（`range` / `directory` / `pattern` / `broad_pattern`）。`pattern` 转发 CLI 的 RE2 编译原文（出错位置本身就是要改的东西）并点名 RE2 不支持 lookahead/lookbehind/backreference；`broad_pattern` 指向 `hledit_read_anchors`；
@@ -249,7 +251,8 @@ wrapper 输出上限为 1 MiB，保护异常或不兼容 CLI 输出；单窗口 
 | 文件 | 职责 |
 | --- | --- |
 | `index.ts` | 三工具注册、apply queue 主流程、错误升级与 active-tool 生命周期。 |
-| `src/schema.ts` | 三工具的严格 schema 与参数类型。 |
+| `src/schema.ts` | 三工具的严格 schema 与参数类型；apply 按操作区分字段，生成与执行使用同一契约。 |
+| `src/prepare-arguments.ts` | apply 的前置字段组合诊断与 execute 边界文本解码、聚合限制。 |
 | `src/proof-id.ts` | 96 位进程 nonce 与单调序号 proof id 生成器。 |
 | `src/read-transaction.ts` | 单窗口、多窗口和 search CLI、结果校验与 evidence 发布的 canonical queue 事务。 |
 | `src/read-windows.ts` | 多窗口参数、合并契约、实时/重放元数据校验与模型正文。 |
@@ -262,10 +265,10 @@ wrapper 输出上限为 1 MiB，保护异常或不兼容 CLI 输出；单窗口 
 | `src/read-result.ts` | 读取响应校验、补读 metadata 校验及读取正文和错误提示。 |
 | `src/apply-result.ts` | 写入响应校验、stale 诊断与写入结果正文；校验得到的 delta/span 直接用于 details 和更新锚点正文。 |
 | `src/anchor.ts` / `src/anchor-hash.ts` | 规范锚点语法、行号提取与 hash 算法。 |
-| `src/read-args.ts` | 工具路径归一化、读取/搜索参数与补读窗口。 |
+| `src/read-args.ts` | 工具路径归一化、读取/搜索参数、补读窗口及 read 提示的统一参数格式。 |
 | `src/change-preview.ts` | 提交绑定 preview、UTF-8 cap、结构重验和 diff 文本桥。 |
 | `src/post-edit-context.ts` | `updatedAnchorSpans` 验证与模型正文格式化。 |
-| `src/render.ts` / `src/diff-renderer.ts` | 结构化锚点与自适应 diff TUI；读取预览折叠时最多显示 12 个源码屏幕行，展开保留完整页面，模型正文与 proof 不受展示裁剪影响。 |
+| `src/render.ts` / `src/diff-renderer.ts` | 结构化锚点与自适应 diff TUI；读取预览共用 12 个源码屏幕行的折叠预算，按实际换行溢出显示展开提示，展开保留完整页面，模型正文与 proof 不受展示裁剪影响。 |
 | `src/syntax-highlight.ts` | 两套 TUI 共用的语言解析与按行高亮缓存。 |
 | `src/compaction-files.ts` | 三工具结构化结果的 compaction fileOps。 |
 
@@ -307,6 +310,7 @@ pi --no-extensions -e ./pi-hledit-diff/index.ts
 
 1. 连续 range read、正则/字面量 search/context 和四种 anchored operation；
 2. 新 proof 链式续编、旧 proof 消费目标拒绝、存续目标迁移、stale 与容量恢复；
+   参数协议变更还须使用现有模型/provider 配置，让模型自行生成四种操作及后续编辑调用；不得用手写参数桥接代替这项验收。
 3. session branch 切换与 `/reload` 后 evidence/active set；
 4. mixed EOL、BOM、trailing newline、中文/emoji preview；
 5. expanded TUI 从 details 显示 anchors，正文格式变化不影响渲染。

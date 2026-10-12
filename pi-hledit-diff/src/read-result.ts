@@ -1,7 +1,7 @@
 import { anchorTokenLine } from "./anchor.ts";
 import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
 import { nextProofId } from "./proof-id.ts";
-import { MAX_READ_LIMIT, type NormalizedReadRequest, type NormalizedSearchRequest } from "./read-args.ts";
+import { formatReadWindow, MAX_READ_LIMIT, type NormalizedReadRequest, type NormalizedSearchRequest } from "./read-args.ts";
 import {
 	isIntegerAtLeast,
 	isRawRevision,
@@ -230,11 +230,11 @@ function localizeReadErrorMessage(facts: ReadErrorFacts): string {
 	return `hledit rejected this read (error code: ${code}).`;
 }
 
-function readErrorHint(facts: ReadErrorFacts): string | undefined {
+function readErrorHint(facts: ReadErrorFacts, isSearch: boolean): string | undefined {
 	if (facts.code === "range" && facts.totalLines !== undefined) {
 		return facts.totalLines === 0
 			? "The file is empty, so no anchors exist. To add content to an empty file, use write."
-			: `Set offset to an integer from 1 through ${facts.totalLines}.`;
+			: `Set ${isSearch ? "offset" : "windows[].offset"} to an integer from 1 through ${facts.totalLines}.`;
 	}
 	if (facts.code === "directory") {
 		return "Provide a concrete text file path. For a directory-wide search, locate candidate files first and search them individually.";
@@ -248,7 +248,7 @@ function readErrorHint(facts: ReadErrorFacts): string | undefined {
 	return undefined;
 }
 
-function parseReadErrorMetadata(parsed: Record<string, unknown>): HleditErrorMetadata | undefined {
+function parseReadErrorMetadata(parsed: Record<string, unknown>, isSearch: boolean): HleditErrorMetadata | undefined {
 	if (parsed.ok !== false || typeof parsed.error !== "string" || typeof parsed.message !== "string") return undefined;
 	const requestedOffset = isIntegerAtLeast(parsed.requestedOffset, 1) ? parsed.requestedOffset : undefined;
 	const totalLines = isIntegerAtLeast(parsed.totalLines, 0) ? parsed.totalLines : undefined;
@@ -260,7 +260,7 @@ function parseReadErrorMetadata(parsed: Record<string, unknown>): HleditErrorMet
 		...(requestedOffset !== undefined ? { requestedOffset } : {}),
 		...(totalLines !== undefined ? { totalLines } : {}),
 	};
-	const hint = readErrorHint(facts);
+	const hint = readErrorHint(facts, isSearch);
 	return {
 		code: facts.code,
 		message: localizeReadErrorMessage(facts),
@@ -278,7 +278,7 @@ export function formatReadMetadata(read: HleditReadMetadata, proofId?: string, m
 	const { firstLine, lastLine, lineCount, totalLines } = read.actual;
 	const pattern = read.requested.pattern;
 	const continuation = read.nextOffset === undefined ? undefined : pattern === undefined
-		? `windows: [{ offset: ${read.nextOffset}, limit: ${read.requested.limit} }]`
+		? formatReadWindow({ offset: read.nextOffset, limit: read.requested.limit })
 		: `offset ${read.nextOffset}`;
 	let notice: string;
 
@@ -338,7 +338,7 @@ export function readAnchorsResult(run: HleditRun, request: NormalizedReadRequest
 		};
 	}
 	if (parsed.ok === false) {
-		const error = parseReadErrorMetadata(parsed);
+		const error = parseReadErrorMetadata(parsed, "pattern" in request);
 		if (!error) {
 			return {
 				content: [{ type: "text", text: invalidReadResponseText() }],

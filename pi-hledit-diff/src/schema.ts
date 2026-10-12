@@ -16,25 +16,41 @@ const REPLACEMENT_TEXT_SCHEMA = Type.String({
 	description: "Raw text; \\n separates lines; no LN#HASH prefixes.",
 });
 
-// [喵喵喵]: 平面对象兼容 Pi 的 strict schema 转换，并避免对象 union 的跨分支错误噪声。
-// 操作相关的字段组合由 decodeFileChangeInput 校验；类型、格式与额外字段仍由宿主 schema 拒绝。
-const CHANGE_SCHEMA = Type.Object(
+// [喵喵喵]: 每个分支只声明该操作可用的字段，使模型生成契约与本地执行契约一致。
+const REPLACE_RANGE_CHANGE_SCHEMA = Type.Object(
 	{
-		operation: StringEnum(
-			["replace_range", "delete_range", "insert_before", "insert_after"] as const,
-			{
-				description:
-					"replace_range / delete_range use inclusive start_anchor + end_anchor (repeat the same token for a single line); insert_before / insert_after use anchor. replace_range and both inserts require lines; delete_range takes none."
-			},
-		),
-		start_anchor: Type.Optional(ANCHOR_SCHEMA),
-		end_anchor: Type.Optional(ANCHOR_SCHEMA),
-		anchor: Type.Optional(ANCHOR_SCHEMA),
-		lines: Type.Optional(REPLACEMENT_TEXT_SCHEMA),
+		operation: StringEnum(["replace_range"] as const),
+		start_anchor: ANCHOR_SCHEMA,
+		end_anchor: ANCHOR_SCHEMA,
+		lines: REPLACEMENT_TEXT_SCHEMA,
 	},
 	{
 		...STRICT_OBJECT,
-		description: "One edit in pre-edit coordinates; field pairs are operation-specific. replace_range rewrites the whole range, may retain source text and change line count; inserts add text beside the anchor without copying it.",
+		description: "Replace the inclusive source range; repeat the token for one line. May retain source text and change line count.",
+	},
+);
+
+const DELETE_RANGE_CHANGE_SCHEMA = Type.Object(
+	{
+		operation: StringEnum(["delete_range"] as const),
+		start_anchor: ANCHOR_SCHEMA,
+		end_anchor: ANCHOR_SCHEMA,
+	},
+	{
+		...STRICT_OBJECT,
+		description: "Delete the inclusive source range; repeat the token for one line.",
+	},
+);
+
+const INSERT_CHANGE_SCHEMA = Type.Object(
+	{
+		operation: StringEnum(["insert_before", "insert_after"] as const),
+		anchor: ANCHOR_SCHEMA,
+		lines: REPLACEMENT_TEXT_SCHEMA,
+	},
+	{
+		...STRICT_OBJECT,
+		description: "Insert new text before/after anchor; existing text remains. Do not copy context unless duplication is intended.",
 	},
 );
 
@@ -70,7 +86,7 @@ export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 		path: PATH_SCHEMA,
 		proof_id: Type.String({ minLength: 1, description: "Proof for these anchors' file and generation." }),
 		changes: Type.Array(
-			CHANGE_SCHEMA,
+			Type.Union([REPLACE_RANGE_CHANGE_SCHEMA, DELETE_RANGE_CHANGE_SCHEMA, INSERT_CHANGE_SCHEMA]),
 			{
 				minItems: 1,
 				maxItems: MAX_FILE_CHANGE_COUNT,

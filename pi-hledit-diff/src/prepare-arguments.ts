@@ -5,52 +5,18 @@ import {
 	type CanonicalFileChange,
 	type FileChangeInput,
 	type FileChangeParams,
-	type ReadAnchorsParams,
-	type SearchAnchorsParams,
 } from "./schema.ts";
 
-type JsonRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is JsonRecord {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-
-function parseIntegerLike(value: unknown): unknown {
-	if (typeof value === "string" && /^-?\d+$/.test(value)) {
-		const parsed = Number(value);
-		if (Number.isSafeInteger(parsed)) return parsed;
-	}
-	return value;
-}
-
-// [喵喵喵]: 仅转换无歧义的整数表示；保留非法数值供宿主 schema 拒绝，不替调用方改请求。
-
-export function prepareReadAnchorsArguments(args: unknown): ReadAnchorsParams {
-	if (!isRecord(args)) return args as ReadAnchorsParams;
-	return {
-		...args,
-		...(Array.isArray(args.windows) ? { windows: args.windows.map((window) => isRecord(window)
-			? { ...window, offset: parseIntegerLike(window.offset), limit: parseIntegerLike(window.limit) }
-			: window) } : {}),
-	} as ReadAnchorsParams;
-}
-
-export function prepareSearchAnchorsArguments(args: unknown): SearchAnchorsParams {
-	if (!isRecord(args)) return args as SearchAnchorsParams;
-	return {
-		...args,
-		offset: parseIntegerLike(args.offset),
-		limit: parseIntegerLike(args.limit),
-		context: parseIntegerLike(args.context),
-	} as SearchAnchorsParams;
-}
 export type FileChangeInputDecoding =
 	| { params: FileChangeParams }
 	| { error: string };
 
 type FileChangeDecodeInput = Omit<FileChangeInput, "proof_id"> & { proof_id?: string };
 type ChangeFieldKey = "start_anchor" | "end_anchor" | "anchor" | "lines";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 type ChangeFieldRule = {
 	required: readonly ChangeFieldKey[];
@@ -64,7 +30,7 @@ const INSERT_FIELD_RULE: ChangeFieldRule = {
 	guidance: "Use anchor and lines; start_anchor and end_anchor belong to replace_range and delete_range.",
 };
 
-// [喵喵喵]: 宿主先校验类型并把可选 null 还原为缺省；此表只约束 operation 与字段组合。
+// [喵喵喵]: 分支 schema 负责完整约束；此表只让明确的字段组合错误在 union 校验前得到单条诊断。
 const CHANGE_FIELD_RULES: Record<CanonicalFileChange["operation"], ChangeFieldRule> = {
 	replace_range: {
 		required: ["start_anchor", "end_anchor", "lines"], forbidden: ["anchor"],
@@ -78,16 +44,29 @@ const CHANGE_FIELD_RULES: Record<CanonicalFileChange["operation"], ChangeFieldRu
 	insert_after: INSERT_FIELD_RULE,
 };
 
-function changeFieldRejection(operation: CanonicalFileChange["operation"], fields: Partial<Record<ChangeFieldKey, unknown>>): string | undefined {
+function changeFieldRejection(change: unknown): string | undefined {
+	if (!isRecord(change) || typeof change.operation !== "string" || !Object.hasOwn(CHANGE_FIELD_RULES, change.operation)) return undefined;
+	const operation = change.operation as CanonicalFileChange["operation"];
 	const rules = CHANGE_FIELD_RULES[operation];
-	const missing = rules.required.filter((field) => fields[field] === undefined);
-	const unexpected = rules.forbidden.filter((field) => fields[field] !== undefined);
+	const missing = rules.required.filter((field) => change[field] === undefined || change[field] === null);
+	const unexpected = rules.forbidden.filter((field) => change[field] !== undefined);
 	if (missing.length === 0 && unexpected.length === 0) return undefined;
 	const problems = [
 		...(missing.length > 0 ? [`${operation} requires ${missing.join(" and ")}`] : []),
 		...(unexpected.length > 0 ? [`${operation} must not carry ${unexpected.join(" and ")}`] : []),
 	];
 	return `${problems.join("; ")}. ${rules.guidance}`;
+}
+
+// [喵喵喵]: prepareArguments 早于宿主类型转换；只诊断，不补值、删字段或改变编辑语义。
+export function prepareFileChangeArguments(args: unknown): FileChangeInput {
+	if (isRecord(args) && Array.isArray(args.changes)) {
+		for (const [index, change] of args.changes.entries()) {
+			const rejection = changeFieldRejection(change);
+			if (rejection) throw new Error(`Change ${index + 1} was rejected: ${rejection}`);
+		}
+	}
+	return args as FileChangeInput;
 }
 
 export function decodeFileChangeInput(input: FileChangeDecodeInput): FileChangeInputDecoding {
@@ -99,17 +78,16 @@ export function decodeFileChangeInput(input: FileChangeDecodeInput): FileChangeI
 	let producedLines = 0;
 	const changes: CanonicalFileChange[] = [];
 	for (const [changeIndex, change] of input.changes.entries()) {
-		const rejection = changeFieldRejection(change.operation, change);
+		const rejection = changeFieldRejection(change);
 		if (rejection) {
 			return { error: `Change ${changeIndex + 1} was rejected: ${rejection}` };
 		}
-		// 宿主保证字段类型，组合检查保证必填字段存在；动态规则表不会自动收窄 TypeScript 类型。
 		if (change.operation === "delete_range") {
-			changes.push({ operation: "delete_range", start_anchor: change.start_anchor!, end_anchor: change.end_anchor! });
+			changes.push({ operation: "delete_range", start_anchor: change.start_anchor, end_anchor: change.end_anchor });
 			continue;
 		}
 		// [喵喵喵]: 与 CLI 文件解析一致：孤立 CR 是正文，只有 LF/CRLF 分隔行。(2026-09-05)
-		const lines = change.lines!.split(/\r?\n/);
+		const lines = change.lines.split(/\r?\n/);
 		// 一个尾换行只终止末行；空字符串仍代表一行空文本。
 		if (lines.length > 1 && lines.at(-1) === "") lines.pop();
 		for (const [index, line] of lines.entries()) {
@@ -123,7 +101,7 @@ export function decodeFileChangeInput(input: FileChangeDecodeInput): FileChangeI
 		if (producedLines > MAX_REPLACEMENT_LINE_COUNT) {
 			return { error: `Replacement output exceeds ${MAX_REPLACEMENT_LINE_COUNT} lines.` };
 		}
-		changes.push({ ...change, lines } as CanonicalFileChange);
+		changes.push({ ...change, lines });
 	}
 	return { params: { path: input.path, ...(input.proof_id ? { proof_id: input.proof_id } : {}), changes } };
 }

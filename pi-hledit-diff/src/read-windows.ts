@@ -103,7 +103,7 @@ function formatWindowsRead(read: WindowsReadMetadata, proofId?: string): string 
 		const last = window.lines.at(-1);
 		output.push(`-- windows ${window.requestedWindows.join(",")}: ${window.offset}-${window.offset + window.limit - 1}; ${window.lines.length} lines${window.truncated ? "; incomplete" : ""} --`);
 		output.push(...window.lines.map((line) => `${line.anchor}:${line.text}`));
-		if (window.truncated) output.push(`Pending window: offset ${window.nextOffset}, limit ${window.offset + window.limit - window.nextOffset!}.${last?.textTruncated ? " Source text is truncated; its anchor is not proof." : ""}`);
+		if (window.truncated) output.push(`Pending source lines: ${window.nextOffset}-${window.offset + window.limit - 1}.${last?.textTruncated ? " Source text is truncated; its anchor is not proof." : ""}`);
 	}
 	if (read.truncated) output.push("No windows from this call were registered. Read the required ranges in smaller calls, including completed windows, and use the latest proof_id. Do not edit from this preview.");
 	return output.join("\n");

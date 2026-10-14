@@ -384,7 +384,7 @@ function formatApplyResult(result: Record<string, unknown>): string {
 	return lines.join("\n");
 }
 
-// 从公开 changes 复算 CLI 必须返回的 editDeltas。物理输出顺序 = boundary（恒等于
+// 从内部 canonical changes 复算 CLI 必须返回的 editDeltas。物理输出顺序 = boundary（恒等于
 // oldStart-1）升序；同一 boundary 上 insert 的空区间 oldEnd 更小，因此 (oldStart, oldEnd)
 // 双键升序即可精确复现 CLI sortEditsForRebuild 的顺序。改动 CLI 排序或 delta 语义
 // 属于协议升级，必须两侧同步。

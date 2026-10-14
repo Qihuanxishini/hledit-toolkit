@@ -73,6 +73,7 @@ export function decodeFileChangeInput(input: FileChangeDecodeInput): FileChangeI
 	let producedLines = 0;
 	const changes: CanonicalFileChange[] = [];
 	// [喵喵喵]: 显式映射方向，避免同形 insert 被误映射；分组仅改变编号，不改变 CLI 的物理排序。
+	// 该顺序必须与 FILE_CHANGE_GROUPS 保持一致，编号映射由同一常量生成。
 	const submitted = [
 		...input.replace_ranges.map((item) => ({ ...item, operation: "replace_range" as const })),
 		...input.delete_ranges.map((item) => ({ ...item, operation: "delete_range" as const })),

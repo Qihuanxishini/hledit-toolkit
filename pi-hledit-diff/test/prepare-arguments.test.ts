@@ -75,13 +75,13 @@ test("decodeFileChangeInput preserves lone carriage returns as source text", () 
 test("decodeFileChangeInput enforces aggregate UTF-8 and produced-line limits", () => {
 	const decodeText = (lines: string) => decodeFileChangeInput({ path: "src/a.ts", changes: [{ action: "insert_after", anchor: "1#BHJ", lines }] });
 	const oversizedBytes = decodeText("🙂".repeat(300_000));
-	assert.match("error" in oversizedBytes ? oversizedBytes.error : "", /1 MiB canonical UTF-8/);
+	assert.match("error" in oversizedBytes ? oversizedBytes.error : "", /changes\[0\] pushes the batch past the 1 MiB canonical UTF-8 replacement limit/);
 	const canonicalAtLimit = decodeText("a".repeat(MAX_REPLACEMENT_TEXT_BYTES) + "\n");
 	assert.ok("params" in canonicalAtLimit, JSON.stringify(canonicalAtLimit));
 	const canonicalOverLimit = decodeText("a".repeat(MAX_REPLACEMENT_TEXT_BYTES + 1) + "\n");
-	assert.match("error" in canonicalOverLimit ? canonicalOverLimit.error : "", /1 MiB canonical UTF-8/);
+	assert.match("error" in canonicalOverLimit ? canonicalOverLimit.error : "", /changes\[0\] pushes the batch past the 1 MiB canonical UTF-8 replacement limit/);
 	const oversizedLines = decodeText("\n".repeat(MAX_REPLACEMENT_LINE_COUNT + 1));
-	assert.match("error" in oversizedLines ? oversizedLines.error : "", /exceeds 20000 lines/);
+	assert.match("error" in oversizedLines ? oversizedLines.error : "", /changes\[0\] pushes the batch past the 20000-line replacement limit/);
 });
 
 // [喵喵喵]: 宿主先运行 prepareArguments；单数组校验且不为旧四数组做兼容。

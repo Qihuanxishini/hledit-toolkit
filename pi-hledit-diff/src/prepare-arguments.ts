@@ -98,19 +98,19 @@ export function decodeFileChangeInput(input: FileChangeDecodeInput): FileChangeI
 	const changes: CanonicalFileChange[] = [];
 
 	// [喵喵喵]: replace 与 insert 共享同一套替换文本记账（1 MiB / 输出行上限），规则只在此处定义一次。
-	const measureReplacement = (text: string): ReplacementMeasure => {
+	const measureReplacement = (index: number, text: string): ReplacementMeasure => {
 		const lines = text.split(/\r?\n/);
 		if (lines.length > 1 && lines.at(-1) === "") lines.pop();
-		for (const [index, line] of lines.entries()) {
+		for (const [lineIndex, line] of lines.entries()) {
 			replacementBytes += Buffer.byteLength(line, "utf8");
-			if (index > 0) replacementBytes++;
+			if (lineIndex > 0) replacementBytes++;
 		}
 		if (replacementBytes > MAX_REPLACEMENT_TEXT_BYTES) {
-			return { error: "Replacement text exceeds the 1 MiB canonical UTF-8 limit." };
+			return { error: `changes[${index}] pushes the batch past the 1 MiB canonical UTF-8 replacement limit (cumulative across all changes).` };
 		}
 		producedLines += lines.length;
 		if (producedLines > MAX_REPLACEMENT_LINE_COUNT) {
-			return { error: `Replacement output exceeds ${MAX_REPLACEMENT_LINE_COUNT} lines.` };
+			return { error: `changes[${index}] pushes the batch past the ${MAX_REPLACEMENT_LINE_COUNT}-line replacement limit (cumulative across all changes).` };
 		}
 		return { lines };
 	};
@@ -124,7 +124,7 @@ export function decodeFileChangeInput(input: FileChangeDecodeInput): FileChangeI
 				changes.push({ operation: "replace", start_anchor, end_anchor, lines: [] });
 				continue;
 			}
-			const measured = measureReplacement(item.lines);
+			const measured = measureReplacement(index, item.lines);
 			if ("error" in measured) return { error: measured.error };
 			changes.push({ operation: "replace", start_anchor, end_anchor, lines: measured.lines });
 		} else {
@@ -132,7 +132,7 @@ export function decodeFileChangeInput(input: FileChangeDecodeInput): FileChangeI
 			if (item.lines === undefined) {
 				return { error: `changes[${index}] (${item.action}) requires a non-empty lines string.` };
 			}
-			const measured = measureReplacement(item.lines);
+			const measured = measureReplacement(index, item.lines);
 			if ("error" in measured) return { error: measured.error };
 			changes.push({ operation: item.action, anchor: item.anchor, lines: measured.lines });
 		}

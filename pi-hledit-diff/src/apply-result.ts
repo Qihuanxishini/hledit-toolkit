@@ -1,6 +1,6 @@
 import { anchorTokenLine, lineFromAnchor } from "./anchor.ts";
 import { HLEDIT_INSTALL_HINT, type HleditRun } from "./cli.ts";
-import { fileChangeReference } from "./file-changes.ts";
+import { fileChangeReference, isInsertChange } from "./file-changes.ts";
 import { formatPostEditContext, parseAnchorContext, parseUpdatedAnchorSpans, type BatchAnchorContext } from "./post-edit-context.ts";
 import { formatReadCall, suggestedReadWindow } from "./read-args.ts";
 import {
@@ -64,12 +64,10 @@ function appendRemaps(
 
 function changeAnchorFields(change: FileChangeParams["changes"][number]): Array<[FileChangeAnchorField, string]> {
 	switch (change.operation) {
-		case "replace_range":
-		case "delete_range":
-			return [
-				["start_anchor", change.start_anchor],
-				["end_anchor", change.end_anchor],
-			];
+		case "replace":
+			return change.start_anchor === change.end_anchor
+				? [["anchor", change.start_anchor]]
+				: [["anchor", change.start_anchor], ["end_anchor", change.end_anchor]];
 		case "insert_before":
 		case "insert_after":
 			return [["anchor", change.anchor]];
@@ -121,12 +119,12 @@ function parseStaleAnchors(
 	return staleAnchors.length > 0 ? staleAnchors : undefined;
 }
 
-function appendStaleAnchorDetails(lines: string[], staleAnchors: HleditStaleAnchor[] | undefined, context: ApplyResultContext): void {
+function appendStaleAnchorDetails(lines: string[], staleAnchors: HleditStaleAnchor[] | undefined): void {
 	if (!staleAnchors) {
 		return;
 	}
 
-	lines.push(`Anchor verification for ${fileChangeReference(context.changes, staleAnchors[0]!.changeNumber - 1)}:`);
+	lines.push(`Anchor verification for ${fileChangeReference(staleAnchors[0]!.changeNumber - 1)}:`);
 	for (const staleAnchor of staleAnchors) {
 		const fields = staleAnchor.fields.join("/");
 		lines.push(`- Field: ${fields}`, `  Submitted anchor: ${staleAnchor.requestedAnchor}`);
@@ -182,8 +180,8 @@ function staleReadInstruction(result: Record<string, unknown>, context: ApplyRes
 	return `Before retrying, call ${formatReadCall(context.path, { offset, limit })}${lastLine < end ? `, then continue with nextOffset through line ${end}` : ""}. Reconfirm the intended target; prior line numbers may have shifted. Do not reuse anchors from before the change.`;
 }
 
-function localizeInvalidApplyMessage(rawMessage: string, failedChange: number | undefined, context: ApplyResultContext): string {
-	const prefix = failedChange === undefined ? "The batch request" : fileChangeReference(context.changes, failedChange - 1);
+function localizeInvalidApplyMessage(rawMessage: string, failedChange: number | undefined): string {
+	const prefix = failedChange === undefined ? "The batch request" : fileChangeReference(failedChange - 1);
 	const unknownField = /unknown field "([^"]+)"/.exec(rawMessage);
 	if (unknownField) return `The batch JSON contains unsupported field ${JSON.stringify(unknownField[1])}. Check the field spelling.`;
 	if (rawMessage.includes("batch request contains no edits")) return "The batch contains no changes.";
@@ -198,11 +196,11 @@ function localizeInvalidApplyMessage(rawMessage: string, failedChange: number | 
 	if (rawMessage.includes("insert requires non-empty content")) return `${prefix} is an insert and lines must contain at least one line.`;
 	if (rawMessage.includes("unknown op")) return `${prefix} uses an unsupported operation.`;
 	if (rawMessage.includes("overlaps") || rawMessage.includes("conflicts") || rawMessage.includes("already consumed range")) {
-		// [喵喵喵]: CLI 零基编号仅用于定位，模型直接看到原始分组项。
+		// [喵喵喵]: CLI 零基编号仅用于定位，模型直接看到公开 changes 下标。
 		const conflict = /^edit (\d+) overlaps edit (\d+):/.exec(rawMessage);
 		const indexes = conflict?.slice(1).map(Number);
 		const subject = indexes?.every(Number.isSafeInteger)
-			? `${fileChangeReference(context.changes, indexes[0]!)} and ${fileChangeReference(context.changes, indexes[1]!)} conflict`
+			? `${fileChangeReference(indexes[0]!)} and ${fileChangeReference(indexes[1]!)} conflict`
 			: `${prefix} conflicts with another change`;
 		return `${subject}: overlapping source ranges or insertion boundaries. Merge them or make them non-overlapping; rereading cannot resolve this conflict.`;
 	}
@@ -242,7 +240,7 @@ function parseApplyErrorMetadata(result: Record<string, unknown>, context: Apply
 		case "stale":
 			message = result.message === "read proof revision does not match the current file"
 				? "The file revision changed since the read; the whole batch needs verification, even if its endpoint anchors still match."
-				: failedChange === undefined ? "One or more anchors are stale." : `${fileChangeReference(context.changes, failedChange - 1)} uses a stale anchor.`;
+				: failedChange === undefined ? "One or more anchors are stale." : `${fileChangeReference(failedChange - 1)} uses a stale anchor.`;
 			break;
 		case "insufficient_read_proof":
 			message = "Read proof does not cover every original source line required by this change.";
@@ -251,7 +249,7 @@ function parseApplyErrorMetadata(result: Record<string, unknown>, context: Apply
 			message = "The target changed before atomic commit. No content was written.";
 			break;
 		case "invalid":
-			message = localizeInvalidApplyMessage(result.message, failedChange, context);
+			message = localizeInvalidApplyMessage(result.message, failedChange);
 			break;
 		case "binary":
 			message = "The target appears to be binary and cannot be modified as text.";
@@ -310,7 +308,7 @@ function appendInsufficientReadProofRecovery(
 
 	let start: number | undefined;
 	let end: number | undefined;
-	if (change.operation === "insert_before" || change.operation === "insert_after") {
+	if (isInsertChange(change)) {
 		start = lineFromAnchor(change.anchor);
 		end = start;
 	} else {
@@ -322,7 +320,7 @@ function appendInsufficientReadProofRecovery(
 		return;
 	}
 
-	const reference = fileChangeReference(context.changes, failedIndex);
+	const reference = fileChangeReference(failedIndex);
 	const { offset, limit, lastLine: lastSuggestedLine } = suggestedReadWindow(start, end);
 	const readCall = formatReadCall(context.path, { offset, limit });
 	lines.push(lastSuggestedLine < end
@@ -344,9 +342,9 @@ function formatApplyFailureResult(
 		lines.push(`Diagnostic: ${error.rawMessage}`);
 	}
 	if (isIntegerAtLeast(result.failed, 0)) {
-		lines.push(`Failed item: ${fileChangeReference(context.changes, result.failed)}`);
+		lines.push(`Failed item: ${fileChangeReference(result.failed)}`);
 	}
-	appendStaleAnchorDetails(lines, error.staleAnchors, context);
+	appendStaleAnchorDetails(lines, error.staleAnchors);
 	appendRemaps(lines, result, error.staleAnchors);
 	if (error.code === "stale") {
 		appendCurrentAnchorContext(lines, error.currentAnchors);
@@ -395,8 +393,8 @@ type PlannedOutput = HleditEditDelta & { reference: string; lines: string[] };
 function expectedBatchEditDeltas(changes: FileChangeParams["changes"]): PlannedOutput[] | undefined {
 	const deltas: PlannedOutput[] = [];
 	for (const [index, change] of changes.entries()) {
-		const output = { reference: fileChangeReference(changes, index), lines: "lines" in change ? change.lines : [] };
-		if (change.operation === "insert_before" || change.operation === "insert_after") {
+		const output = { reference: fileChangeReference(index), lines: change.lines };
+		if (isInsertChange(change)) {
 			const line = lineFromAnchor(change.anchor);
 			if (line === undefined) return undefined;
 			const oldStart = change.operation === "insert_before" ? line : line + 1;
@@ -406,7 +404,7 @@ function expectedBatchEditDeltas(changes: FileChangeParams["changes"]): PlannedO
 		const start = lineFromAnchor(change.start_anchor);
 		const end = lineFromAnchor(change.end_anchor);
 		if (start === undefined || end === undefined || end < start) return undefined;
-		const replacementCount = change.operation === "replace_range" ? change.lines.length : 0;
+		const replacementCount = change.lines.length;
 		deltas.push({ ...output, oldStart: start, oldEnd: end, delta: replacementCount - (end - start + 1) });
 	}
 	return deltas.sort((left, right) => left.oldStart - right.oldStart || left.oldEnd - right.oldEnd);

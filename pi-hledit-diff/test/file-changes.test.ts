@@ -14,8 +14,8 @@ test("buildFileChangeRequest translates every supported change", () => {
   const params: FileChangeParams = {
     path: "src/a.ts",
     changes: [
-      { operation: "replace_range", start_anchor: "1#BHJ", end_anchor: "2#BBK", lines: ["next"] },
-      { operation: "delete_range", start_anchor: "4#JKL", end_anchor: "4#JKL" },
+      { operation: "replace", start_anchor: "1#BHJ", end_anchor: "2#BBK", lines: ["next"] },
+      { operation: "replace", start_anchor: "4#JKL", end_anchor: "4#JKL", lines: [] },
       { operation: "insert_after", anchor: "6#MNP", lines: ["one", "two"] },
     ],
   };
@@ -25,7 +25,7 @@ test("buildFileChangeRequest translates every supported change", () => {
     stdin: JSON.stringify({
       edits: [
         { op: "replace", pos: "1#BHJ", end_pos: "2#BBK", lines: ["next"] },
-        { op: "delete", pos: "4#JKL", end_pos: "4#JKL" },
+        { op: "replace", pos: "4#JKL", lines: [] },
         { op: "insert", pos: "6#MNP", after: true, lines: ["one", "two"] },
       ],
     }),
@@ -44,12 +44,12 @@ test("buildFileChangeRequest omits after for before inserts", () => {
 test("fileChangeLineRanges preserves each operation range", () => {
   assert.equal(
     fileChangeLineRanges([
-      { operation: "replace_range", start_anchor: "10#BHJ", end_anchor: "12#BBK" },
+      { operation: "replace", start_anchor: "10#BHJ", end_anchor: "12#BBK" },
       { operation: "insert_after", anchor: "4#JKL" },
     ]),
     "10-12,4",
   );
-  assert.equal(fileChangeLineRanges([{ operation: "delete_range", start_anchor: "4#JKL", end_anchor: "4#JKL" }]), "4");
+  assert.equal(fileChangeLineRanges([{ operation: "replace", start_anchor: "4#JKL", end_anchor: "4#JKL" }]), "4");
   assert.equal(fileChangeLineRanges([]), undefined);
 });
 
@@ -66,25 +66,21 @@ function shapeParams(changes: FileChangeParams["changes"]): FileChangeParams {
   return { path: "src/a.ts", changes };
 }
 
-test("findChangeShapeIssue reports a reversed range for both range operations", () => {
+test("findChangeShapeIssue reports a reversed range for replace operation", () => {
   assert.deepEqual(
-    findChangeShapeIssue(shapeParams([{ operation: "replace_range", start_anchor: "9#Ab9", end_anchor: "3#Cd1", lines: ["merged"] }])),
-    { code: "reversed_anchor_range", changeNumber: 1, operation: "replace_range", startAnchor: "9#Ab9", endAnchor: "3#Cd1" },
-  );
-  assert.deepEqual(
-    findChangeShapeIssue(shapeParams([{ operation: "delete_range", start_anchor: "9#Ab9", end_anchor: "3#Cd1" }])),
-    { code: "reversed_anchor_range", changeNumber: 1, operation: "delete_range", startAnchor: "9#Ab9", endAnchor: "3#Cd1" },
+    findChangeShapeIssue(shapeParams([{ operation: "replace", start_anchor: "9#Ab9", end_anchor: "3#Cd1", lines: ["merged"] }])),
+    { code: "reversed_anchor_range", changeNumber: 1, operation: "replace", startAnchor: "9#Ab9", endAnchor: "3#Cd1" },
   );
 });
 
 test("findChangeShapeIssue accepts a single-line range and a well-ordered range", () => {
-  assert.equal(findChangeShapeIssue(shapeParams([{ operation: "replace_range", start_anchor: "3#Cd1", end_anchor: "3#Cd1", lines: ["one"] }])), undefined);
-  assert.equal(findChangeShapeIssue(shapeParams([{ operation: "delete_range", start_anchor: "3#Cd1", end_anchor: "9#Ab9" }])), undefined);
+  assert.equal(findChangeShapeIssue(shapeParams([{ operation: "replace", start_anchor: "3#Cd1", end_anchor: "3#Cd1", lines: ["one"] }])), undefined);
+  assert.equal(findChangeShapeIssue(shapeParams([{ operation: "replace", start_anchor: "3#Cd1", end_anchor: "9#Ab9", lines: [] }])), undefined);
 });
 
 test("findChangeShapeIssue reports an anchor token pasted into any lines-bearing operation", () => {
   assert.deepEqual(
-    findChangeShapeIssue(shapeParams([{ operation: "replace_range", start_anchor: "3#Cd1", end_anchor: "3#Cd1", lines: ["3#Cd1:const b = 20;"] }])),
+    findChangeShapeIssue(shapeParams([{ operation: "replace", start_anchor: "3#Cd1", end_anchor: "3#Cd1", lines: ["3#Cd1:const b = 20;"] }])),
     { code: "anchor_token_in_lines", changeNumber: 1, replacementLineNumber: 1, anchorToken: "3#Cd1" },
   );
   assert.deepEqual(
@@ -107,7 +103,7 @@ test("findChangeShapeIssue leaves anchor-shaped content alone unless the token w
   // 真实文件里可能出现锚点形状的行首（例如记录 hledit 输出的文档）；
   // 只有当它恰好等于本次提交或当前证据里的 anchor 时才能断定为误贴。
   assert.equal(
-    findChangeShapeIssue(shapeParams([{ operation: "replace_range", start_anchor: "3#Cd1", end_anchor: "3#Cd1", lines: ["120#-Sf:sample output"] }])),
+    findChangeShapeIssue(shapeParams([{ operation: "replace", start_anchor: "3#Cd1", end_anchor: "3#Cd1", lines: ["120#-Sf:sample output"] }])),
     undefined,
   );
   assert.equal(
@@ -130,11 +126,11 @@ test("formatChangeShapeIssue tells the model to fix parameters instead of reread
   const reversed = formatChangeShapeIssue({
     code: "reversed_anchor_range",
     changeNumber: 1,
-    operation: "replace_range",
+    operation: "replace",
     startAnchor: "9#Ab9",
     endAnchor: "3#Cd1",
   });
-  assert.match(reversed, /Swap them: set start_anchor to 3#Cd1 and end_anchor to 9#Ab9\./);
+  assert.match(reversed, /Swap them: set anchor to 3#Cd1 and end_anchor to 9#Ab9\./);
   assert.match(reversed, /Rereading the file cannot resolve this/);
 
   const pasted = formatChangeShapeIssue({

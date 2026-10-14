@@ -40,7 +40,7 @@ export type HleditReadMetadata = {
 	totalMatches?: number;
 };
 
-export type FileChangeAnchorField = "anchor" | "start_anchor" | "end_anchor";
+export type FileChangeAnchorField = "anchor" | "end_anchor";
 
 export type HleditStaleAnchor = {
 	changeNumber: number;
@@ -107,7 +107,7 @@ export type HleditErrorMetadata = {
 	requestedOffset?: number;
 	totalLines?: number;
 	changeNumber?: number;
-	operation?: "replace_range" | "delete_range" | "insert_before" | "insert_after";
+	operation?: "replace" | "insert_before" | "insert_after";
 	staleAnchors?: HleditStaleAnchor[];
 	currentAnchors?: BatchAnchorContext;
 	currentRevision?: string;

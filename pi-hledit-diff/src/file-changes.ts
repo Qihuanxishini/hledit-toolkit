@@ -2,18 +2,19 @@ import { ANCHOR_LINE_PREFIX, lineFromAnchor } from "./anchor.ts";
 import { rejectedToolResult, type TextResult } from "./result.ts";
 import type { FileChangeParams } from "./schema.ts";
 
-// [喵喵喵]: 引用归一化前的公开分组位置，不改内部操作顺序或 CLI wire。
-export function fileChangeReference(changes: FileChangeParams["changes"] | undefined, index: number): string {
-	const change = changes?.[index];
-	if (!change) return `Change ${index + 1}`;
-	const group = change.operation === "replace_range" ? "replace_ranges"
-		: change.operation === "delete_range" ? "delete_ranges" : change.operation;
-	const groupIndex = changes!.slice(0, index).filter((item) => item.operation === change.operation).length;
-	return `${group}[${groupIndex}]`;
+// [喵喵喵]: 引用公开 changes 数组下标，与模型传入参数 1:1 严格对齐。
+export function fileChangeReference(index: number): string {
+	return `changes[${index}]`;
+}
+
+// [喵喵喵]: 插入是依附单行的点操作，替换/删除是消费区间的范围操作，判别口径必须处处一致。
+type InsertChange = Extract<FileChangeParams["changes"][number], { operation: "insert_before" | "insert_after" }>;
+export function isInsertChange(change: FileChangeParams["changes"][number]): change is InsertChange {
+	return change.operation === "insert_before" || change.operation === "insert_after";
 }
 
 type CliBatchEdit = {
-	op: "replace" | "delete" | "insert";
+	op: "replace" | "insert";
 	pos: string;
 	end_pos?: string;
 	after?: true;
@@ -34,18 +35,12 @@ function buildCliBatchRequest(params: FileChangeParams, proof?: HleditBatchReadP
 	return {
 		edits: params.changes.map((change) => {
 			switch (change.operation) {
-				case "replace_range":
+				case "replace":
 					return {
 						op: "replace",
 						pos: change.start_anchor,
-						end_pos: change.end_anchor,
+						...(change.end_anchor !== change.start_anchor ? { end_pos: change.end_anchor } : {}),
 						lines: change.lines,
-					};
-				case "delete_range":
-					return {
-						op: "delete",
-						pos: change.start_anchor,
-						end_pos: change.end_anchor,
 					};
 				case "insert_before":
 					return {
@@ -79,7 +74,7 @@ export type ChangeShapeIssue =
 	| {
 		code: "reversed_anchor_range";
 		changeNumber: number;
-		operation: "replace_range" | "delete_range";
+		operation: "replace";
 		startAnchor: string;
 		endAnchor: string;
 	}
@@ -93,7 +88,7 @@ export type ChangeShapeIssue =
 function submittedAnchorTokens(changes: FileChangeParams["changes"]): Set<string> {
 	const tokens = new Set<string>();
 	for (const change of changes) {
-		if (change.operation === "insert_before" || change.operation === "insert_after") {
+		if (isInsertChange(change)) {
 			tokens.add(change.anchor);
 			continue;
 		}
@@ -109,7 +104,7 @@ export function findChangeShapeIssue(params: FileChangeParams, knownAnchors?: Pi
 	const submittedAnchors = submittedAnchorTokens(params.changes);
 	for (const [index, change] of params.changes.entries()) {
 		const changeNumber = index + 1;
-		if (change.operation === "replace_range" || change.operation === "delete_range") {
+		if (change.operation === "replace") {
 			const startLine = lineFromAnchor(change.start_anchor);
 			const endLine = lineFromAnchor(change.end_anchor);
 			if (startLine !== undefined && endLine !== undefined && startLine > endLine) {
@@ -122,7 +117,7 @@ export function findChangeShapeIssue(params: FileChangeParams, knownAnchors?: Pi
 				};
 			}
 		}
-		if (change.operation === "delete_range") continue;
+		if (!change.lines || change.lines.length === 0) continue;
 
 		for (const [lineIndex, text] of change.lines.entries()) {
 			// 只有当行首 token 是本次提交过或当前证据中的 anchor 时才判定为误贴 read 输出：
@@ -136,14 +131,14 @@ export function findChangeShapeIssue(params: FileChangeParams, knownAnchors?: Pi
 	return undefined;
 }
 
-export function formatChangeShapeIssue(issue: ChangeShapeIssue, changes?: FileChangeParams["changes"]): string {
-	const reference = fileChangeReference(changes, issue.changeNumber - 1);
+export function formatChangeShapeIssue(issue: ChangeShapeIssue): string {
+	const reference = fileChangeReference(issue.changeNumber - 1);
 	if (issue.code === "reversed_anchor_range") {
 		return [
 			`${reference} was rejected.`,
-			`Received: ${issue.operation} from start_anchor ${issue.startAnchor} through end_anchor ${issue.endAnchor}, which runs backwards.`,
-			"start_anchor must not be below end_anchor in the file.",
-			`Swap them: set start_anchor to ${issue.endAnchor} and end_anchor to ${issue.startAnchor}.`,
+			`Received: ${issue.operation} from anchor ${issue.startAnchor} through end_anchor ${issue.endAnchor}, which runs backwards.`,
+			"anchor must not be below end_anchor in the file.",
+			`Swap them: set anchor to ${issue.endAnchor} and end_anchor to ${issue.startAnchor}.`,
 			"Rereading the file cannot resolve this; fix the anchor order and resubmit.",
 		].join("\n");
 	}
@@ -156,12 +151,12 @@ export function formatChangeShapeIssue(issue: ChangeShapeIssue, changes?: FileCh
 	].join("\n");
 }
 
-export function changeShapeIssueResult(issue: ChangeShapeIssue, changes?: FileChangeParams["changes"]): TextResult {
-	const reference = fileChangeReference(changes, issue.changeNumber - 1);
-	return rejectedToolResult(`The atomic batch was rejected; no content was written.\n${formatChangeShapeIssue(issue, changes)}`, {
+export function changeShapeIssueResult(issue: ChangeShapeIssue): TextResult {
+	const reference = fileChangeReference(issue.changeNumber - 1);
+	return rejectedToolResult(`The atomic batch was rejected; no content was written.\n${formatChangeShapeIssue(issue)}`, {
 		code: issue.code,
 		message: issue.code === "reversed_anchor_range"
-			? `${reference} submitted start_anchor ${issue.startAnchor} below end_anchor ${issue.endAnchor}; swap them instead of rereading.`
+			? `${reference} submitted anchor ${issue.startAnchor} below end_anchor ${issue.endAnchor}; swap them instead of rereading.`
 			: `${reference} pasted the anchor token ${issue.anchorToken} into lines; strip the prefix instead of rereading.`,
 		changeNumber: issue.changeNumber,
 	});

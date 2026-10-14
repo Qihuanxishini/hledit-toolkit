@@ -24,7 +24,7 @@
 
 ### 2.1 当前重复
 
-`hledit_apply_file_changes` 成功后返回 `proof_id` 和 `Updated anchors` 正文。对于新增或替换的行，正文刚刚已经作为各组提交的 `lines` 发出，再完整回灌通常没有新增信息；后续编辑真正需要的是新的 proof 和每项变更产出的锚点范围。
+`hledit_apply_file_changes` 成功后返回 `proof_id` 和 `Updated anchors` 正文。对于新增或替换的行，正文刚刚已经作为 `changes` 各项的 `lines` 发出，再完整回灌通常没有新增信息；后续编辑真正需要的是新的 proof 和每项变更产出的锚点范围。
 
 ### 2.2 紧凑化前提
 
@@ -43,8 +43,8 @@
 Applied N changes (+A -D lines).
 proof_id: p_...
 New output anchors (submitted text verified):
-- replace_ranges[0]: 42#abc–45#jkl (4 lines)
-- insert_after[0]: 71#mno (1 line)
+- changes[0]: 42#abc–45#jkl (4 lines)
+- changes[1]: 71#mno (1 line)
 ```
 
 纯删除没有新输出锚点，仍保留成功摘要和新 `proof_id`。后续若需引用或编辑未展示的中间新行，调用方必须使用 `hledit_read_anchors` 精确读取；不能凭紧凑摘要猜测正文。
@@ -64,11 +64,11 @@ CLI 对 `updatedAnchorSpans` 的共享预算需要从现有 80 行 / 16 KiB 上�
 这项只优化模型面对的工作流提示，不改变任何 edit 的业务语义：
 
 1. 尚在浏览、尚未确定目标时可使用普通 `read`；目标已明确且计划编辑时，直接使用 `hledit_read_anchors` 获取完整 proof。
-2. `replace_range` 必须消费真实需要替换、保留或删除的完整源范围；不因“少 token”自动缩小范围，也不把 replace 改写成 insert。
+2. `replace` 必须消费真实需要替换、保留或删除的完整源范围；不因“少 token”自动缩小范围，也不把 replace 改写成 insert。
 3. 同一文件中互不冲突的多项变更优先由调用方放入一个 atomic batch；插件不自动合并、拆分或重排操作。
 4. 紧凑回包后若要继续操作新产出文本，按实际需要读取最小完整窗口；不预先重复回灌所有正文。
 5. 单窗口完成所请求范围时不要求继续阅读文件后续；仅请求范围尚未返回完整时给出剩余窗口，源行截断仍单独报告。
-6. 回包直接引用公开分组的零基位置（如 `replace_ranges[0]`），内部编号仅服务 CLI 和结构化状态；不重复输出整批编号映射。
+6. 回包直接引用公开数组的零基位置（如 `changes[0]`），与模型提交参数 1:1 严格对齐；不重复输出整批编号映射。
 
 ## 4. 方案三：Schema 与提示词职责去重
 
@@ -81,9 +81,9 @@ CLI 对 `updatedAnchorSpans` 的共享预算需要从现有 80 行 / 16 KiB 上�
 | `promptGuidelines` | proof/revision 工作流、跨工具约束和关键失败语义 |
 | 运行时错误结果 | 当前失败原因及下一步 |
 
-可合并等价的路径、锚点、连续读取等描述；不可删除以下规则：完整 proof、截断源行不可用、`replace_range` 消费范围、`outcome_unknown` 不得盲目重放、拒绝与已写入的区别，以及原子批量冲突语义。
+可合并等价的路径、锚点、连续读取等描述；不可删除以下规则：完整 proof、截断源行不可用、`replace` 消费范围、`outcome_unknown` 不得盲目重放、拒绝与已写入的区别，以及原子批量冲突语义。
 
-三个工具仍保持独立，不合并为带 `action` 的大工具，以免增加参数分支和误用概率。apply 使用 `replace_ranges`、`delete_ranges`、`insert_before`、`insert_after` 四个必填普通对象数组：组名表达操作，项内不带 `operation`，未用组传 `[]`；声明不依赖对象 Union 或 `anyOf`，四组在入口一次性归一化为内部 canonical changes，仍只提交一次原子 batch，跨组总计限 1–200 项。2026-10-14 由按操作分支的对象 Union 迁移而来：实测部分模型/provider 链路上模型侧收到的声明丢失了 Union 分支字段，模型无法据此构造参数。操作级错误诊断在宿主 schema 校验前完成，不改写输入；生成侧和执行侧使用相同的普通 JSON Schema，基础调用不要求额外配置模型/provider。
+三个工具仍保持独立，不合并为带 `action` 的大工具，以免增加参数分支和误用概率。apply 统一使用单一有序数组 `changes`：每项包含 `action`（`replace`、`insert_before`、`insert_after`）、`anchor` 及可选的 `end_anchor` 和 `lines`；声明为单一平铺对象 + 字符串 `enum`，不含对象 Union 与 `anyOf`，从根本上解决 provider 剥离 Union 分支属性的问题；单行替换可省略 `end_anchor`，`replace` 缺省 `lines` 或传入 `""` 即为删除，单独传入 `"\n"` 写入一行空行。操作级错误诊断在宿主 schema 校验前完成，不改写输入；生成侧和执行侧使用相同的普通 JSON Schema，基础调用不要求额外配置模型/provider。
 
 ## 5. 方案四：同文件多窗口锚点读取
 
@@ -147,7 +147,7 @@ CLI 对窗口执行如下规范化：
 
 ### 成功回包
 
-- 完整一致的新增/替换 span 只向模型返回摘要、proof 和公开分组位置→anchor 范围；结构化全文保留在 details。
+- 完整一致的新增/替换 span 只向模型返回摘要、proof 和公开 `changes[i]` 下标→anchor 范围；结构化全文保留在 details。
 - 正文不符、span 截断或文本截断仅取消该 span 的紧凑显示；非法顺序、delta、产出范围和结构仍按原有安全契约返回 `outcome_unknown`。
 - 纯删除、no-op、`--check`、拒绝、stale 和 unknown-outcome 的既有语义不被误判为紧凑成功。
 - 回放分支后的 evidence / proof 状态与实时执行状态一致。
@@ -162,6 +162,6 @@ CLI 对窗口执行如下规范化：
 
 ### Token 与安全
 
-- 优化的成功路径不再向模型重复同一批已提交的编辑文本（各组 `lines`）。
+- 优化的成功路径不再向模型重复同一批已提交的编辑文本（`changes` 的 `lines`）。
 - 普通连续读取、错误诊断和必要恢复仍完整可操作；不能以删除信息换取表面 token 降低。
 - 任何资源上调都有共享上限、截断标记与明确恢复路径，不产生无界工具回包。

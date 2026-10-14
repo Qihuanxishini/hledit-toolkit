@@ -35,7 +35,7 @@ The response is the compatibility gate for the Pi extension:
 ```json
 {
   "ok": true,
-  "version": "3.4.0",
+  "version": "3.4.1",
   "anchorProtocolV2": true,
   "readRangeMetadata": true,
   "readWindowsMetadata": true,
@@ -139,6 +139,8 @@ Segment `offset` and `limit` describe the complete merged range after EOF clampi
 
 An out-of-range start in any window rejects the request with the same structured `range` error as `read-range`; directory, binary and encoding errors are unchanged. The Pi extension validates all segments against the original request and records one proof only when the entire request is complete. Incomplete results are preview-only, including already completed segments; callers must reread the needed ranges in smaller complete calls. The recorded `details.windowsRead` drives the same validation during branch replay.
 
+If the merged windows require more than 2,000 lines in total, the request is rejected with `{"ok":false,"error":"windows_budget_exceeded","message":"merged windows require N lines; shared limit is 2000","requestedLines":N,"maxLines":2000}` and no content is produced.
+
 ## 4. Batch edit protocol
 
 ```text
@@ -152,7 +154,6 @@ hledit batch [--check] <file>
   "edits": [
     { "op": "replace", "pos": "2#rT4", "lines": ["new line"] },
     { "op": "replace", "pos": "12#aB3", "end_pos": "18#xY7", "lines": ["new block"] },
-    { "op": "delete", "pos": "5#nK2" },
     { "op": "insert", "pos": "8#Qw_", "after": true, "lines": ["inserted"] }
   ],
   "proof": {
@@ -164,15 +165,13 @@ hledit batch [--check] <file>
 
 Batch wire v3 has one canonical shape:
 
-- `replace` requires `lines`; an empty array deletes its target range.
-- `delete` omits `lines`.
+- `replace` consumes an inclusive range (`pos` to optional `end_pos`, defaults to `pos`). An empty `lines` array or omitted `lines` deletes its target range.
 - `insert` requires non-empty `lines`; `after` is permitted only on `insert`, where only `true` has meaning.
-- `replace` and `delete` accept optional inclusive `end_pos`; without it they consume only `pos`.
 - Each anchor is exactly `LN#HHH` with a positive line number and no leading zero; annotations, whitespace, aliases, and older hash forms are rejected.
 - Each `lines` element is one logical line and must contain neither NUL nor LF; separate lines use separate array elements. An empty string represents one blank line.
 - Field names are case-sensitive and must not repeat within an object. The decoder rejects unknown or duplicate fields, `null` objects, trailing JSON values, non-string `lines`/proof anchors, requests larger than 8 MiB, batches above 200 edits, more than 1 MiB of canonical replacement UTF-8, and more than 20,000 replacement output lines.
 
-`proof` is optional for standalone use. When supplied, its raw-byte revision must match the loaded file and its unique, strictly ascending anchors must cover each consumed `replace`/`delete` line and every insert attachment anchor. Missing coverage returns `insufficient_read_proof`; a mismatch returns `stale`.
+`proof` is optional for standalone use. When supplied, its raw-byte revision must match the loaded file and its unique, strictly ascending anchors must cover each consumed `replace` line and every insert attachment anchor. Missing coverage returns `insufficient_read_proof`; a mismatch returns `stale`.
 
 All edits are validated against one original snapshot before writing. Conflicting ranges, duplicate insertion boundaries, inserts inside a consumed range, invalid anchors, and stale anchors reject the entire request with zero writes. The planner orders non-conflicting edits by physical boundary and rebuilds the file once.
 

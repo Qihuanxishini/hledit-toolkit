@@ -8,7 +8,7 @@ import {
 } from "./active-tools.ts";
 import { computeAnchorTag } from "./anchor-hash.ts";
 import { lineFromAnchor } from "./anchor.ts";
-import { fileChangeReference, type HleditBatchReadProof } from "./file-changes.ts";
+import { fileChangeReference, isInsertChange, type HleditBatchReadProof } from "./file-changes.ts";
 import { parseAnchorContext, parseUpdatedAnchorSpans } from "./post-edit-context.ts";
 import { nextProofId } from "./proof-id.ts";
 import { parseHleditReadMetadata, parseRecoveredReads } from "./read-result.ts";
@@ -119,8 +119,8 @@ function requestedChangeEvidence(changes: FileChangeParams["changes"]): Requeste
 	const endpointAnchors: RequestedEndpointAnchor[] = [];
 	for (const [changeIndex, change] of changes.entries()) {
 		const changeNumber = changeIndex + 1;
-		const reference = fileChangeReference(changes, changeIndex);
-		if (change.operation === "insert_before" || change.operation === "insert_after") {
+		const reference = fileChangeReference(changeIndex);
+		if (isInsertChange(change)) {
 			const line = lineFromAnchor(change.anchor);
 			if (line === undefined) return undefined;
 			sourceRanges.push({ start: line, end: line, changeNumber, reference, operation: change.operation });
@@ -182,7 +182,7 @@ function proofGapFromMissingRange(
 
 function formatProofGapMessage(gap: ReadProofGap): string {
 	const missingRange = lineRangeDescription(gap);
-	if (gap.operation === "replace_range" || gap.operation === "delete_range") {
+	if (gap.operation === "replace") {
 		return `${gap.reference ?? `Change ${gap.changeNumber}`} (${gap.operation} ${gap.requiredStart}-${gap.requiredEnd}) requires complete read proof for every source line in the inclusive range; missing ${missingRange}. Endpoint anchors alone are insufficient.`;
 	}
 	return `${gap.reference ?? `Change ${gap.changeNumber}`} (${gap.operation} at line ${gap.requiredStart}) requires complete read proof for its anchor line; missing ${missingRange}.`;
@@ -291,7 +291,7 @@ function replaceRenamedAnchors(
 	};
 	return {
 		changes: changes.map((change) => {
-			if (change.operation === "insert_before" || change.operation === "insert_after") {
+			if (isInsertChange(change)) {
 				return { ...change, anchor: substitute(change.anchor) };
 			}
 			return {

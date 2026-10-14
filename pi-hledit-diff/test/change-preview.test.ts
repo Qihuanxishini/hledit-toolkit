@@ -16,9 +16,9 @@ function consumedLines(entries: Array<[number, string]>): Map<number, { text: st
 test("anchored preview offsets multi-block edits with intra-block minimal diff", () => {
 	const preview = buildAnchoredChangePreview(
 		[
-			{ operation: "replace_range", start_anchor: "2#AAA", end_anchor: "2#AAA", lines: ["TWO", "TWO2"] },
+			{ operation: "replace", start_anchor: "2#AAA", end_anchor: "2#AAA", lines: ["TWO", "TWO2"] },
 			{ operation: "insert_after", anchor: "4#BBB", lines: ["N"] },
-			{ operation: "delete_range", start_anchor: "5#CCC", end_anchor: "5#CCC" },
+			{ operation: "replace", start_anchor: "5#CCC", end_anchor: "5#CCC", lines: [] },
 		],
 		consumedLines([[2, "two"], [4, "four"], [5, "five"]]),
 	);
@@ -37,7 +37,7 @@ test("anchored preview offsets multi-block edits with intra-block minimal diff",
 
 test("anchored preview keeps the minimal diff inside a replacement block", () => {
 	const preview = buildAnchoredChangePreview(
-		[{ operation: "replace_range", start_anchor: "10#AAA", end_anchor: "12#CCC", lines: ["alpha", "CHANGED", "gamma"] }],
+		[{ operation: "replace", start_anchor: "10#AAA", end_anchor: "12#CCC", lines: ["alpha", "CHANGED", "gamma"] }],
 		consumedLines([[10, "alpha"], [11, "beta"], [12, "gamma"]]),
 	);
 
@@ -53,7 +53,7 @@ test("large replacements avoid serializing an unbounded diff and retain bounded 
 	const replacements = Array.from({ length: size }, (_, index) => `new-${index}`);
 	replacements.join = () => { throw new Error("oversized replacement reached diff serialization"); };
 	const preview = buildAnchoredChangePreview(
-		[{ operation: "replace_range", start_anchor: "1#AAA", end_anchor: `${size}#AAA`, lines: replacements }],
+		[{ operation: "replace", start_anchor: "1#AAA", end_anchor: `${size}#AAA`, lines: replacements }],
 		consumedLines(Array.from({ length: size }, (_, index) => [index + 1, `old-${index}`])),
 	);
 	assert.ok(preview?.truncated);
@@ -67,7 +67,7 @@ test("replacement diff work is budgeted across the complete batch", () => {
 	const size = 256;
 	const consumed = consumedLines(Array.from({ length: size * 5 }, (_, index) => [index + 1, `old-${index}`]));
 	const changes = Array.from({ length: 5 }, (_, changeIndex) => ({
-		operation: "replace_range" as const,
+		operation: "replace" as const,
 		start_anchor: `${changeIndex * size + 1}#AAA`,
 		end_anchor: `${(changeIndex + 1) * size}#AAA`,
 		lines: Array.from({ length: size }, (_, index) => index === 0 ? "changed" : `old-${changeIndex * size + index}`),
@@ -82,7 +82,7 @@ test("replacement diff checks UTF-8 bytes before joining its input", () => {
 	const replacements = ["中".repeat(MAX_PREVIEW_BYTES)];
 	replacements.join = () => { throw new Error("oversized UTF-8 text reached diff serialization"); };
 	const preview = buildAnchoredChangePreview(
-		[{ operation: "replace_range", start_anchor: "1#AAA", end_anchor: "1#AAA", lines: replacements }],
+		[{ operation: "replace", start_anchor: "1#AAA", end_anchor: "1#AAA", lines: replacements }],
 		consumedLines([[1, "before"]]),
 	);
 	assert.ok(preview?.truncated);
@@ -93,14 +93,14 @@ test("replacement preview preserves carriage returns and Unicode line separators
 	const old = "before\rtext\u2028tail";
 	const next = "after\rtext\u2029tail";
 	const preview = buildAnchoredChangePreview(
-		[{ operation: "replace_range", start_anchor: "1#AAA", end_anchor: "1#AAA", lines: [next] }],
+		[{ operation: "replace", start_anchor: "1#AAA", end_anchor: "1#AAA", lines: [next] }],
 		consumedLines([[1, old]]),
 	);
 	assert.deepEqual(preview?.lines.map((line) => line.text), [old, next]);
 });
 test("anchored preview refuses to guess when a consumed line is missing from evidence", () => {
 	const preview = buildAnchoredChangePreview(
-		[{ operation: "replace_range", start_anchor: "2#AAA", end_anchor: "3#BBB", lines: ["next"] }],
+		[{ operation: "replace", start_anchor: "2#AAA", end_anchor: "3#BBB", lines: ["next"] }],
 		consumedLines([[2, "two"]]),
 	);
 
@@ -143,7 +143,7 @@ test("preview byte cap counts Chinese and emoji as UTF-8 and clips one oversized
 
 test("change preview survives a details JSON round trip and rejects malformed shapes", () => {
 	const preview = buildAnchoredChangePreview(
-		[{ operation: "replace_range", start_anchor: "2#AAA", end_anchor: "2#AAA", lines: ["B"] }],
+		[{ operation: "replace", start_anchor: "2#AAA", end_anchor: "2#AAA", lines: ["B"] }],
 		consumedLines([[2, "b"]]),
 	);
 	assert.ok(preview);

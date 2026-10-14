@@ -85,7 +85,7 @@ test("anchored editing tools stay active regardless of current read evidence", a
 	assert.ok(applyTool);
 	const prooflessApply = await applyTool.execute(
 		"proofless-apply",
-		{ path: "target.txt", replace_ranges: [], delete_ranges: [{ start_anchor: "1#AAA", end_anchor: "1#AAA" }], insert_before: [], insert_after: [] } as never,
+		{ path: "target.txt", changes: [{ action: "replace", anchor: "1#AAA" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -120,8 +120,7 @@ test("anchored editing tools stay active regardless of current read evidence", a
 	const noOpApplyParams = {
 		path: "target.txt",
 		proof_id: successfulRead.details.proofId,
-		replace_ranges: [{ start_anchor: currentAnchor, end_anchor: currentAnchor, lines: "two" }],
-		delete_ranges: [], insert_before: [], insert_after: [],
+		changes: [{ action: "replace", anchor: currentAnchor, lines: "two" }],
 	} as never;
 
 	branch = [];
@@ -195,8 +194,7 @@ test("search results provide partial proof without a second range read", async (
 		{
 			path: "partial.txt",
 			proof_id: partialRead.details.proofId,
-			replace_ranges: [{ start_anchor: "1#AAA", end_anchor: hitAnchor, lines: "changed" }],
-			delete_ranges: [], insert_before: [], insert_after: [],
+			changes: [{ action: "replace", anchor: "1#AAA", end_anchor: hitAnchor, lines: "changed" }],
 		} as never,
 		undefined,
 		undefined,
@@ -211,8 +209,7 @@ test("search results provide partial proof without a second range read", async (
 		{
 			path: "partial.txt",
 			proof_id: uncoveredApply.details.proofId,
-			replace_ranges: [{ start_anchor: hitAnchor, end_anchor: hitAnchor, lines: "changed" }],
-			delete_ranges: [], insert_before: [], insert_after: [],
+			changes: [{ action: "replace", anchor: hitAnchor, lines: "changed" }],
 		} as never,
 		undefined,
 		undefined,
@@ -239,8 +236,7 @@ test("search results provide partial proof without a second range read", async (
 		{
 			path: "context.txt",
 			proof_id: contextRead.details.proofId,
-			replace_ranges: [{ start_anchor: firstAnchor, end_anchor: lastAnchor, lines: "rewritten" }],
-			delete_ranges: [], insert_before: [], insert_after: [],
+			changes: [{ action: "replace", anchor: firstAnchor, end_anchor: lastAnchor, lines: "rewritten" }],
 		} as never,
 		undefined,
 		undefined,

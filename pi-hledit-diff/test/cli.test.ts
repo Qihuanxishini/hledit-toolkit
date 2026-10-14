@@ -11,7 +11,7 @@ import { applyFileChangesResult } from "../src/apply-result.ts";
 
 // CLI 声明的完整能力集；解析结果只保留 version，其余字段仅用于构造被校验的输入。
 const DECLARED_CAPABILITIES = {
-	version: "3.4.0",
+	version: "3.4.1",
 	anchorProtocolV2: true,
 	readRangeMetadata: true,
 	readWindowsMetadata: true,
@@ -164,7 +164,7 @@ test("bundled batch is atomic when a later anchor is stale", async (t) => {
 	const request = JSON.stringify({
 		edits: [
 			{ op: "replace", pos: anchors[0], lines: ["TWO"] },
-			{ op: "delete", pos: staleAnchor },
+			{ op: "replace", pos: staleAnchor },
 		],
 	});
 

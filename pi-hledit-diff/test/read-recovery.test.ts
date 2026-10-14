@@ -40,7 +40,7 @@ for (const knownLines of [9977, 9978]) {
 		}
 		const requiredRanges = [{ start: knownLines + 1, end: totalLines }];
 		const selection = live.selectProof(path, [{
-			operation: "delete_range", start_anchor: row(knownLines + 1).anchor, end_anchor: row(totalLines).anchor,
+			operation: "replace", start_anchor: row(knownLines + 1).anchor, end_anchor: row(totalLines).anchor, lines: [],
 		}], live.getProofId(path));
 		assert.ok("failure" in selection);
 		const recovered = await recoverMissingReadProof({
@@ -66,9 +66,9 @@ for (const knownLines of [9977, 9978]) {
 		} as never);
 		assert.deepEqual(live.anchorTokens(path), replayed.anchorTokens(path));
 		assert.equal(live.anchorTokens(path).size, knownLines === 9977 ? totalLines : 2);
-		assert.ok("proof" in live.selectProof(path, [{ operation: "delete_range", start_anchor: row(knownLines + 1).anchor, end_anchor: row(totalLines).anchor }], recovered.details.proofId));
+		assert.ok("proof" in live.selectProof(path, [{ operation: "replace", start_anchor: row(knownLines + 1).anchor, end_anchor: row(totalLines).anchor, lines: [] }], recovered.details.proofId));
 		for (const line of [1, knownLines + 1, totalLines]) {
-			const changes = [{ operation: "delete_range" as const, start_anchor: row(line).anchor, end_anchor: row(line).anchor }];
+			const changes = [{ operation: "replace" as const, start_anchor: row(line).anchor, end_anchor: row(line).anchor, lines: [] }];
 			assert.deepEqual(
 				live.selectProof(path, changes, recovered.details.proofId),
 				replayed.selectProof(path, changes, recovered.details.proofId),
@@ -94,7 +94,7 @@ for (const scenario of ["nearby", "budget", "changed-before", "changed-between"]
 			{ path, offset: 1, limit: 100, pattern: "row" });
 		const live = new ReadEvidenceStore();
 		live.updateFromToolResult(HLEDIT_READ_ANCHORS_TOOL, initial.details, cwd);
-		const changes = starts.map((n) => ({ operation: "delete_range" as const, start_anchor: row(n).anchor, end_anchor: row(n + 2).anchor }));
+		const changes = starts.map((n) => ({ operation: "replace" as const, start_anchor: row(n).anchor, end_anchor: row(n + 2).anchor, lines: [] }));
 		const selected = live.selectProof(path, changes, initial.details.proofId);
 		assert.ok("failure" in selected);
 		let calls = 0;

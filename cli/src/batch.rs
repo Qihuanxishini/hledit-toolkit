@@ -134,15 +134,9 @@ fn plan_edit(edit: &Edit, index: usize) -> Result<Planned<'_>, Value> {
         None => start,
     };
     match edit.op.as_str() {
-        "replace" | "delete" => {
-            if edit.op == "replace" && edit.lines.0.is_none() {
-                return Err(fail("replace requires lines".into()));
-            }
-            if edit.op == "delete" && edit.lines.0.is_some() {
-                return Err(fail("delete does not accept lines".into()));
-            }
+        "replace" => {
             if edit.after.0.is_some() {
-                return Err(fail(format!("{} does not accept after", edit.op)));
+                return Err(fail("replace does not accept after".into()));
             }
             if start > end {
                 return Err(fail(format!("start line {start} > end line {end}")));

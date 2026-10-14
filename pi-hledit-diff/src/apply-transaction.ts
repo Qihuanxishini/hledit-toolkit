@@ -4,7 +4,7 @@ import { lineFromAnchor } from "./anchor.ts";
 import { applyFileChangesResult } from "./apply-result.ts";
 import { buildAnchoredChangePreview, emptyChangePreview, type VerifiedChangePreview } from "./change-preview.ts";
 import { runHledit } from "./cli.ts";
-import { buildFileChangeRequest, changeShapeIssueResult, findChangeShapeIssue } from "./file-changes.ts";
+import { buildFileChangeRequest, changeShapeIssueResult, findChangeShapeIssue, isInsertChange } from "./file-changes.ts";
 import { formatReadProofFailure, ReadEvidenceStore, readProofFailureContext, resolveReadEvidencePath } from "./read-evidence.ts";
 import { normalizeToolPath } from "./read-args.ts";
 import { recoverMissingReadProof } from "./read-recovery.ts";
@@ -54,7 +54,7 @@ export async function runApplyTransaction(
 		const shapeIssue = findChangeShapeIssue(normalizedParams, {
 			has: (anchor) => evidence.anchorsRequiringRead(evidencePath, [anchor]).length === 0,
 		});
-		if (shapeIssue) return attachEvidencePath(changeShapeIssueResult(shapeIssue, params.changes), path, evidencePath);
+		if (shapeIssue) return attachEvidencePath(changeShapeIssueResult(shapeIssue), path, evidencePath);
 		const selection = evidence.selectProof(evidencePath, normalizedParams.changes, normalizedParams.proof_id);
 		if ("failure" in selection) {
 			const { failure } = selection;
@@ -64,7 +64,7 @@ export async function runApplyTransaction(
 					failure, path, evidencePath, cwd, signal, run: runHledit, requiredRanges,
 					canRetain: (reads, proofId) => evidence.canRetainRecovery(evidencePath, reads, proofId, requiredRanges),
 					requiredLastLine: Math.max(...normalizedParams.changes.map((change) =>
-						lineFromAnchor("end_anchor" in change ? change.end_anchor : change.anchor) ?? 0)),
+						lineFromAnchor(isInsertChange(change) ? change.anchor : change.end_anchor) ?? 0)),
 				});
 				if (recovered) return recovered;
 			}

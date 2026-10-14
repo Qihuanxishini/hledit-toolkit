@@ -354,7 +354,7 @@ test("applyFileChangesResult verifies editDeltas against the anchored batch requ
 		path: "src/a.ts",
 		changes: [
 			{ operation: "insert_after" as const, anchor: "2#BHJ", lines: ["x", "y"] },
-			{ operation: "replace_range" as const, start_anchor: "5#BKM", end_anchor: "6#BLN", lines: ["z"] },
+			{ operation: "replace" as const, start_anchor: "5#BKM", end_anchor: "6#BLN", lines: ["z"] },
 		],
 	};
 	const payload = (editDeltas: Array<Record<string, unknown>>, editsApplied = 2, updatedAnchorSpans: unknown = [
@@ -420,14 +420,14 @@ test("applyFileChangesResult identifies both conflicting changes without request
 	}, {
 		path: "src/a.ts",
 		changes: [
-			{ operation: "replace_range", start_anchor: "2#AAA", end_anchor: "4#AAB", lines: ["a"] },
+			{ operation: "replace", start_anchor: "2#AAA", end_anchor: "4#AAB", lines: ["a"] },
 			{ operation: "insert_after", anchor: "3#AAC", lines: ["b"] },
 		],
 	});
 	assert.equal(result.details.disposition, "rejected");
-	assert.match(result.content[0]?.text ?? "", /Failed item: insert_after\[0\]/);
+	assert.match(result.content[0]?.text ?? "", /Failed item: changes\[1\]/);
 	assert.equal(result.details.error?.rawMessage, rawMessage);
-	assert.match(result.details.error?.message ?? "", /^insert_after\[0\] and replace_ranges\[0\] conflict/);
+	assert.match(result.details.error?.message ?? "", /^changes\[1\] and changes\[0\] conflict/);
 	assert.match(result.content[0]?.text ?? "", /Merge them or make them non-overlapping; rereading cannot resolve this conflict/);
 	assert.doesNotMatch(result.content[0]?.text ?? "", /call hledit_read_anchors/i);
 });
@@ -461,13 +461,13 @@ test("applyFileChangesResult falls back to rereading when a stale snapshot is un
         { path: "src/a.ts" },
     );
 
-    assert.match(result.content[0]?.text ?? "", /^The atomic batch was rejected; no content was written\.\nReason: Change 1 uses a stale anchor\.\nError code: stale/m);
+    assert.match(result.content[0]?.text ?? "", /^The atomic batch was rejected; no content was written\.\nReason: changes\[0\] uses a stale anchor\.\nError code: stale/m);
     assert.match(result.content[0]?.text ?? "", /2#BHJ -> 2#BBK/);
     assert.match(result.content[0]?.text ?? "", /Before retrying, call hledit_read_anchors\(\{ path: "src\/a\.ts", windows: \[\{ offset: 1, limit: 12 \}\] \}\)/);
     assert.deepEqual(result.details, {
 		disposition: "rejected",
 		path: "src/a.ts",
-		error: { code: "stale", message: "Change 1 uses a stale anchor.", rawMessage: "edit 0: anchor stale" },
+		error: { code: "stale", message: "changes[0] uses a stale anchor.", rawMessage: "edit 0: anchor stale" },
 	});
     assert.equal(isFailedHleditResult(result.details), true);
 });
@@ -477,7 +477,7 @@ test("revision failures without a complete snapshot direct rereads to the reques
 		const result = applyFileChangesResult({
 			stdout: JSON.stringify({ ok: false, error: "stale", message: "read proof revision does not match the current file", failed: -1, currentRevision: REVISION, totalLines: 20000, currentAnchors }),
 			stderr: "", exitCode: 0,
-		}, { path: "src/a.ts", changes: [{ operation: "delete_range", start_anchor: "11000#AAA", end_anchor: "14000#BBB" }] });
+		}, { path: "src/a.ts", changes: [{ operation: "replace", start_anchor: "11000#AAA", end_anchor: "14000#BBB", lines: [] }] });
 		const text = result.content[0]!.text;
 		assert.match(text, /file revision changed/);
 		assert.match(text, /offset: 10998, limit: 2000/);
@@ -518,16 +518,16 @@ test("applyFileChangesResult exposes validated stale snapshot context", () => {
 		},
 		{
 			path: "src/a.ts",
-			changes: [{ operation: "replace_range", start_anchor: "2#BHJ", end_anchor: "2#BHJ", lines: ["next"] }],
+			changes: [{ operation: "replace", start_anchor: "2#BHJ", end_anchor: "2#BHJ", lines: ["next"] }],
 		},
 	);
 	const text = result.content[0]?.text ?? "";
 
 	assert.match(text, /2#BBK:modified/);
 	assert.match(text, /Review this current snapshot before submitting/);
-	assert.match(text, /explicitly replace start_anchor\/end_anchor with 2#BBK/);
+	assert.match(text, /explicitly replace anchor with 2#BBK/);
 	assert.doesNotMatch(text, /Before retrying, call hledit_read_anchors/);
-	assert.match(text, /Field: start_anchor\/end_anchor/);
+	assert.match(text, /Field: anchor/);
 	assert.match(text, /Submitted anchor: 2#BHJ/);
 	assert.match(text, /Current line at the same number: 2#BBK:modified/);
 	assert.match(text, /never repairs anchors or retries a batch/);
@@ -535,7 +535,7 @@ test("applyFileChangesResult exposes validated stale snapshot context", () => {
 	assert.deepEqual(result.details.error?.staleAnchors, [
 		{
 			changeNumber: 1,
-			fields: ["start_anchor", "end_anchor"],
+			fields: ["anchor"],
 			requestedAnchor: "2#BHJ",
 			currentAnchor: "2#BBK",
 			currentText: "modified",
@@ -556,7 +556,7 @@ test("model body snapshot: CLI insufficient_read_proof rejection", () => {
 		exitCode: 0,
 	}, {
 		path: "src/a.ts",
-		changes: [{ operation: "replace_range", start_anchor: "3#AAA", end_anchor: "5#AAB", lines: ["replacement"] }],
+		changes: [{ operation: "replace", start_anchor: "3#AAA", end_anchor: "5#AAB", lines: ["replacement"] }],
 	});
 
 	assert.equal(
@@ -564,8 +564,8 @@ test("model body snapshot: CLI insufficient_read_proof rejection", () => {
 		"The atomic batch was rejected; no content was written.\n" +
 		"Reason: Read proof does not cover every original source line required by this change.\n" +
 		"Error code: insufficient_read_proof\n" +
-		"Failed item: replace_ranges[0]\n" +
-		'Call hledit_read_anchors({ path: "src/a.ts", windows: [{ offset: 1, limit: 12 }] }) to reread every source line required by replace_ranges[0], then use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.',
+		"Failed item: changes[0]\n" +
+		'Call hledit_read_anchors({ path: "src/a.ts", windows: [{ offset: 1, limit: 12 }] }) to reread every source line required by changes[0], then use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.',
 	);
 	assert.equal(result.details.disposition, "rejected");
 });
@@ -577,7 +577,7 @@ test("CLI proof recovery paginates the complete failed change", () => {
 		exitCode: 0,
 	}, {
 		path: "src/large.ts",
-		changes: [{ operation: "delete_range", start_anchor: "3#AAA", end_anchor: "3005#AAB" }],
+		changes: [{ operation: "replace", start_anchor: "3#AAA", end_anchor: "3005#AAB", lines: [] }],
 	});
 
 	assert.match(result.content[0]?.text ?? "", /offset: 1, limit: 2000/);
@@ -602,20 +602,20 @@ test("model body snapshot: stale rejection with snapshot context and field-level
 			stderr: "",
 			exitCode: 0,
 		},
-		{ path: "src/a.ts", changes: [{ operation: "replace_range", start_anchor: "2#BHJ", end_anchor: "2#BHJ", lines: ["next"] }] },
+		{ path: "src/a.ts", changes: [{ operation: "replace", start_anchor: "2#BHJ", end_anchor: "2#BHJ", lines: ["next"] }] },
 	);
 
 	assert.equal(
 		result.content[0]?.text,
 		"The atomic batch was rejected; no content was written.\n" +
-		"Reason: replace_ranges[0] uses a stale anchor.\n" +
+		"Reason: changes[0] uses a stale anchor.\n" +
 		"Error code: stale\n" +
-		"Failed item: replace_ranges[0]\n" +
-		"Anchor verification for replace_ranges[0]:\n" +
-		"- Field: start_anchor/end_anchor\n" +
+		"Failed item: changes[0]\n" +
+		"Anchor verification for changes[0]:\n" +
+		"- Field: anchor\n" +
 		"  Submitted anchor: 2#BHJ\n" +
 		"  Current line at the same number: 2#BBK:modified\n" +
-		"  After verifying the intended target, explicitly replace start_anchor/end_anchor with 2#BBK in a new request.\n" +
+		"  After verifying the intended target, explicitly replace anchor with 2#BBK in a new request.\n" +
 		"This information is for verification only. The tool never repairs anchors or retries a batch automatically.\n" +
 		"Current anchor snapshot at submission time (local span: lines 1-3):\n" +
 		"1#BHJ:one\n" +
@@ -722,7 +722,7 @@ test("failure result constructors preserve disposition and structured errors", (
 		code: "reversed_anchor_range",
 		message: "start_anchor must not be below end_anchor.",
 		changeNumber: 1,
-		operation: "replace_range",
+		operation: "replace",
 	});
 
 	assert.deepEqual(rejected.details, {
@@ -731,7 +731,7 @@ test("failure result constructors preserve disposition and structured errors", (
 			code: "reversed_anchor_range",
 			message: "start_anchor must not be below end_anchor.",
 			changeNumber: 1,
-			operation: "replace_range",
+			operation: "replace",
 		},
 	});
 	assert.equal(isFailedHleditResult(rejected.details), true);
@@ -778,7 +778,7 @@ test("applyFileChangesResult reports a retained recovery file as a successful wr
 
 test("applyFileChangesResult explains rejected text rather than requesting a fresh read", () => {
 	for (const [rawMessage, expected] of [
-		["edit 1: lines[0] contains NUL; replacement must remain readable text", /Change 2 contains a NUL character/],
+		["edit 1: lines[0] contains NUL; replacement must remain readable text", /changes\[1\] contains a NUL character/],
 		["edit 1: lines[0] contains LF; each wire array element must be one logical line", /Each element must contain exactly one logical line/],
 		["result would reinterpret leading U+FEFF text as a UTF-8 BOM", /Keep that character out of the first text position/],
 	] as const) {

@@ -1,5 +1,6 @@
 import { generateDiffString } from "@earendil-works/pi-coding-agent";
 import { lineFromAnchor } from "./anchor.ts";
+import { isInsertChange } from "./file-changes.ts";
 import type { FileChangeParams } from "./schema.ts";
 
 // 提交绑定的局部 change preview：
@@ -217,7 +218,7 @@ export function buildAnchoredChangePreview(
 ): VerifiedChangePreview | undefined {
 	const blocks: PreviewBlock[] = [];
 	for (const [changeIndex, change] of changes.entries()) {
-		if (change.operation === "insert_before" || change.operation === "insert_after") {
+		if (isInsertChange(change)) {
 			const anchorLine = lineFromAnchor(change.anchor);
 			if (anchorLine === undefined) return undefined;
 			blocks.push({
@@ -241,7 +242,7 @@ export function buildAnchoredChangePreview(
 			changeIndex,
 			oldStart: start,
 			oldLines,
-			newLines: change.operation === "replace_range" ? change.lines : [],
+			newLines: change.lines,
 		});
 	}
 	return previewFromBlocks(blocks);

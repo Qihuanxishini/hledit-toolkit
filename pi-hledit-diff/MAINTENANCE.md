@@ -32,7 +32,7 @@ pi-hledit-diff/
 - 所有正 capability 必须严格为 `true`；
 - 响应不得拥有已删除的 `contentReplaceOnce` 字段，即使其值为 `false`；
 - 命令失败、非 JSON、缺字段或额外 legacy residue 都走现有内置 `edit` fallback；
-- 不支持旧 CLI、旧 batch wire、旧 `delete.lines:[]`、无 proof 写入、内容匹配替换或自动 stale 重试。
+- 不支持旧 CLI、旧 batch wire、旧 `delete` op、无 proof 写入、内容匹配替换或自动 stale 重试。
 
 ## 工具协议与激活
 
@@ -52,7 +52,7 @@ pi-hledit-diff/
 
 三个工具的路径在进入 CLI 与 canonical queue 前统一经 `normalizeToolPath` 处理：展开 `~` / `~/`（Windows 也支持 `~\`）、去除 `@` 前缀并转换 Windows MSYS 盘符。
 
-read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArguments` 依次执行可选 null 归一化、`Value.Convert` 和 schema 校验；整数转换可能接受数字字符串并截断小数，因此范围约束作用于转换后的值，不承诺拒绝所有原始非整数输入。插件不额外引入严格数值策略。apply 使用四组普通对象数组，不依赖 Union、`anyOf`、`oneOf` 或受约束采样。`prepareFileChangeArguments` 在宿主转换前诊断分组形状、项字段、字符串类型和跨组总数，不补值、删字段或改写操作；必填分组缺失或为 null 必须拒绝。锚点格式、path/proof 与顶层额外字段仍由宿主 schema 拒绝，decoder 保留形状检查及文本拆分与跨组聚合限制。
+read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArguments` 依次执行可选 null 归一化、`Value.Convert` 和 schema 校验；整数转换可能接受数字字符串并截断小数，因此范围约束作用于转换后的值，不承诺拒绝所有原始非整数输入。插件不额外引入严格数值策略。apply 使用单一 `changes` 数组，项由 `action` 枚举表达操作，声明不依赖 Union、`anyOf`、`oneOf` 或受约束采样。`prepareFileChangeArguments` 在宿主转换前诊断项字段、字符串类型与 `changes` 总数，不补值、删字段或改写操作；`changes` 缺失或为 null 必须拒绝。锚点格式、path/proof 与顶层额外字段仍由宿主 schema 拒绝，decoder 保留形状检查及文本拆分与聚合限制。
 
 ### `hledit_read_anchors`
 
@@ -110,21 +110,23 @@ read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArgument
 {
   path: string,
   proof_id: string,
-  replace_ranges: [{ start_anchor: "12#aB3", end_anchor: "18#xY7", lines: "new line\nanother line" }],
-  delete_ranges: [{ start_anchor: "24#nK2", end_anchor: "29#Qw_" }],
-  insert_before: [{ anchor: "30#xY7", lines: "before" }],
-  insert_after: [{ anchor: "31#Qw_", lines: "after" }]
+  changes: [
+    { action: "replace", anchor: "12#aB3", end_anchor: "18#xY7", lines: "new line\nanother line" },
+    { action: "replace", anchor: "24#nK2", end_anchor: "29#Qw_" },
+    { action: "insert_before", anchor: "30#xY7", lines: "before" },
+    { action: "insert_after", anchor: "31#Qw_", lines: "after" }
+  ]
 }
 ```
 
 规则：
 
 - 一次调用只修改一个文件，并包含该文件全部非冲突 change；所有锚点基于同一批编辑前的快照，不按前项修改后的行号重新计算；
-- 范围包含首尾，单行范围复制同一锚点两次。`replace_range` 按指定范围消费原行，允许一行变多行及在输出中保留原行；`delete_range` 删除指定范围，insert 不消费依附行。不猜测业务代码块，不自动扩大范围或转换操作；
-- `lines` 只接受换行分隔字符串；一个末尾换行只终止末行，无末尾换行也合法，空字符串代表一行空文本；`delete_ranges` 不接受 `lines`；
-- 四组数组全部必填，未使用的组传 `[]`；组名决定操作，项中不带 `operation`。不接受旧 `changes`、数组 `lines`、序列化分组、自动包装单项或带源码后缀的 anchor；旧别名和字段不迁移，object 拒绝额外字段；
-- 四组总计限 1–200 项，replacement 总量限 1 MiB UTF-8，输出总量限 20,000 行；归一化后只提交一次 CLI batch，不能逐组执行；
-- 编号按 `replace_ranges` → `delete_ranges` → `insert_before` → `insert_after` 及各组数组顺序定义；返回正文 `Input mapping` 映射 1-based change 编号与 0-based 分组项。该顺序不代表逐项执行，各组均使用同一编辑前坐标，冲突跨组整批拒绝。内部 canonical changes、CLI wire、proof 和 evidence 格式不变；历史旧调用仅保留显示，不进入兼容执行路径。
+- 范围包含首尾，单行范围可省略 `end_anchor`。`replace` 按指定范围消费原行，允许一行变多行及在输出中保留原行；缺省 `lines` 或传空字符串表示删除目标范围；insert 不消费依附行。不猜测业务代码块，不自动扩大范围或转换操作；
+- `lines` 接受换行分隔字符串；一个末尾换行只终止末行，无末尾换行也合法；单独一个 `"\n"` 写入一行空行；`replace` 省略 `lines` 或传空字符串代表删除；
+- 单一 `changes` 数组必填，项包含 `action`、`anchor` 等字段，不依赖 anyOf 声明；不接受旧四数组分组，拒绝额外字段；
+- `changes` 数组总计限 1–200 项，replacement 总量限 1 MiB UTF-8，输出总量限 20,000 行；只提交一次原子 CLI batch；
+- 编号与 `changes` 数组下标（`changes[0]`, `changes[1]` 等）1:1 严格对齐，回包紧凑摘要直接引用 `changes[i]`。各项均使用同一编辑前坐标，冲突整批拒绝。内部 canonical changes、CLI wire、proof 和 evidence 格式同步精简。
 - batch stdin request 总大小限 8 MiB；`lines` 与 `proof.anchors` 的每个元素必须是 JSON 字符串，`null` 等类型会被拒绝；
 - CLI 的每个 `lines` 元素必须是一行逻辑文本，拒绝实际 NUL 和内嵌 LF；公开工具仍用换行分隔字符串，由插件拆分成行数组。拒绝携带具体 change 与内容原因，不引导调用方无效重读；
 - 公开 schema 要求 `proof_id`，不暴露 raw revision 或 CLI `proof`。先验证 canonical path 归属，再按该 proof 的坐标代解释端点、范围和覆盖；历史目标只有在逐行存续且映射连续时才规范化为当前坐标，并注入完整 hidden proof；
@@ -169,7 +171,7 @@ Evidence 以 resolved canonical path 为 key，文件状态包含当前证据代
 
 ## CLI batch 与结果契约
 
-Batch wire v3 是唯一 canonical 形状：`replace` 必须带 `lines`（可为空），`delete` 必须省略 `lines`，`insert` 必须带非空 `lines`，`after` 只能在 insert 上以 `true` 出现。CLI 在同一 snapshot 上验证 proof、全部 anchor 和物理冲突，再按 boundary 排序单次重建。
+Batch wire v3 是唯一 canonical 形状：`replace` 消费 `pos` 至可选 `end_pos` 的闭区间（缺省即 `pos`），省略或传空 `lines` 即删除该区间；`insert` 必须带非空 `lines`，`after` 只能在 insert 上以 `true` 出现。CLI 在同一 snapshot 上验证 proof、全部 anchor 和物理冲突，再按 boundary 排序单次重建。
 
 必须零写入拒绝：空 batch、非法 shape、stale/越界 anchor、proof 缺失或 revision mismatch、重叠消费范围、同 boundary 多 insert，以及落入消费范围内部 boundary 的 insert。范围前后 boundary 上位置明确的 insert 可接受。
 
@@ -258,7 +260,7 @@ wrapper 输出上限为 1 MiB，保护异常或不兼容 CLI 输出；单窗口 
 | `src/read-recovery.ts` | 整批 proof 缺口分页补读、共享预算与 revision 变化处理。 |
 | `src/read-evidence.ts` | proof 选择、目标迁移、恢复决策及发布/重放统一 reducer。 |
 | `src/proof-state.ts` | 证据代、历史坐标转换、容量计费及淘汰。 |
-| `src/file-changes.ts` | 四种公开 change → CLI batch、请求护栏及其拒绝信息。 |
+| `src/file-changes.ts` | 三种公开 action（二元操作）→ CLI batch、请求护栏及其拒绝信息。 |
 | `src/cli.ts` | CLI 3.x capability 门禁、bounded output 和 exit-confirmed 进程终止。 |
 | `src/result.ts` | 共享结果类型、disposition、edit delta 校验与结果构造器。 |
 | `src/read-result.ts` | 读取响应校验、补读 metadata 校验及读取正文和错误提示。 |
@@ -305,11 +307,11 @@ npm run check
 pi --no-extensions -e ./pi-hledit-diff/index.ts
 ```
 
-用 `/hledit-status` 确认 CLI 3.4.0 与 capability 健康，并覆盖：
+用 `/hledit-status` 确认 CLI 3.4.1 与 capability 健康，并覆盖：
 
-1. 连续 range read、正则/字面量 search/context 和四种 anchored operation；
+1. 连续 range read、正则/字面量 search/context 和三种 action（replace 含删除、insert_before/after）的 anchored operation；
 2. 新 proof 链式续编、旧 proof 消费目标拒绝、存续目标迁移、stale 与容量恢复；
-   参数协议变更还须使用现有模型/provider 配置，让模型自行生成四种操作及后续编辑调用；不得用手写参数桥接代替这项验收。
+   参数协议变更还须使用现有模型/provider 配置，让模型自行生成三种 action、缺省或空 `lines` 的删除与后续编辑调用；不得用手写参数桥接代替这项验收。
 3. session branch 切换与 `/reload` 后 evidence/active set；
 4. mixed EOL、BOM、trailing newline、中文/emoji preview；
 5. expanded TUI 从 details 显示 anchors，正文格式变化不影响渲染。

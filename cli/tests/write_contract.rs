@@ -79,7 +79,7 @@ fn complete_proof_and_conflict_checks_are_enforced_by_cli() {
         .iter()
         .map(|row| row["anchor"].clone())
         .collect();
-    let range = json!({"op":"delete","pos":anchors[0],"end_pos":anchors[2]});
+    let range = json!({"op":"replace","pos":anchors[0],"end_pos":anchors[2]});
     let incomplete = json!({"edits":[range],"proof":{"revision":read["revision"],"anchors":[anchors[0],anchors[2]]}});
     assert_eq!(
         invoke(&path, "batch", Some(&incomplete.to_string()))["error"],
@@ -97,7 +97,7 @@ fn complete_proof_and_conflict_checks_are_enforced_by_cli() {
 fn invalid_encoding_and_bom_reinterpretation_preserve_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("target.txt");
-    let request = r#"{"edits":[{"op":"delete","pos":"1#abc"}]}"#;
+    let request = r#"{"edits":[{"op":"replace","pos":"1#abc"}]}"#;
     for bytes in [&b"a\x00b"[..], &b"a\xffb"[..]] {
         fs::write(&path, bytes).unwrap();
         let result = invoke(&path, "batch", Some(request));
@@ -109,11 +109,46 @@ fn invalid_encoding_and_bom_reinterpretation_preserve_bytes() {
     let result = invoke(
         &path,
         "batch",
-        Some(&json!({"edits":[{"op":"delete","pos":read["lines"][0]["anchor"]}]}).to_string()),
+        Some(&json!({"edits":[{"op":"replace","pos":read["lines"][0]["anchor"]}]}).to_string()),
     );
     assert_eq!(result["error"], "invalid");
     assert_eq!(
         fs::read(&path).unwrap(),
         "alpha\n\u{feff}literal\n".as_bytes()
     );
+}
+
+#[test]
+fn replace_without_lines_deletes_and_delete_op_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("target.txt");
+    fs::write(&path, "one\ntwo\nthree\n").unwrap();
+    let read = invoke(&path, "read-range", None);
+    let a2 = &read["lines"][1]["anchor"];
+
+    // 验证 op: "delete" 不再支持，必须拒绝
+    let delete_req = json!({"edits":[{"op":"delete","pos":a2}]});
+    let del_res = invoke(&path, "batch", Some(&delete_req.to_string()));
+    assert_eq!(del_res["error"], "invalid");
+    assert!(
+        del_res["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown op \"delete\"")
+    );
+
+    // 验证 op: "replace" 缺省 lines 成功删除单行 (two)
+    let del_single = json!({"edits":[{"op":"replace","pos":a2}],"proof":{"revision":read["revision"],"anchors":[a2]}});
+    let res = invoke(&path, "batch", Some(&del_single.to_string()));
+    assert_eq!(res["ok"], true);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "one\nthree\n");
+
+    // 验证 op: "replace" lines: [] 成功删除多行
+    let read2 = invoke(&path, "read-range", None);
+    let r1 = &read2["lines"][0]["anchor"];
+    let r2 = &read2["lines"][1]["anchor"];
+    let del_range = json!({"edits":[{"op":"replace","pos":r1,"end_pos":r2,"lines":[]}],"proof":{"revision":read2["revision"],"anchors":[r1, r2]}});
+    let res2 = invoke(&path, "batch", Some(&del_range.to_string()));
+    assert_eq!(res2["ok"], true);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "");
 }

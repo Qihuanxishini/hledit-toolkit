@@ -65,7 +65,7 @@ The `nextOffset` field appears when another page is needed. A `textTruncated:tru
 printf '%s' '{"windows":[{"offset":40,"limit":8},{"offset":200,"limit":12}]}' | hledit read-windows main.rs
 ```
 
-Up to eight windows share one snapshot, a 2,000-line limit and a 96 KiB JSON budget. Overlapping or adjacent windows merge; each returned segment lists its 1-based `requestedWindows` indices. `truncated` is relative to the requested segment, not the remainder of the file. Incomplete segments include `nextOffset`; a text-truncated row remains the next offset. The Pi extension creates one proof only when all segments are complete; otherwise it displays a preview and asks for smaller complete reads.
+Up to eight windows share one snapshot, a 2,000-line limit and a 96 KiB JSON budget. Overlapping or adjacent windows merge; each returned segment lists its 1-based `requestedWindows` indices. `truncated` is relative to the requested segment, not the remainder of the file. Incomplete segments include `nextOffset`; a text-truncated row remains the next offset. Merged windows requiring more than 2,000 lines are rejected with `windows_budget_exceeded` before any content is produced. The Pi extension creates one proof only when all segments are complete; otherwise it displays a preview and asks for smaller complete reads.
 
 ### Search anchors
 
@@ -97,10 +97,8 @@ JSON
 
 Use `batch --check main.rs` with the same request to validate without writing. Batch wire v3 is exact:
 
-- `replace` requires a `lines` array; an empty array deletes its target range.
-- `delete` omits `lines`.
+- `replace` consumes an inclusive range (`pos` to optional `end_pos`, defaults to `pos`). An empty `lines` array or omitted `lines` deletes the range.
 - `insert` requires non-empty `lines`; only `insert` may use `"after": true`.
-- `end_pos`, when present on `replace` or `delete`, is an inclusive range end.
 - All anchors are exact `LN#HHH` tokens; annotations and whitespace are rejected.
 
 The optional proof is required by the Pi extension. Its revision and strictly increasing anchors must cover every consumed range line and each insert attachment anchor. Missing proof is `insufficient_read_proof`; an older snapshot is `stale`.

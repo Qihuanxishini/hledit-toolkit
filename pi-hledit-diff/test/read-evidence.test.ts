@@ -62,7 +62,7 @@ function readMetadata(
 }
 
 function replaceRange(startAnchor: string, endAnchor: string): FileChangeParams["changes"] {
-	return [{ operation: "replace_range", start_anchor: startAnchor, end_anchor: endAnchor, lines: ["replacement"] }];
+	return [{ operation: "replace", start_anchor: startAnchor, end_anchor: endAnchor, lines: ["replacement"] }];
 }
 
 // 成功 selection 自 Phase 4 起附带 consumedLines（内部消费行证据）；proof 断言
@@ -132,7 +132,7 @@ test("search rows establish partial proof without bridging gaps", () => {
 	], { pattern: "line" }));
 
 	assertProofSelection(store.selectProof(PATH, [
-		{ operation: "replace_range", start_anchor: "2#AAB", end_anchor: "2#AAB", lines: ["two"] },
+		{ operation: "replace", start_anchor: "2#AAB", end_anchor: "2#AAB", lines: ["two"] },
 		{ operation: "insert_after", anchor: "5#AAE", lines: ["six"] },
 	]), {
 		proof: { revision: REVISION_A, anchors: ["2#AAB", "5#AAE"] },
@@ -294,8 +294,8 @@ test("proof failure guidance covers the complete first missing range", () => {
 	store.recordRead(PATH, readMetadata(REVISION_A, [{ line: 3, anchor: "3#AAA" }], { totalLines: 500 }));
 
 	const selection = store.selectProof(PATH, [
-		{ operation: "replace_range", start_anchor: "3#AAA", end_anchor: "3#AAA", lines: ["three"] },
-		{ operation: "replace_range", start_anchor: "387#BBB", end_anchor: "415#CCC", lines: ["section"] },
+		{ operation: "replace", start_anchor: "3#AAA", end_anchor: "3#AAA", lines: ["three"] },
+		{ operation: "replace", start_anchor: "387#BBB", end_anchor: "415#CCC", lines: ["section"] },
 	]);
 	assert.ok("failure" in selection);
 	assert.deepEqual(selection.failure.reportedMissingLines, Array.from({ length: 20 }, (_, index) => index + 387));
@@ -303,12 +303,12 @@ test("proof failure guidance covers the complete first missing range", () => {
 		start: 387,
 		end: 415,
 		changeNumber: 2,
-		reference: "replace_ranges[1]",
-		operation: "replace_range",
+		reference: "changes[1]",
+		operation: "replace",
 		requiredStart: 387,
 		requiredEnd: 415,
 	});
-	assert.match(selection.failure.message, /replace_ranges\[1\] \(replace_range 387-415\)/);
+	assert.match(selection.failure.message, /changes\[1\] \(replace 387-415\)/);
 	assert.match(formatReadProofFailure("target.txt", selection.failure), /offset: 385, limit: 33/);
 });
 
@@ -328,8 +328,8 @@ test("proof guidance covers every unresolved gap in the affected change", () => 
 		start: 2,
 		end: 9,
 		changeNumber: 1,
-		reference: "replace_ranges[0]",
-		operation: "replace_range",
+		reference: "changes[0]",
+		operation: "replace",
 		requiredStart: 1,
 		requiredEnd: 20,
 	});
@@ -340,8 +340,8 @@ test("proof guidance covers every unresolved gap in the affected change", () => 
 test("proof gap keeps the original change number when changes are out of file order", () => {
 	const store = new ReadEvidenceStore();
 	const selection = store.selectProof(PATH, [
-		{ operation: "replace_range", start_anchor: "10#AAA", end_anchor: "20#AAB", lines: ["later"] },
-		{ operation: "delete_range", start_anchor: "1#AAC", end_anchor: "9#AAD" },
+		{ operation: "replace", start_anchor: "10#AAA", end_anchor: "20#AAB", lines: ["later"] },
+		{ operation: "replace", start_anchor: "1#AAC", end_anchor: "9#AAD", lines: [] },
 	]);
 
 	assert.ok("failure" in selection);
@@ -349,8 +349,8 @@ test("proof gap keeps the original change number when changes are out of file or
 		start: 1,
 		end: 9,
 		changeNumber: 2,
-		reference: "delete_ranges[0]",
-		operation: "delete_range",
+		reference: "changes[1]",
+		operation: "replace",
 		requiredStart: 1,
 		requiredEnd: 9,
 	});
@@ -362,7 +362,7 @@ test("proof recovery prefers a spanning range over a boundary insert", () => {
 	const store = new ReadEvidenceStore();
 	const selection = store.selectProof(PATH, [
 		{ operation: "insert_before", anchor: "2#AAA", lines: ["prefix"] },
-		{ operation: "replace_range", start_anchor: "2#AAA", end_anchor: "5#AAB", lines: ["body"] },
+		{ operation: "replace", start_anchor: "2#AAA", end_anchor: "5#AAB", lines: ["body"] },
 	]);
 
 	assert.ok("failure" in selection);
@@ -370,8 +370,8 @@ test("proof recovery prefers a spanning range over a boundary insert", () => {
 		start: 2,
 		end: 5,
 		changeNumber: 2,
-		reference: "replace_ranges[0]",
-		operation: "replace_range",
+		reference: "changes[1]",
+		operation: "replace",
 		requiredStart: 2,
 		requiredEnd: 5,
 	});
@@ -390,22 +390,22 @@ test("proof failure identifies the affected operation and continuous gap in a di
 
 	const selection = store.selectProof(PATH, [
 		{ operation: "insert_after", anchor: "9#AAA", lines: ["inserted"] },
-		{ operation: "replace_range", start_anchor: "138#AAA", end_anchor: "263#AAA", lines: ["section"] },
-		{ operation: "delete_range", start_anchor: "1044#AAA", end_anchor: "1064#AAA" },
+		{ operation: "replace", start_anchor: "138#AAA", end_anchor: "263#AAA", lines: ["section"] },
+		{ operation: "replace", start_anchor: "1044#AAA", end_anchor: "1064#AAA", lines: [] },
 	]);
 	assert.ok("failure" in selection);
 	assert.deepEqual(selection.failure.proofGap, {
 		start: 147,
 		end: 262,
 		changeNumber: 2,
-		reference: "replace_ranges[0]",
-		operation: "replace_range",
+		reference: "changes[1]",
+		operation: "replace",
 		requiredStart: 138,
 		requiredEnd: 263,
 	});
 	assert.equal(
 		selection.failure.message,
-		"replace_ranges[0] (replace_range 138-263) requires complete read proof for every source line in the inclusive range; missing lines 147-262. Endpoint anchors alone are insufficient.",
+		"changes[1] (replace 138-263) requires complete read proof for every source line in the inclusive range; missing lines 147-262. Endpoint anchors alone are insufficient.",
 	);
 	const guidance = formatReadProofFailure("target.txt", selection.failure);
 	assert.match(guidance, /offset: 145, limit: 120/);
@@ -424,8 +424,8 @@ test("model body snapshot: plugin-side proof failure with targeted reread", () =
 	assert.equal(
 		formatReadProofFailure("target.txt", selection.failure),
 		"Valid read proof does not cover every source line required by this change. Batch was not started and no content was written.\n" +
-		"Reason: replace_ranges[0] (replace_range 3-5) requires complete read proof for every source line in the inclusive range; missing lines 4-5. Endpoint anchors alone are insufficient.\n" +
-		'Call hledit_read_anchors({ path: "target.txt", windows: [{ offset: 2, limit: 12 }] }) first and confirm all required source lines for replace_ranges[0] through line 5.\n' +
+		"Reason: changes[0] (replace 3-5) requires complete read proof for every source line in the inclusive range; missing lines 4-5. Endpoint anchors alone are insufficient.\n" +
+		'Call hledit_read_anchors({ path: "target.txt", windows: [{ offset: 2, limit: 12 }] }) first and confirm all required source lines for changes[0] through line 5.\n' +
 		"After the read succeeds, use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.",
 	);
 });
@@ -843,7 +843,7 @@ test("a rename hint does not hide an unrelated proof gap in the same batch", () 
 	const staleAnchor = computeAnchorTag(3, "charlie");
 	const selection = store.selectProof(PATH, [
 		{ operation: "insert_after", anchor: staleAnchor, lines: ["x"] },
-		{ operation: "replace_range", start_anchor: computeAnchorTag(8, "hotel"), end_anchor: computeAnchorTag(9, "india"), lines: ["y"] },
+		{ operation: "replace", start_anchor: computeAnchorTag(8, "hotel"), end_anchor: computeAnchorTag(9, "india"), lines: ["y"] },
 	], oldProof);
 	assert.ok("failure" in selection);
 	assert.equal(selection.failure.code, "proof_source_unavailable");

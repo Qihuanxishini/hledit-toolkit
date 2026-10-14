@@ -92,7 +92,7 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 	const budgetResult = (message: string): TextResult => recoveryResult("proof_recovery_budget_exceeded", message, [
 		`${message} ${reads.length > 0 ? `The ${reads.length} retained page(s) are recorded below; recovery is incomplete.` : "No recovery read was retained, so no source is included below."}`,
 		remainingInstruction(),
-		"If the change does not need to consume that many source lines, narrow start_anchor/end_anchor instead.",
+		"If the change does not need to consume that many source lines, narrow the replace range (anchor/end_anchor) instead.",
 	], "read_target");
 
 	const plannedLines = pending.reduce((count, range) => count + range.end - range.start + 1, 0);

@@ -19,10 +19,11 @@
 - 三个工具统一展开 `~`、`~/` 主目录路径（Windows 同时支持 `~\`），并处理 `@` 前缀和 Windows MSYS 盘符路径。
 - 编辑现有非空文本文件前，使用 `hledit_read_anchors` 读取会被消费的连续原始行，或使用 `hledit_search_anchors` 定位并读取匹配/上下文行；普通 `read` 只用于参考文件或尚未确定修改目标的探索。`write` 只用于新文件、空文件或读取工具报告 source-line truncation 的例外场景。
 - 规范锚点是 `LN#[A-Za-z0-9_-]{3}` token。公开 change 只复制范围首尾或 insert 依附行；区间内部 proof 由插件从 evidence 注入。apply 使用严格输入，不剥离带源码后缀的 anchor，也不迁移旧字段或包装形状。
-- 公开修改协议只有 `replace_range`、`delete_range`、`insert_before` 和 `insert_after`。范围操作同时提供 `start_anchor` 与 `end_anchor`，首尾均包含；单行范围使用同一锚点。旧 operation 与内容匹配替换不迁移。
-- 所有 change 都使用本批编辑前的快照坐标。`replace_range` 精确替换指定范围，可将一行扩为多行，也可在输出中保留原行；`insert_before` / `insert_after` 不消费依附行，`delete_range` 删除指定范围。插件不猜测待替换代码块，也不自动扩大范围或转换操作。
-- `replace_range`、`insert_before` 和 `insert_after` 的 `lines` 只接受换行分隔字符串；一个末尾换行仅终止末行，空字符串表示一行空文本。`delete_range` 不接受 `lines`。
-- 单次 batch 限 1–200 个 changes、1 MiB replacement UTF-8 bytes 和 20,000 个输出行。batch 是原子的：任一 change 非法、冲突、proof 不完整或 stale 时均不写入。
+- 公开修改协议由四个必填数组表达：`replace_ranges`、`delete_ranges`、`insert_before` 和 `insert_after`；未用组传 `[]`，项中不带 `operation`，不迁移旧 `changes`。范围操作同时提供 `start_anchor` 与 `end_anchor`，首尾均包含；单行范围使用同一锚点。普通 JSON Schema 不要求额外模型/provider 模式。
+- 所有项都使用本批编辑前的快照坐标。`replace_ranges` 精确替换指定范围，可将一行扩为多行，也可在输出中保留原行；`insert_before` / `insert_after` 不消费依附行，`delete_ranges` 删除指定范围。插件不猜测代码块，也不自动扩大范围或转换操作。
+- 替换和插入项的 `lines` 只接受换行分隔字符串；一个末尾换行仅终止末行，无尾换行也合法，空字符串表示一行空文本。删除项不接受 `lines`。
+- 四组总计限 1–200 项、1 MiB replacement UTF-8 bytes 和 20,000 个输出行；统一归一化并仅提交一次原子 batch，任一项非法、跨组冲突、proof 不完整或 stale 时均不写入。
+- change 编号按四组上述顺序及各组数组顺序定义；结果正文给出编号到 0-based 分组项的映射，不表示顺序执行，底层仍按同一编辑前快照验证和提交。
 - proof 归属优先校验：跨文件使用时只报告归属错误，未知或被淘汰的 proof 要求重新获取目标证据，不把旧锚点配上当前 proof 猜测执行。revision 过期返回目标附近的当前快照，完整快照附带可续编的 `proof_id`；审阅后显式提交，插件不会自动重试。
 - `insufficient_read_proof` 会在同一 canonical file queue 内自动分页执行定向只读，直到目标缺口完整覆盖或触及恢复预算。结果返回全部 `recoveredReads`、最新 evidence 和一个权威 `proof_id`，但不会自动重放修改；审阅当前源码与端点锚点后再显式重提 apply。
 - 定向补读按整批实际缺口规划，共享 1,200 行、4 页、96 KiB 正文预算；预算耗尽后保留已返回页并列出合法的剩余窗口。目标越界、被消费或旧范围不再连续时停止计划，要求重新定位；补读期间 revision 变化则丢弃本次页面并失效旧证据。截断源码不可建立 proof，补读不会自动执行编辑。

@@ -10,6 +10,7 @@ import {
 	type HleditRenderTheme,
 } from "./diff-renderer.ts";
 import { fileChangeLineRanges } from "./file-changes.ts";
+import { FILE_CHANGE_GROUPS } from "./schema.ts";
 import { formatReadWindow, normalizeToolPath } from "./read-args.ts";
 import { parseUpdatedAnchorSpans, type BatchAnchorContext } from "./post-edit-context.ts";
 import { createHighlightedTextCache, escapeTerminalControls } from "./syntax-highlight.ts";
@@ -214,10 +215,14 @@ export function renderHleditCall(
 		? input.windows.flatMap((window) => isRecord(window) && typeof window.offset === "number" && typeof window.limit === "number"
 			? [formatLineRange(window.offset, window.offset + window.limit - 1)] : []).filter(Boolean).join(", ")
 		: undefined;
+	// [喵喵喵]: 旧 changes 只用于历史转录展示，执行入口不接受旧协议。
+	const groupedChanges = kind === "apply_file_changes" && FILE_CHANGE_GROUPS.some((group) => Array.isArray(input[group]))
+		? FILE_CHANGE_GROUPS.flatMap((group) => Array.isArray(input[group]) ? input[group] : [])
+		: input.changes;
 	const range = kind === "read_anchors"
 		? windowRanges
-		: kind === "apply_file_changes" ? fileChangeLineRanges(input.changes) : undefined;
-	const operationCount = kind === "apply_file_changes" && Array.isArray(input.changes) ? input.changes.length : undefined;
+		: kind === "apply_file_changes" ? fileChangeLineRanges(groupedChanges) : undefined;
+	const operationCount = kind === "apply_file_changes" && Array.isArray(groupedChanges) ? groupedChanges.length : undefined;
 	const searchContext = kind === "search_anchors" && typeof input.context === "number" && Number.isInteger(input.context) && input.context > 0 ? input.context : undefined;
 	const titleText = kind === "read_anchors" ? "read for edit" : kind === "search_anchors" ? "search anchors" : "apply changes";
 	const title = theme.fg("toolTitle", theme.bold(titleText));

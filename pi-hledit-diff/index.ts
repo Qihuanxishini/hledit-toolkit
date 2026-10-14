@@ -24,7 +24,7 @@ import {
 	changeShapeIssueResult,
 	findChangeShapeIssue,
 } from "./src/file-changes.ts";
-import { decodeFileChangeInput, prepareFileChangeArguments } from "./src/prepare-arguments.ts";
+import { decodeFileChangeInput, formatFileChangeInputMap, prepareFileChangeArguments } from "./src/prepare-arguments.ts";
 import {
 	formatReadProofFailure,
 	ReadEvidenceStore,
@@ -286,11 +286,11 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		exposure: "model-only",
 		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
 		label: "Apply File Changes",
-		description: "Apply one atomic batch of source ranges and anchored inserts in one file; requires complete read proof.",
+		description: "Apply one atomic batch of source ranges and anchored inserts in one file; requires complete read proof. Supply all four arrays (use [] when unused), totaling 1-200 items in pre-edit coordinates. No overlapping ranges, inserts inside consumed ranges or duplicate insertion boundaries.",
 		promptGuidelines: [
 			"Use hledit_apply_file_changes with proof_id and anchors from the same evidence generation. Reuse verified output anchors with the new proof; read intermediate lines when needed. Old pairs work only for verified surviving targets. Failed reads create no proof.",
 			"In hledit_apply_file_changes, batch independent same-file edits. Keep consumed ranges semantically complete without unrelated lines. Insert preserves its anchor; moving text also requires deletion.",
-			"In hledit_apply_file_changes.lines, one trailing \\n terminates the last line; \"\" writes a blank line, not a deletion. Use write only for new/empty files or intentional full rewrites permitted by recovery guidance; never bypass proof.",
+			"In hledit_apply_file_changes item lines, one trailing \\n terminates the last line; \"\" writes a blank line, not a deletion. Use write only for new/empty files or intentional full rewrites permitted by recovery guidance; never bypass proof.",
 			"After hledit_apply_file_changes, never replay success. Rejected batches made no write; fix the cause and review recovered reads before retrying. Recovery reads do not apply edits. On outcome_unknown, inspect the file and follow recovery guidance before writing.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
@@ -308,7 +308,15 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			}
 			const result = await runFileChangesWithDiff(decoded.params, ctx, signal, readEvidence);
 			synchronizeAnchoredTools();
-			return { ...result, isError: shouldMarkHleditResultAsError(result.details) };
+			// [喵喵喵]: 在首段标明编号来源，不改变 proof 的末行位置或补读源码预算。
+			const inputMap = formatFileChangeInputMap(params);
+			const content = result.content.map((block, index) => {
+				if (index !== 0 || block.type !== "text") return block;
+				const newline = block.text.indexOf("\n");
+				const text = newline < 0 ? `${block.text}\n${inputMap}` : `${block.text.slice(0, newline)}\n${inputMap}${block.text.slice(newline)}`;
+				return { ...block, text };
+			});
+			return { ...result, content, isError: shouldMarkHleditResultAsError(result.details) };
 		},
 	});
 

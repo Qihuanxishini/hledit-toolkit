@@ -48,11 +48,11 @@ pi-hledit-diff/
 
 宿主基线为 Pi 0.99.0。三个工具均声明 `exposure: "model-only"`，保证读写结果进入模型转录并可按 branch 重放；Pi 的嵌套调用记录不保存完整工具结果，不能用于恢复 proof。read/search 的 annotations 声明本地只读，apply 声明本地破坏性写入；权限判断仍由宿主及权限扩展执行。
 
-当前公开协议按 `JSON.stringify(parameters) + description + promptGuidelines` 计量，回归上限为 6,000 characters。只保留操作边界、必要字段语义、proof 与失败恢复规则，不加入示例或重复展开次要细节；精确值由测试和最终验证计量，不在文档中固化。
+当前公开协议按 `JSON.stringify(parameters) + description + promptGuidelines` 计量，回归上限为 6,400 characters。保留准确的操作边界、必要字段语义、proof 与失败恢复规则，不加入示例或重复展开次要细节；精确值由测试和最终验证计量，不在文档中固化。
 
 三个工具的路径在进入 CLI 与 canonical queue 前统一经 `normalizeToolPath` 处理：展开 `~` / `~/`（Windows 也支持 `~\`）、去除 `@` 前缀并转换 Windows MSYS 盘符。
 
-read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArguments` 依次执行可选 null 归一化、`Value.Convert` 和 schema 校验；整数转换可能接受数字字符串并截断小数，因此范围约束作用于转换后的值，不承诺拒绝所有原始非整数输入。插件不额外引入严格数值策略。apply 使用按操作分支的 schema，`prepareFileChangeArguments` 在宿主转换和校验前给出字段组合的单条诊断，不补值、删字段或改写操作；必需字段的 null 按缺失拒绝，不适用字段即使为 null 也必须省略。未知操作、字段类型、锚点格式与额外字段仍由宿主 schema 拒绝，decoder 保留组合检查及文本拆分与聚合限制。
+read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArguments` 依次执行可选 null 归一化、`Value.Convert` 和 schema 校验；整数转换可能接受数字字符串并截断小数，因此范围约束作用于转换后的值，不承诺拒绝所有原始非整数输入。插件不额外引入严格数值策略。apply 使用四组普通对象数组，不依赖 Union、`anyOf`、`oneOf` 或受约束采样。`prepareFileChangeArguments` 在宿主转换前诊断分组形状、项字段、字符串类型和跨组总数，不补值、删字段或改写操作；必填分组缺失或为 null 必须拒绝。锚点格式、path/proof 与顶层额外字段仍由宿主 schema 拒绝，decoder 保留形状检查及文本拆分与跨组聚合限制。
 
 ### `hledit_read_anchors`
 
@@ -110,12 +110,10 @@ read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArgument
 {
   path: string,
   proof_id: string,
-  changes: [
-    { operation: "replace_range", start_anchor: "12#aB3", end_anchor: "18#xY7", lines: "new line\nanother line" },
-    { operation: "delete_range", start_anchor: "24#nK2", end_anchor: "29#Qw_" },
-    { operation: "insert_before", anchor: "30#xY7", lines: "before" },
-    { operation: "insert_after", anchor: "31#Qw_", lines: "after" }
-  ]
+  replace_ranges: [{ start_anchor: "12#aB3", end_anchor: "18#xY7", lines: "new line\nanother line" }],
+  delete_ranges: [{ start_anchor: "24#nK2", end_anchor: "29#Qw_" }],
+  insert_before: [{ anchor: "30#xY7", lines: "before" }],
+  insert_after: [{ anchor: "31#Qw_", lines: "after" }]
 }
 ```
 
@@ -123,9 +121,10 @@ read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArgument
 
 - 一次调用只修改一个文件，并包含该文件全部非冲突 change；所有锚点基于同一批编辑前的快照，不按前项修改后的行号重新计算；
 - 范围包含首尾，单行范围复制同一锚点两次。`replace_range` 按指定范围消费原行，允许一行变多行及在输出中保留原行；`delete_range` 删除指定范围，insert 不消费依附行。不猜测业务代码块，不自动扩大范围或转换操作；
-- `lines` 只接受换行分隔字符串；一个末尾换行只终止末行，空字符串代表一行空文本；`delete_range` 不接受 `lines`；
-- apply 不接受数组 `lines`、序列化 `changes`、单 change 自动包装或带源码后缀的 anchor；旧 operation、别名和字段不迁移，object 使用严格额外字段拒绝；
-- 单次 batch 限 1–200 个 changes，replacement 总量限 1 MiB UTF-8，输出总量限 20,000 行；
+- `lines` 只接受换行分隔字符串；一个末尾换行只终止末行，无末尾换行也合法，空字符串代表一行空文本；`delete_ranges` 不接受 `lines`；
+- 四组数组全部必填，未使用的组传 `[]`；组名决定操作，项中不带 `operation`。不接受旧 `changes`、数组 `lines`、序列化分组、自动包装单项或带源码后缀的 anchor；旧别名和字段不迁移，object 拒绝额外字段；
+- 四组总计限 1–200 项，replacement 总量限 1 MiB UTF-8，输出总量限 20,000 行；归一化后只提交一次 CLI batch，不能逐组执行；
+- 编号按 `replace_ranges` → `delete_ranges` → `insert_before` → `insert_after` 及各组数组顺序定义；返回正文 `Input mapping` 映射 1-based change 编号与 0-based 分组项。该顺序不代表逐项执行，各组均使用同一编辑前坐标，冲突跨组整批拒绝。内部 canonical changes、CLI wire、proof 和 evidence 格式不变；历史旧调用仅保留显示，不进入兼容执行路径。
 - batch stdin request 总大小限 8 MiB；`lines` 与 `proof.anchors` 的每个元素必须是 JSON 字符串，`null` 等类型会被拒绝；
 - CLI 的每个 `lines` 元素必须是一行逻辑文本，拒绝实际 NUL 和内嵌 LF；公开工具仍用换行分隔字符串，由插件拆分成行数组。拒绝携带具体 change 与内容原因，不引导调用方无效重读；
 - 公开 schema 要求 `proof_id`，不暴露 raw revision 或 CLI `proof`。先验证 canonical path 归属，再按该 proof 的坐标代解释端点、范围和覆盖；历史目标只有在逐行存续且映射连续时才规范化为当前坐标，并注入完整 hidden proof；

@@ -85,7 +85,7 @@ test("anchored editing tools stay active regardless of current read evidence", a
 	assert.ok(applyTool);
 	const prooflessApply = await applyTool.execute(
 		"proofless-apply",
-		{ path: "target.txt", changes: [{ operation: "delete_range", start_anchor: "1#AAA", end_anchor: "1#AAA" }] } as never,
+		{ path: "target.txt", replace_ranges: [], delete_ranges: [{ start_anchor: "1#AAA", end_anchor: "1#AAA" }], insert_before: [], insert_after: [] } as never,
 		undefined,
 		undefined,
 		context,
@@ -120,7 +120,8 @@ test("anchored editing tools stay active regardless of current read evidence", a
 	const noOpApplyParams = {
 		path: "target.txt",
 		proof_id: successfulRead.details.proofId,
-		changes: [{ operation: "replace_range", start_anchor: currentAnchor, end_anchor: currentAnchor, lines: "two" }],
+		replace_ranges: [{ start_anchor: currentAnchor, end_anchor: currentAnchor, lines: "two" }],
+		delete_ranges: [], insert_before: [], insert_after: [],
 	} as never;
 
 	branch = [];
@@ -194,7 +195,8 @@ test("search results provide partial proof without a second range read", async (
 		{
 			path: "partial.txt",
 			proof_id: partialRead.details.proofId,
-			changes: [{ operation: "replace_range", start_anchor: "1#AAA", end_anchor: hitAnchor, lines: "changed" }],
+			replace_ranges: [{ start_anchor: "1#AAA", end_anchor: hitAnchor, lines: "changed" }],
+			delete_ranges: [], insert_before: [], insert_after: [],
 		} as never,
 		undefined,
 		undefined,
@@ -209,7 +211,8 @@ test("search results provide partial proof without a second range read", async (
 		{
 			path: "partial.txt",
 			proof_id: uncoveredApply.details.proofId,
-			changes: [{ operation: "replace_range", start_anchor: hitAnchor, end_anchor: hitAnchor, lines: "changed" }],
+			replace_ranges: [{ start_anchor: hitAnchor, end_anchor: hitAnchor, lines: "changed" }],
+			delete_ranges: [], insert_before: [], insert_after: [],
 		} as never,
 		undefined,
 		undefined,
@@ -236,7 +239,8 @@ test("search results provide partial proof without a second range read", async (
 		{
 			path: "context.txt",
 			proof_id: contextRead.details.proofId,
-			changes: [{ operation: "replace_range", start_anchor: firstAnchor, end_anchor: lastAnchor, lines: "rewritten" }],
+			replace_ranges: [{ start_anchor: firstAnchor, end_anchor: lastAnchor, lines: "rewritten" }],
+			delete_ranges: [], insert_before: [], insert_after: [],
 		} as never,
 		undefined,
 		undefined,

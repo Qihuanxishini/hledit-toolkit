@@ -1,4 +1,3 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { ANCHOR_PATTERN } from "./anchor.ts";
 import { DEFAULT_SEARCH_LIMIT, MAX_READ_LIMIT, MAX_SEARCH_LIMIT, MAX_READ_WINDOWS } from "./read-args.ts";
@@ -16,43 +15,26 @@ const REPLACEMENT_TEXT_SCHEMA = Type.String({
 	description: "Raw text; \\n separates lines; no LN#HASH prefixes.",
 });
 
-// [喵喵喵]: 每个分支只声明该操作可用的字段，使模型生成契约与本地执行契约一致。
-const REPLACE_RANGE_CHANGE_SCHEMA = Type.Object(
-	{
-		operation: StringEnum(["replace_range"] as const),
-		start_anchor: ANCHOR_SCHEMA,
-		end_anchor: ANCHOR_SCHEMA,
-		lines: REPLACEMENT_TEXT_SCHEMA,
-	},
-	{
-		...STRICT_OBJECT,
-		description: "Replace the inclusive source range; repeat the token for one line. May retain source text and change line count.",
-	},
-);
+// [喵喵喵]: 操作由分组名表达，公开声明不依赖对象 Union；每项只包含该组可用字段。
+const REPLACE_RANGE_CHANGE_SCHEMA = Type.Object({
+	start_anchor: ANCHOR_SCHEMA,
+	end_anchor: ANCHOR_SCHEMA,
+	lines: REPLACEMENT_TEXT_SCHEMA,
+}, STRICT_OBJECT);
 
-const DELETE_RANGE_CHANGE_SCHEMA = Type.Object(
-	{
-		operation: StringEnum(["delete_range"] as const),
-		start_anchor: ANCHOR_SCHEMA,
-		end_anchor: ANCHOR_SCHEMA,
-	},
-	{
-		...STRICT_OBJECT,
-		description: "Delete the inclusive source range; repeat the token for one line.",
-	},
-);
+const DELETE_RANGE_CHANGE_SCHEMA = Type.Object({
+	start_anchor: ANCHOR_SCHEMA,
+	end_anchor: ANCHOR_SCHEMA,
+}, STRICT_OBJECT);
 
-const INSERT_CHANGE_SCHEMA = Type.Object(
-	{
-		operation: StringEnum(["insert_before", "insert_after"] as const),
-		anchor: ANCHOR_SCHEMA,
-		lines: REPLACEMENT_TEXT_SCHEMA,
-	},
-	{
-		...STRICT_OBJECT,
-		description: "Insert new text before/after anchor; existing text remains. Do not copy context unless duplication is intended.",
-	},
-);
+const INSERT_CHANGE_SCHEMA = Type.Object({
+	anchor: ANCHOR_SCHEMA,
+	lines: REPLACEMENT_TEXT_SCHEMA,
+}, STRICT_OBJECT);
+
+// [喵喵喵]: 固定分组顺序仅定义 change 编号；所有操作仍使用同一编辑前快照并一次原子提交。
+export const FILE_CHANGE_GROUPS = ["replace_ranges", "delete_ranges", "insert_before", "insert_after"] as const;
+export type FileChangeGroup = typeof FILE_CHANGE_GROUPS[number];
 
 export const HLEDIT_READ_ANCHORS_PARAMS_SCHEMA = Type.Object(
 	{
@@ -85,14 +67,10 @@ export const HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA = Type.Object(
 	{
 		path: PATH_SCHEMA,
 		proof_id: Type.String({ minLength: 1, description: "Proof for these anchors' file and generation." }),
-		changes: Type.Array(
-			Type.Union([REPLACE_RANGE_CHANGE_SCHEMA, DELETE_RANGE_CHANGE_SCHEMA, INSERT_CHANGE_SCHEMA]),
-			{
-				minItems: 1,
-				maxItems: MAX_FILE_CHANGE_COUNT,
-				description: "One atomic batch in pre-edit coordinates. No overlapping ranges, insertions inside consumed ranges, or duplicate insertion boundaries.",
-			},
-		),
+		replace_ranges: Type.Array(REPLACE_RANGE_CHANGE_SCHEMA, { maxItems: MAX_FILE_CHANGE_COUNT, description: "Replace inclusive ranges; repeat the token for one line. May retain source text and change line count. Use [] when unused." }),
+		delete_ranges: Type.Array(DELETE_RANGE_CHANGE_SCHEMA, { maxItems: MAX_FILE_CHANGE_COUNT, description: "Delete inclusive ranges; repeat the token for one line. No lines field. Use [] when unused." }),
+		insert_before: Type.Array(INSERT_CHANGE_SCHEMA, { maxItems: MAX_FILE_CHANGE_COUNT, description: "Insert before anchor; existing text remains. Do not copy context unless duplication is intended. Use [] when unused." }),
+		insert_after: Type.Array(INSERT_CHANGE_SCHEMA, { maxItems: MAX_FILE_CHANGE_COUNT, description: "Insert after anchor; existing text remains. Do not copy context unless duplication is intended. Use [] when unused." }),
 	},
 	STRICT_OBJECT,
 );

@@ -146,7 +146,7 @@ test("renderHleditCall hyperlinks paths when the terminal supports them", () => 
 
 test("renderHleditCall includes changed range and operation count", () => {
 	assert.deepEqual(
-		render(renderHleditCall("apply_file_changes", { path: "src/a.ts", changes: [{ anchor: "4#AAB", end_anchor: "6#BBK" }] }, theme)),
+		render(renderHleditCall("apply_file_changes", { path: "src/a.ts", replace_ranges: [{ start_anchor: "4#AAB", end_anchor: "6#BBK", lines: "" }], delete_ranges: [], insert_before: [], insert_after: [] }, theme)),
 		["apply changes src/a.ts:4-6（1 项操作）"],
 	);
 });
@@ -156,11 +156,11 @@ test("renderHleditCall preserves separate ranges for multiple operations", () =>
 		render(
 			renderHleditCall(
 				"apply_file_changes",
-				{ path: "src/a.ts", changes: [{ anchor: "482#AAB" }, { anchor: "484#BBK", end_anchor: "489#CCL" }] },
+				{ path: "src/a.ts", replace_ranges: [], delete_ranges: [{ start_anchor: "484#BBK", end_anchor: "489#CCL" }], insert_before: [{ anchor: "482#AAB", lines: "" }], insert_after: [] },
 				theme,
 			),
 		),
-		["apply changes src/a.ts:482,484-489（2 项操作）"],
+		["apply changes src/a.ts:484-489,482（2 项操作）"],
 	);
 });
 

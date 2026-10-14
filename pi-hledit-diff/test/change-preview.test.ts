@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
 	buildAnchoredChangePreview,
-	changePreviewDiffText,
 	emptyChangePreview,
 	MAX_PREVIEW_BYTES,
 	MAX_PREVIEW_LINES,
@@ -160,49 +159,3 @@ test("change preview survives a details JSON round trip and rejects malformed sh
 	assert.equal(parseChangePreview({ truncated: false, lines: [{ kind: "add", newLine: 1, text: "x", textTruncated: true }] }), undefined);
 });
 
-test("adjacent insert, replacement and deletion use blank operation separators", () => {
-	const preview = buildAnchoredChangePreview([
-		{ operation: "replace_range", start_anchor: "2#AAA", end_anchor: "3#BBB", lines: ["BRAVO", "CHARLIE"] },
-		{ operation: "delete_range", start_anchor: "4#CCC", end_anchor: "4#CCC" },
-		{ operation: "insert_after", anchor: "1#DDD", lines: ["inserted-line"] },
-	], consumedLines([[1, "alpha"], [2, "bravo"], [3, "charlie"], [4, "echo-line"]]));
-	assert.ok(preview);
-	assert.equal(changePreviewDiffText(preview), [
-		"+2 inserted-line", "", "-2 bravo", "-3 charlie", "+3 BRAVO", "+4 CHARLIE", "", "-4 echo-line",
-	].join("\n"));
-});
-test("changePreviewDiffText renders line-numbered hunks with fold markers", () => {
-	const preview = buildAnchoredChangePreview(
-		[
-			{ operation: "replace_range", start_anchor: "2#AAA", end_anchor: "2#AAA", lines: ["TWO", "TWO2"] },
-			{ operation: "insert_after", anchor: "4#BBB", lines: ["N"] },
-			{ operation: "delete_range", start_anchor: "5#CCC", end_anchor: "5#CCC" },
-		],
-		consumedLines([[2, "two"], [4, "four"], [5, "five"]]),
-	);
-
-	assert.ok(preview);
-	assert.equal(
-		changePreviewDiffText(preview),
-		["-2 two", "+2 TWO", "+3 TWO2", "   ...", "+6 N", "   ...", "-5 five"].join("\n"),
-	);
-	assert.equal(changePreviewDiffText(emptyChangePreview()), "");
-	assert.match(changePreviewDiffText({ lines: [{ kind: "add", newLine: 1, text: "x" }], truncated: true }), /preview truncated/);
-
-
-test("changePreviewDiffText preserves source order when separate edits contain identical text", () => {
-	const preview = buildAnchoredChangePreview(
-		[
-			{ operation: "delete_range", start_anchor: "2#AAA", end_anchor: "3#BBB" },
-			{ operation: "insert_after", anchor: "4#CCC", lines: ["same", "added"] },
-		],
-		consumedLines([[2, "same"], [3, "removed"], [4, "kept"]]),
-	);
-
-	assert.ok(preview);
-	assert.equal(
-		changePreviewDiffText(preview),
-		["-2 same", "-3 removed", "", "+3 same", "+4 added"].join("\n"),
-	);
-});
-});

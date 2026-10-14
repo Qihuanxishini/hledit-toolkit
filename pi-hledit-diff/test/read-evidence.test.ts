@@ -303,11 +303,12 @@ test("proof failure guidance covers the complete first missing range", () => {
 		start: 387,
 		end: 415,
 		changeNumber: 2,
+		reference: "replace_ranges[1]",
 		operation: "replace_range",
 		requiredStart: 387,
 		requiredEnd: 415,
 	});
-	assert.match(selection.failure.message, /Change 2 \(replace_range 387-415\)/);
+	assert.match(selection.failure.message, /replace_ranges\[1\] \(replace_range 387-415\)/);
 	assert.match(formatReadProofFailure("target.txt", selection.failure), /offset: 385, limit: 33/);
 });
 
@@ -327,6 +328,7 @@ test("proof guidance covers every unresolved gap in the affected change", () => 
 		start: 2,
 		end: 9,
 		changeNumber: 1,
+		reference: "replace_ranges[0]",
 		operation: "replace_range",
 		requiredStart: 1,
 		requiredEnd: 20,
@@ -347,6 +349,7 @@ test("proof gap keeps the original change number when changes are out of file or
 		start: 1,
 		end: 9,
 		changeNumber: 2,
+		reference: "delete_ranges[0]",
 		operation: "delete_range",
 		requiredStart: 1,
 		requiredEnd: 9,
@@ -367,6 +370,7 @@ test("proof recovery prefers a spanning range over a boundary insert", () => {
 		start: 2,
 		end: 5,
 		changeNumber: 2,
+		reference: "replace_ranges[0]",
 		operation: "replace_range",
 		requiredStart: 2,
 		requiredEnd: 5,
@@ -394,13 +398,14 @@ test("proof failure identifies the affected operation and continuous gap in a di
 		start: 147,
 		end: 262,
 		changeNumber: 2,
+		reference: "replace_ranges[0]",
 		operation: "replace_range",
 		requiredStart: 138,
 		requiredEnd: 263,
 	});
 	assert.equal(
 		selection.failure.message,
-		"Change 2 (replace_range 138-263) requires complete read proof for every source line in the inclusive range; missing lines 147-262. Endpoint anchors alone are insufficient.",
+		"replace_ranges[0] (replace_range 138-263) requires complete read proof for every source line in the inclusive range; missing lines 147-262. Endpoint anchors alone are insufficient.",
 	);
 	const guidance = formatReadProofFailure("target.txt", selection.failure);
 	assert.match(guidance, /offset: 145, limit: 120/);
@@ -419,8 +424,8 @@ test("model body snapshot: plugin-side proof failure with targeted reread", () =
 	assert.equal(
 		formatReadProofFailure("target.txt", selection.failure),
 		"Valid read proof does not cover every source line required by this change. Batch was not started and no content was written.\n" +
-		"Reason: Change 1 (replace_range 3-5) requires complete read proof for every source line in the inclusive range; missing lines 4-5. Endpoint anchors alone are insufficient.\n" +
-		'Call hledit_read_anchors({ path: "target.txt", windows: [{ offset: 2, limit: 12 }] }) first and confirm all required source lines for change 1 through line 5.\n' +
+		"Reason: replace_ranges[0] (replace_range 3-5) requires complete read proof for every source line in the inclusive range; missing lines 4-5. Endpoint anchors alone are insufficient.\n" +
+		'Call hledit_read_anchors({ path: "target.txt", windows: [{ offset: 2, limit: 12 }] }) first and confirm all required source lines for replace_ranges[0] through line 5.\n' +
 		"After the read succeeds, use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.",
 	);
 });

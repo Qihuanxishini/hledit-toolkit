@@ -227,7 +227,7 @@ test("read and search tools return structured ranges and actionable EOF errors",
 	assert.equal(readResult.isError, false);
 	assert.deepEqual(readResult.details.read?.actual, { firstLine: 2, lastLine: 2, lineCount: 1, totalLines: 3 });
 	assert.equal(readResult.details.read?.nextOffset, 3);
-	assert.match(readResult.content[0]?.text ?? "", /Showing lines 2-2 of 3; continue with windows: \[\{ offset: 3, limit: 1 \}\]/);
+	assert.match(readResult.content[0]?.text ?? "", /Showing lines 2-2 of 3; requested range complete/);
 
 	const searchResult = await searchTool.execute(
 		"search",
@@ -277,7 +277,7 @@ test("read and search continue after an oversized source line", async (t) => {
 		assert.equal(first.details.read?.textTruncated, true);
 		assert.equal(first.details.read?.nextOffset, 2);
 		assert.match(first.content[0]!.text, name === HLEDIT_READ_ANCHORS_TOOL
-			? /continue with windows: \[\{ offset: 2, limit: 10 \}\]/ : /continue with offset 2/);
+			? /continue with windows: \[\{ offset: 2, limit: 2 \}\]/ : /continue with offset 2/);
 		const next = await tool.execute("next", params(first.details.read!.nextOffset!) as never, undefined, undefined, { cwd: directory });
 		assert.equal(next.details.disposition, "succeeded");
 		assert.equal(next.details.read?.textTruncated, false);
@@ -377,7 +377,7 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 	assert.equal(applyResult.details.disposition, "succeeded");
 	assert.equal(applyResult.isError, false);
 	const resultText = applyResult.content[0]?.text ?? "";
-	assert.match(resultText, /^Applied 1 change; line delta: \+1 -1\.\nInput mapping.*\n\nNew output anchors \(submitted text verified\):\n/);
+	assert.match(resultText, /^Applied 1 change; line delta: \+1 -1\.\n\nNew output anchors \(submitted text verified\):\n/);
 	assert.doesNotMatch(resultText, /TWO/);
 	assert.notEqual(applyResult.details.proofId, readResult.details.proofId);
 	assert.equal(resultText.split("\n").at(-1), `proof_id: ${applyResult.details.proofId}`);
@@ -452,7 +452,7 @@ test("apply tool returns a complete produced span for a long-line file", async (
 	assert.equal(spans?.length, 1);
 	const updatedLine = spans?.[0]?.lines.find((line) => line.line === 5);
 	assert.ok(updatedLine);
-	assert.equal(applyResult.content[0]?.text ?? "", `Applied 1 change; line delta: +1 -1.\nInput mapping (0-based indexes): change 1=replace_ranges[0].\n\nNew output anchors (submitted text verified):\n- change 1: ${updatedLine.anchor} (1 line)\n\nproof_id: ${applyResult.details.proofId}`);
+	assert.equal(applyResult.content[0]?.text ?? "", `Applied 1 change; line delta: +1 -1.\n\nNew output anchors (submitted text verified):\n- replace_ranges[0]: ${updatedLine.anchor} (1 line)\n\nproof_id: ${applyResult.details.proofId}`);
 	assert.equal(spans?.[0]?.truncated, false);
 	assert.equal(spans?.[0]?.lines.length, 1);
 	assert.equal((await readFile(target, "utf8")).split(/\r?\n/)[4], "CHANGED");
@@ -495,7 +495,7 @@ test("apply tool lists only produced lines for a wide multi-change batch", async
 	assert.equal(applyResult.details.disposition, "succeeded");
 	const resultText = applyResult.content[0]?.text ?? "";
 	// 每个变更各得一个产出 span：相距很远的两处修改都返回新锚点，且不混入未变更的上下文行。
-	assert.match(resultText, /^Applied 2 changes; line delta: \+2 -2\.\nInput mapping.*\n\nNew output anchors \(submitted text verified\):\n- change 1: 10#[A-Za-z0-9_-]{3} \(1 line\)\n- change 2: 180#[A-Za-z0-9_-]{3} \(1 line\)\n/);
+	assert.match(resultText, /^Applied 2 changes; line delta: \+2 -2\.\n\nNew output anchors \(submitted text verified\):\n- replace_ranges\[0\]: 10#[A-Za-z0-9_-]{3} \(1 line\)\n- replace_ranges\[1\]: 180#[A-Za-z0-9_-]{3} \(1 line\)\n/);
 	assert.doesNotMatch(resultText, /Updated anchors are incomplete/);
 	assert.doesNotMatch(resultText, /:line \d+/);
 	assert.ok(resultText.length < 350);
@@ -616,7 +616,7 @@ test("apply tool rejects an anchor token pasted into lines instead of writing it
 	assert.equal(applyResult.details.disposition, "rejected");
 	assert.deepEqual(applyResult.details.error, {
 		code: "anchor_token_in_lines",
-		message: `Change 1 pasted the anchor token ${anchor} into lines; strip the prefix instead of rereading.`,
+			message: `replace_ranges[0] pasted the anchor token ${anchor} into lines; strip the prefix instead of rereading.`,
 		changeNumber: 1,
 	});
 	const text = applyResult.content[0]?.text ?? "";
@@ -807,7 +807,7 @@ test("apply tool rejects a reversed anchor range with a swap instruction instead
 	assert.equal(applyResult.details.disposition, "rejected");
 	assert.deepEqual(applyResult.details.error, {
 		code: "reversed_anchor_range",
-		message: `Change 1 submitted start_anchor ${third} below end_anchor ${first}; swap them instead of rereading.`,
+		message: `replace_ranges[0] submitted start_anchor ${third} below end_anchor ${first}; swap them instead of rereading.`,
 		changeNumber: 1,
 	});
 	const text = applyResult.content[0]?.text ?? "";
@@ -1666,7 +1666,7 @@ test("text boundary rejections preserve the file and provide input-specific guid
 		],
 	} as never, undefined, undefined, context);
 	assert.equal(nul.details.disposition, "rejected");
-	assert.match(nul.content[0]?.text ?? "", /Change 2 contains a NUL character/);
+	assert.match(nul.content[0]?.text ?? "", /replace_ranges\[1\] contains a NUL character/);
 	assert.equal(await readFile(target, "utf8"), "old\nkeep\n");
 	const bom = await applyTool.execute("bom", {
 		path: "target.txt", proof_id: read.details.proofId,
@@ -1676,6 +1676,95 @@ test("text boundary rejections preserve the file and provide input-specific guid
 	assert.equal(bom.details.disposition, "rejected");
 	assert.match(bom.content[0]?.text ?? "", /reinterpret leading U\+FEFF text as a UTF-8 BOM/);
 	assert.equal(await readFile(target, "utf8"), "old\nkeep\n");
+});
+
+// [喵喵喵]: 真实多窗口读取的端到端证据链；确定超行数时 CLI 提前拒绝，不再输出必须重读的正文。
+test("read tool merges multi-window reads into one proof and rejects oversized merges without dumping source text", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL)!;
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-multiwindow-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, Array.from({ length: 2500 }, (_, index) => `line ${index + 1}`).join("\n") + "\n", "utf8");
+	const context = { cwd: directory };
+
+	const merged = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 10, limit: 5 }, { offset: 100, limit: 3 }] } as never, undefined, undefined, context);
+	assert.equal(merged.details.disposition, "succeeded");
+	const mergedText = merged.content[0]?.text ?? "";
+	assert.match(mergedText, /-- windows 1: 10-14; 5 lines --/);
+	assert.match(mergedText, /-- windows 2: 100-102; 3 lines --/);
+	const lineTwelve = /^(12#[A-Za-z0-9_-]{3}):line 12$/m.exec(mergedText)?.[1];
+	const lineHundredOne = /^(101#[A-Za-z0-9_-]{3}):line 101$/m.exec(mergedText)?.[1];
+	assert.ok(lineTwelve && lineHundredOne);
+
+	const oversized = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 1200 }, { offset: 1300, limit: 1200 }] } as never, undefined, undefined, context);
+	assert.equal(oversized.details.disposition, "rejected");
+	const oversizedText = oversized.content[0]?.text ?? "";
+	assert.match(oversizedText, /^Merged windows require 2400 lines; shared limit is 2000\. No source text or proof was returned\./);
+	assert.doesNotMatch(oversizedText, /line 1\d{3}/);
+
+	// [喵喵喵]: 被拒绝的超限读取不破坏既有证据，两个窗口的行都可直接续编。
+	const applyResult = await applyTool.execute("apply", {
+		...emptyGroups, path: "target.txt", proof_id: merged.details.proofId,
+		replace_ranges: [
+			{ start_anchor: lineTwelve, end_anchor: lineTwelve, lines: "edited twelve" },
+			{ start_anchor: lineHundredOne, end_anchor: lineHundredOne, lines: "edited one-oh-one" },
+		],
+	} as never, undefined, undefined, context);
+	assert.equal(applyResult.details.disposition, "succeeded");
+	const applied = await readFile(target, "utf8");
+	assert.match(applied, /edited twelve/);
+	assert.match(applied, /edited one-oh-one/);
+});
+
+// [喵喵喵]: 混合回执的授权边界——完整且逐行核对的 span 保持紧凑可续编，截断 span 只登记已显示行。
+test("apply keeps verified spans compact while a truncated span falls back to a bounded body", async (t) => {
+	const { registeredTools } = registerExtensionForTest();
+	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL)!;
+	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
+	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-mixed-span-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, Array.from({ length: 10 }, (_, index) => `orig ${index + 1}`).join("\n") + "\n", "utf8");
+	const context = { cwd: directory };
+
+	const read = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 10 }] } as never, undefined, undefined, context);
+	const smallAnchor = read.details.read!.lines[1]!.anchor;
+	const bulkAnchor = read.details.read!.lines[7]!.anchor;
+	assert.ok(smallAnchor && bulkAnchor);
+
+	const bulkLines = Array.from({ length: 500 }, (_, index) => `bulk ${index + 1}`).join("\n");
+	const mixed = await applyTool.execute("apply", {
+		...emptyGroups, path: "target.txt", proof_id: read.details.proofId,
+		replace_ranges: [
+			{ start_anchor: smallAnchor, end_anchor: smallAnchor, lines: "small a\nsmall b" },
+			{ start_anchor: bulkAnchor, end_anchor: bulkAnchor, lines: bulkLines },
+		],
+	} as never, undefined, undefined, context);
+	assert.equal(mixed.details.disposition, "succeeded");
+	const mixedText = mixed.content[0]?.text ?? "";
+	assert.match(mixedText, /- replace_ranges\[0\]: \d+#[A-Za-z0-9_-]{3}–\d+#[A-Za-z0-9_-]{3} \(2 lines\)/);
+	assert.doesNotMatch(mixedText, /- replace_ranges\[1\]: /);
+	assert.match(mixedText, /Updated anchors above are incomplete; read any missing or text-truncated target lines before editing them\./);
+	assert.equal((mixedText.match(/:bulk \d+/g) ?? []).length, 80);
+	assert.doesNotMatch(mixedText, /:bulk 500/);
+
+	const compactAnchor = /- replace_ranges\[0\]: (\d+#[A-Za-z0-9_-]{3})–/.exec(mixedText)?.[1];
+	const shownBulkAnchor = /^(\d+#[A-Za-z0-9_-]{3}):bulk 1$/m.exec(mixedText)?.[1];
+	assert.ok(compactAnchor && shownBulkAnchor);
+
+	const followUp = await applyTool.execute("apply", {
+		...emptyGroups, path: "target.txt", proof_id: mixed.details.proofId,
+		replace_ranges: [
+			{ start_anchor: compactAnchor, end_anchor: compactAnchor, lines: "final small" },
+			{ start_anchor: shownBulkAnchor, end_anchor: shownBulkAnchor, lines: "final bulk" },
+		],
+	} as never, undefined, undefined, context);
+	assert.equal(followUp.details.disposition, "succeeded");
+	const finalText = await readFile(target, "utf8");
+	assert.match(finalText, /final small/);
+	assert.match(finalText, /final bulk/);
 });
 
 // [喵喵喵]: 两个远端 change 同时缺行；验证一次恢复后整批可重提，而非逐块拒绝。

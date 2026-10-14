@@ -2,6 +2,16 @@ import { ANCHOR_LINE_PREFIX, lineFromAnchor } from "./anchor.ts";
 import { rejectedToolResult, type TextResult } from "./result.ts";
 import type { FileChangeParams } from "./schema.ts";
 
+// [喵喵喵]: 引用归一化前的公开分组位置，不改内部操作顺序或 CLI wire。
+export function fileChangeReference(changes: FileChangeParams["changes"] | undefined, index: number): string {
+	const change = changes?.[index];
+	if (!change) return `Change ${index + 1}`;
+	const group = change.operation === "replace_range" ? "replace_ranges"
+		: change.operation === "delete_range" ? "delete_ranges" : change.operation;
+	const groupIndex = changes!.slice(0, index).filter((item) => item.operation === change.operation).length;
+	return `${group}[${groupIndex}]`;
+}
+
 type CliBatchEdit = {
 	op: "replace" | "delete" | "insert";
 	pos: string;
@@ -126,10 +136,11 @@ export function findChangeShapeIssue(params: FileChangeParams, knownAnchors?: Pi
 	return undefined;
 }
 
-export function formatChangeShapeIssue(issue: ChangeShapeIssue): string {
+export function formatChangeShapeIssue(issue: ChangeShapeIssue, changes?: FileChangeParams["changes"]): string {
+	const reference = fileChangeReference(changes, issue.changeNumber - 1);
 	if (issue.code === "reversed_anchor_range") {
 		return [
-			`Change ${issue.changeNumber} was rejected.`,
+			`${reference} was rejected.`,
 			`Received: ${issue.operation} from start_anchor ${issue.startAnchor} through end_anchor ${issue.endAnchor}, which runs backwards.`,
 			"start_anchor must not be below end_anchor in the file.",
 			`Swap them: set start_anchor to ${issue.endAnchor} and end_anchor to ${issue.startAnchor}.`,
@@ -137,7 +148,7 @@ export function formatChangeShapeIssue(issue: ChangeShapeIssue): string {
 		].join("\n");
 	}
 	return [
-		`Change ${issue.changeNumber} was rejected.`,
+		`${reference} was rejected.`,
 		`Line ${issue.replacementLineNumber} of lines begins with ${issue.anchorToken}:, which is hledit_read_anchors display syntax, not file content.`,
 		`Writing it would put the literal text ${issue.anchorToken}: into the file.`,
 		`Remove the leading ${issue.anchorToken}: from that line; lines carries file content only, and anchors belong in the anchor fields.`,
@@ -145,12 +156,13 @@ export function formatChangeShapeIssue(issue: ChangeShapeIssue): string {
 	].join("\n");
 }
 
-export function changeShapeIssueResult(issue: ChangeShapeIssue): TextResult {
-	return rejectedToolResult(`The atomic batch was rejected; no content was written.\n${formatChangeShapeIssue(issue)}`, {
+export function changeShapeIssueResult(issue: ChangeShapeIssue, changes?: FileChangeParams["changes"]): TextResult {
+	const reference = fileChangeReference(changes, issue.changeNumber - 1);
+	return rejectedToolResult(`The atomic batch was rejected; no content was written.\n${formatChangeShapeIssue(issue, changes)}`, {
 		code: issue.code,
 		message: issue.code === "reversed_anchor_range"
-			? `Change ${issue.changeNumber} submitted start_anchor ${issue.startAnchor} below end_anchor ${issue.endAnchor}; swap them instead of rereading.`
-			: `Change ${issue.changeNumber} pasted the anchor token ${issue.anchorToken} into lines; strip the prefix instead of rereading.`,
+			? `${reference} submitted start_anchor ${issue.startAnchor} below end_anchor ${issue.endAnchor}; swap them instead of rereading.`
+			: `${reference} pasted the anchor token ${issue.anchorToken} into lines; strip the prefix instead of rereading.`,
 		changeNumber: issue.changeNumber,
 	});
 }

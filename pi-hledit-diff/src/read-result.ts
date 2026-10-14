@@ -277,8 +277,12 @@ export function formatReadMetadata(read: HleditReadMetadata, proofId?: string, m
 	const anchoredLines = read.lines.map((line) => `${line.anchor}:${line.text}`);
 	const { firstLine, lastLine, lineCount, totalLines } = read.actual;
 	const pattern = read.requested.pattern;
+	// [喵喵喵]: CLI 的 nextOffset 表示文件还有后续，不等于本次请求尚未完成。
+	const requestedEnd = Math.min(totalLines, read.requested.offset + read.requested.limit - 1);
 	const continuation = read.nextOffset === undefined ? undefined : pattern === undefined
-		? formatReadWindow({ offset: read.nextOffset, limit: read.requested.limit })
+		? read.nextOffset <= requestedEnd
+			? formatReadWindow({ offset: read.nextOffset, limit: requestedEnd - read.nextOffset + 1 })
+				: undefined
 		: `offset ${read.nextOffset}`;
 	let notice: string;
 
@@ -296,10 +300,10 @@ export function formatReadMetadata(read: HleditReadMetadata, proofId?: string, m
 		} else {
 			notice = `-- Returned ${lineCount} source lines (matches and context) (${counts}) --`;
 		}
-	} else if (read.nextOffset !== undefined) {
-		notice = `-- Showing lines ${firstLine}-${lastLine} of ${totalLines}; continue with ${continuation} --`;
+	} else if (continuation !== undefined) {
+		notice = `-- Showing lines ${firstLine}-${lastLine} of ${totalLines}; requested range incomplete; continue with ${continuation} --`;
 	} else {
-		notice = `-- Showing lines ${firstLine}-${lastLine} of ${totalLines}; end of file --`;
+		notice = `-- Showing lines ${firstLine}-${lastLine} of ${totalLines}; requested range complete${read.nextOffset === undefined ? "; end of file" : ""} --`;
 	}
 
 	return [

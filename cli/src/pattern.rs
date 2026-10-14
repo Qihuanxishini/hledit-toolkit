@@ -132,11 +132,13 @@ fn properties(ast: &Ast) -> PatternProperties {
                 R::Range(Range::Exactly(0) | Range::AtLeast(0) | Range::Bounded(0, _)) => true,
                 _ => child.skippable,
             };
+            // [喵喵喵]: 可执行子式的重复包装不能抹掉其广匹配语义；零次重复不继承。
             result.broad = match r.op.kind {
-                R::ZeroOrMore | R::OneOrMore | R::Range(Range::AtLeast(0..=1)) => {
+                R::ZeroOrMore | R::OneOrMore | R::Range(Range::AtLeast(_)) => {
                     child.any_char || child.broad
                 }
-                _ => false,
+                R::Range(Range::Exactly(0) | Range::Bounded(_, 0)) => false,
+                _ => child.broad,
             };
         }
         Ast::Concat(c) => {

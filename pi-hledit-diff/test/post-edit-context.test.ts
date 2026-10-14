@@ -41,7 +41,7 @@ test("formatUpdatedAnchorSpans reports a text-truncated produced line", () => {
 
 	const result = formatUpdatedAnchorSpans(spans);
 	assert.equal(result.truncated, true);
-	assert.equal(result.text, "Updated anchors:\n8#BHJ:partial\nUpdated anchors are incomplete; call hledit_read_anchors for any changed line you need to edit again.");
+	assert.equal(result.text, "Updated anchors:\n8#BHJ:partial\nUpdated anchors above are incomplete; read any missing or text-truncated target lines before editing them. Verified output ranges remain usable with the returned proof_id.");
 });
 
 test("formatUpdatedAnchorSpans reports a span cut short by the CLI budget", () => {
@@ -53,7 +53,7 @@ test("formatUpdatedAnchorSpans reports a span cut short by the CLI budget", () =
 
 	const result = formatUpdatedAnchorSpans(spans);
 	assert.equal(result.truncated, true);
-	assert.equal(result.text, "Updated anchors:\n4#BHJ:first change\nUpdated anchors are incomplete; call hledit_read_anchors for any changed line you need to edit again.");
+	assert.equal(result.text, "Updated anchors:\n4#BHJ:first change\nUpdated anchors above are incomplete; read any missing or text-truncated target lines before editing them. Verified output ranges remain usable with the returned proof_id.");
 });
 
 test("formatUpdatedAnchorSpans stays silent for a pure deletion", () => {

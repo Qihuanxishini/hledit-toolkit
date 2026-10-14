@@ -1,6 +1,7 @@
 import { keyHint, type Theme } from "@earendil-works/pi-coding-agent";
 import { parseColor, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { createHighlightedTextCache, escapeTerminalControls, type HighlightedText } from "./syntax-highlight.ts";
+import type { ChangePreviewLine, VerifiedChangePreview } from "./change-preview.ts";
 
 export type HleditRenderComponent = {
 	render(width: number): string[];
@@ -28,13 +29,7 @@ type DiffLine = {
 	changeIndex?: number;
 };
 
-export type StructuredDiffLine = {
-	kind: DiffLineKind;
-	oldLine?: number;
-	newLine?: number;
-	text: string;
-	changeIndex?: number;
-};
+export type StructuredDiffLine = ChangePreviewLine;
 
 type DiffMetaLine = {
 	kind: "meta";
@@ -67,7 +62,6 @@ type SplitColumnWidths = {
 	right: number;
 };
 
-const GENERATED_DIFF_LINE = /^([ +\-])(\s*\d+)\s(.*)$/s;
 const COLLAPSED_DIFF_LINES = 24;
 const MAX_EXPANDED_DIFF_LINES = 2000;
 const DIFF_GUTTER_COLUMNS = 7;
@@ -122,76 +116,45 @@ function renderBaseRow(text: string, width: number, palette: DiffBackgroundPalet
 	return applyChangeBackground(truncateToWidth(text, width, "", true), "context", palette);
 }
 
-function parseGeneratedDiff(diff: string): ParsedDiff {
+// [喵喵喵]: 直接消费已验证 preview，保留旧预览无 changeIndex 时的单栏语义；不再文本化后重新匹配操作。
+function buildPreviewDiff(preview: VerifiedChangePreview): ParsedDiff {
 	const entries: DiffEntry[] = [];
 	let added = 0;
 	let removed = 0;
 	let hunks = 0;
 	let insideChangeGroup = false;
-
-	for (const rawLine of diff.split("\n")) {
-		if (!rawLine && entries.length === 0) continue;
-		const match = GENERATED_DIFF_LINE.exec(rawLine);
-		if (!match) {
-			entries.push({ kind: "meta", content: rawLine.trim() });
+	let previousOld: number | undefined;
+	let previousNew: number | undefined;
+	let previousKind: ChangePreviewLine["kind"] | undefined;
+	let previousChangeIndex: number | undefined;
+	for (const line of preview.lines) {
+		const oldLine = line.kind === "add" ? undefined : line.oldLine;
+		const newLine = line.kind === "remove" ? undefined : line.newLine;
+		const continuesOld = oldLine !== undefined && previousOld !== undefined && oldLine <= previousOld + 1;
+		const continuesNew = newLine !== undefined && previousNew !== undefined && newLine <= previousNew + 1;
+		const sameChange = line.changeIndex === previousChangeIndex;
+		const continuous = sameChange && (continuesOld || continuesNew || (previousKind === "remove" && line.kind === "add"));
+		if (entries.length > 0 && !continuous) {
+			const skipsOld = oldLine !== undefined && previousOld !== undefined && oldLine > previousOld + 1;
+			const skipsNew = newLine !== undefined && previousNew !== undefined && newLine > previousNew + 1;
+			entries.push({ kind: "meta", content: skipsOld || skipsNew ? "..." : "" });
 			insideChangeGroup = false;
-			continue;
 		}
-
-		const marker = match[1];
-		const lineNumber = Number.parseInt(match[2]?.trim() ?? "", 10);
-		if (!Number.isSafeInteger(lineNumber) || lineNumber < 1) {
-			entries.push({ kind: "meta", content: rawLine.trim() || "…" });
-			insideChangeGroup = false;
-			continue;
-		}
-		const kind: DiffLineKind = marker === "+" ? "add" : marker === "-" ? "remove" : "context";
-		if (kind !== "context" && !insideChangeGroup) {
+		if (line.kind !== "context" && !insideChangeGroup) {
 			hunks++;
 			insideChangeGroup = true;
 		}
-		if (kind === "add") added++;
-		if (kind === "remove") removed++;
-		entries.push({ kind, lineNumber, content: match[3] ?? "" });
+		if (line.kind === "add") added++;
+		if (line.kind === "remove") removed++;
+		entries.push({ kind: line.kind, lineNumber: (line.kind === "remove" ? oldLine : newLine)!,
+			oldLine, newLine, changeIndex: line.changeIndex, content: line.text });
+		if (oldLine !== undefined) previousOld = oldLine;
+		if (newLine !== undefined) previousNew = newLine;
+		previousKind = line.kind;
+		previousChangeIndex = line.changeIndex;
 	}
-
-	return { entries, added, removed, hunks: Math.max(hunks, added + removed > 0 ? 1 : 0) };
-}
-
-function structuredLineKey(line: StructuredDiffLine): string {
-	const number = line.kind === "remove" ? line.oldLine : line.newLine ?? line.oldLine;
-	return `${line.kind}:${number ?? "?"}:${line.text}`;
-}
-
-function parsedLineKey(line: DiffLine): string {
-	return `${line.kind}:${line.lineNumber}:${line.content}`;
-}
-
-function attachStructuredGroups(entries: DiffEntry[], lines: readonly StructuredDiffLine[]): DiffEntry[] | undefined {
-	if (!lines.some((line) => line.changeIndex !== undefined)) return undefined;
-	const candidates = new Map<string, { lines: StructuredDiffLine[]; next: number }>();
-	const seen = new Set<StructuredDiffLine>();
-	for (const line of lines) {
-		// [喵喵喵]: 同一对象最多消费一次；桶内游标保留首个未消费候选的顺序，避免重复扫描。
-		if (seen.has(line)) continue;
-		seen.add(line);
-		const key = structuredLineKey(line);
-		const bucket = candidates.get(key);
-		if (bucket) bucket.lines.push(line);
-		else candidates.set(key, { lines: [line], next: 0 });
-	}
-	const mapped: DiffEntry[] = [];
-	for (const entry of entries) {
-		if (entry.kind === "meta") {
-			mapped.push(entry);
-			continue;
-		}
-		const bucket = candidates.get(parsedLineKey(entry));
-		const candidate = bucket?.lines[bucket.next++];
-		if (!candidate) return undefined;
-		mapped.push({ ...entry, oldLine: candidate.oldLine, newLine: candidate.newLine, changeIndex: candidate.changeIndex });
-	}
-	return mapped;
+	if (preview.truncated) entries.push({ kind: "meta", content: "… preview truncated …" });
+	return { entries, added, removed, hunks };
 }
 
 function alignChangeRun(entries: DiffLine[]): PairedDiffRow[] {
@@ -505,22 +468,18 @@ function applyLineLimit(
 }
 
 export function renderStandaloneDiff(
-	diff: string,
+	preview: VerifiedChangePreview,
 	path: string | undefined,
 	expanded: boolean,
 	theme: HleditRenderTheme,
 	summaryStats?: DiffSummaryStats,
-	structuredLines?: readonly StructuredDiffLine[],
 ): HleditRenderComponent | undefined {
-	if (!diff.trim()) return undefined;
-	const parsed = parseGeneratedDiff(diff);
+	const parsed = buildPreviewDiff(preview);
 	if (parsed.entries.length === 0) return undefined;
 	const highlighter = createHighlightedTextCache(path);
 	const highlightLine = (line: DiffLine): HighlightedText => highlighter.highlight(line);
-	const structuredEntries = structuredLines ? attachStructuredGroups(parsed.entries, structuredLines) : undefined;
-	// [喵喵喵]: 操作沿用文件位置顺序；两种布局共用逐行配对，不将旧、新行号混排。
-	const entries = structuredEntries ?? parsed.entries;
-	const structuredRows = structuredEntries ? buildStructuredPairs(structuredEntries) : undefined;
+	const entries = parsed.entries;
+	const structuredRows = preview.lines.some((line) => line.changeIndex !== undefined) ? buildStructuredPairs(entries) : undefined;
 	const numberWidth = lineNumberWidth(entries);
 	let paletteLoaded = false;
 	let palette: DiffBackgroundPalette | undefined;

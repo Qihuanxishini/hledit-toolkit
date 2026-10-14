@@ -20,7 +20,7 @@ test("parseRunObject parses stdout JSON before stderr", () => {
     });
 });
 
-test("readAnchorsResult exposes actual range, total lines, and continuation", () => {
+test("readAnchorsResult distinguishes a complete requested range from EOF", () => {
     const result = readAnchorsResult(
         {
             stdout: JSON.stringify({ ok: true, revision: REVISION, totalLines: 5, lines: [{ line: 2, anchor: "2#BHJ", text: "two" }, { line: 3, anchor: "3#BJL", text: "three" }], truncated: true, nextOffset: 4 }),
@@ -30,7 +30,7 @@ test("readAnchorsResult exposes actual range, total lines, and continuation", ()
         { path: "src/a.ts", offset: 2, limit: 2 },
     );
 
-	assert.match(result.content[0]?.text ?? "", /^proof_id: [A-Za-z0-9_-]{16}\.\d+\n2#BHJ:two\n3#BJL:three\n-- Showing lines 2-3 of 5; continue with windows: \[\{ offset: 4, limit: 2 \}\] --$/);
+	assert.match(result.content[0]?.text ?? "", /^proof_id: [A-Za-z0-9_-]{16}\.\d+\n2#BHJ:two\n3#BJL:three\n-- Showing lines 2-3 of 5; requested range complete --$/);
 	assert.equal(result.details.disposition, "succeeded");
 	assert.match(result.details.proofId ?? "", /^[A-Za-z0-9_-]{16}\.\d+$/);
 	assert.deepEqual(result.details.read?.requested, { offset: 2, limit: 2 });
@@ -49,7 +49,7 @@ test("readAnchorsResult marks a completed range as EOF", () => {
         { path: "src/a.ts", offset: 4, limit: 20 },
     );
 
-    assert.match(result.content[0]?.text ?? "", /Showing lines 4-5 of 5; end of file/);
+    assert.match(result.content[0]?.text ?? "", /Showing lines 4-5 of 5; requested range complete; end of file/);
     assert.equal(result.details.read?.eof, true);
     assert.equal(result.details.read?.nextOffset, undefined);
 });
@@ -144,7 +144,7 @@ for (const pattern of [undefined, "prefix|later"]) {
 		assert.match(result.content[0]!.text, /Truncated lines cannot establish edit proof/);
 		assert.match(result.content[0]!.text, pattern
 			? /To read later lines, continue with offset 2/
-			: /To read later lines, continue with windows: \[\{ offset: 2, limit: 3 \}\]/);
+			: /To read later lines, continue with windows: \[\{ offset: 2, limit: 2 \}\]/);
 	});
 }
 
@@ -417,11 +417,17 @@ test("applyFileChangesResult identifies both conflicting changes without request
 		stdout: JSON.stringify({ ok: false, error: "invalid", message: rawMessage, failed: 1 }),
 		stderr: "",
 		exitCode: 0,
+	}, {
+		path: "src/a.ts",
+		changes: [
+			{ operation: "replace_range", start_anchor: "2#AAA", end_anchor: "4#AAB", lines: ["a"] },
+			{ operation: "insert_after", anchor: "3#AAC", lines: ["b"] },
+		],
 	});
 	assert.equal(result.details.disposition, "rejected");
-	assert.match(result.content[0]?.text ?? "", /Failed change: 2/);
+	assert.match(result.content[0]?.text ?? "", /Failed item: insert_after\[0\]/);
 	assert.equal(result.details.error?.rawMessage, rawMessage);
-	assert.match(result.details.error?.message ?? "", /^Changes 2 and 1 conflict/);
+	assert.match(result.details.error?.message ?? "", /^insert_after\[0\] and replace_ranges\[0\] conflict/);
 	assert.match(result.content[0]?.text ?? "", /Merge them or make them non-overlapping; rereading cannot resolve this conflict/);
 	assert.doesNotMatch(result.content[0]?.text ?? "", /call hledit_read_anchors/i);
 });
@@ -558,8 +564,8 @@ test("model body snapshot: CLI insufficient_read_proof rejection", () => {
 		"The atomic batch was rejected; no content was written.\n" +
 		"Reason: Read proof does not cover every original source line required by this change.\n" +
 		"Error code: insufficient_read_proof\n" +
-		"Failed change: 1\n" +
-		'Call hledit_read_anchors({ path: "src/a.ts", windows: [{ offset: 1, limit: 12 }] }) to reread every source line required by change 1, then use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.',
+		"Failed item: replace_ranges[0]\n" +
+		'Call hledit_read_anchors({ path: "src/a.ts", windows: [{ offset: 1, limit: 12 }] }) to reread every source line required by replace_ranges[0], then use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.',
 	);
 	assert.equal(result.details.disposition, "rejected");
 });
@@ -602,10 +608,10 @@ test("model body snapshot: stale rejection with snapshot context and field-level
 	assert.equal(
 		result.content[0]?.text,
 		"The atomic batch was rejected; no content was written.\n" +
-		"Reason: Change 1 uses a stale anchor.\n" +
+		"Reason: replace_ranges[0] uses a stale anchor.\n" +
 		"Error code: stale\n" +
-		"Failed change: 1\n" +
-		"Anchor verification for change 1:\n" +
+		"Failed item: replace_ranges[0]\n" +
+		"Anchor verification for replace_ranges[0]:\n" +
 		"- Field: start_anchor/end_anchor\n" +
 		"  Submitted anchor: 2#BHJ\n" +
 		"  Current line at the same number: 2#BBK:modified\n" +

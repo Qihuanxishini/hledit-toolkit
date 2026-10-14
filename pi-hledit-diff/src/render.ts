@@ -2,7 +2,7 @@ import { keyHint, type AgentToolResult, type ToolRenderResultOptions } from "@ea
 import { getCapabilities, hyperlink, sliceByColumn, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { changePreviewDiffText, parseChangePreview, type VerifiedChangePreview } from "./change-preview.ts";
+import { parseChangePreview, type VerifiedChangePreview } from "./change-preview.ts";
 import {
 	renderStandaloneDiff,
 	type DiffSummaryStats,
@@ -332,11 +332,10 @@ function successfulChangeSummary(result: RenderResult, theme: RenderTheme): stri
 
 type ApplyRenderDetails = {
 	changePreview: VerifiedChangePreview | undefined;
-	diff: string;
 	updatedAnchorSpans: BatchAnchorContext[];
 };
 
-// [喵喵喵]: 宿主每轮 updateDisplay 都会重建组件；结构解析与 diff 文本化是纯函数，按 details
+// [喵喵喵]: 宿主每轮 updateDisplay 都会重建组件；结构解析是纯函数，按 details
 // 对象身份缓存复用。updateResult 会传入新的 details 对象，缓存随之自然失效。
 const applyParsedDetailsCache = new WeakMap<object, ApplyRenderDetails>();
 
@@ -344,7 +343,6 @@ function parseApplyRenderDetails(details: Record<string, unknown>): ApplyRenderD
 	const changePreview = parseChangePreview(details.changePreview);
 	return {
 		changePreview,
-		diff: changePreview ? changePreviewDiffText(changePreview) : "",
 		updatedAnchorSpans: parseUpdatedAnchorSpans(details.updatedAnchorSpans) ?? [],
 	};
 }
@@ -368,7 +366,7 @@ export function renderFileChangesResult(
 		parsedDetails = parseApplyRenderDetails(result.details);
 		applyParsedDetailsCache.set(result.details, parsedDetails);
 	}
-	const { changePreview, diff } = parsedDetails;
+	const { changePreview } = parsedDetails;
 	const writeWarnings = Array.isArray(result.details.warnings)
 		? result.details.warnings.filter((warning): warning is string => typeof warning === "string")
 		: [];
@@ -378,7 +376,7 @@ export function renderFileChangesResult(
 	const summaryStats: DiffSummaryStats | undefined = changePreview && (changePreview.truncated || !hasPreviewChange) && added !== undefined && deleted !== undefined
 		? { added, removed: deleted, completeHunks: false }
 		: undefined;
-	const diffComponent = renderStandaloneDiff(diff, path, options.expanded, theme, summaryStats, changePreview?.lines);
+	const diffComponent = changePreview ? renderStandaloneDiff(changePreview, path, options.expanded, theme, summaryStats) : undefined;
 	const changeBodyComponent = diffComponent ?? component((width) => {
 		if (width === 0) return [];
 		return [truncateToWidth(successfulChangeSummary(result, theme), width, "")];

@@ -90,6 +90,16 @@ pub fn run(path: &Path) -> Value {
     for segment in &mut segments {
         segment.requested.sort_unstable();
     }
+    // [喵喵喵]: 联合 proof 要求整组完整，确定超行数时避免输出随后必须重读的正文。
+    let requested_lines: usize = segments
+        .iter()
+        .map(|segment| segment.end - segment.start + 1)
+        .sum();
+    if requested_lines > MAX_LINES {
+        return json!({"ok":false,"error":"windows_budget_exceeded",
+            "message":format!("merged windows require {requested_lines} lines; shared limit is {MAX_LINES}"),
+            "requestedLines":requested_lines,"maxLines":MAX_LINES});
+    }
     // [喵喵喵]: 先为最坏元数据与换行计费；Page 已按 JSON 转义后的行大小计费。
     let windows: Vec<Value> = segments.iter().map(|segment| json!({
         "offset":segment.start,"limit":segment.end-segment.start+1,"requestedWindows":segment.requested,

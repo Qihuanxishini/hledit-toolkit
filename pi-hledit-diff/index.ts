@@ -1,10 +1,7 @@
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
-	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { lineFromAnchor } from "./src/anchor.ts";
 import {
 	HLEDIT_APPLY_FILE_CHANGES_TOOL,
 	HLEDIT_READ_ANCHORS_TOOL,
@@ -13,30 +10,12 @@ import {
 	preferAnchoredEditingTools,
 } from "./src/active-tools.ts";
 import { HLEDIT_INSTALL_HINT, parseHleditCapabilities, resolveHleditBin, runHledit } from "./src/cli.ts";
-import {
-	buildAnchoredChangePreview,
-	emptyChangePreview,
-	type VerifiedChangePreview,
-} from "./src/change-preview.ts";
 import { recordAnchoredFileOperations } from "./src/compaction-files.ts";
-import {
-	buildFileChangeRequest,
-	changeShapeIssueResult,
-	findChangeShapeIssue,
-} from "./src/file-changes.ts";
-import { decodeFileChangeInput, formatFileChangeInputMap, prepareFileChangeArguments } from "./src/prepare-arguments.ts";
-import {
-	formatReadProofFailure,
-	ReadEvidenceStore,
-	readProofFailureContext,
-	resolveReadEvidencePath,
-} from "./src/read-evidence.ts";
-import { recoverMissingReadProof } from "./src/read-recovery.ts";
-import { normalizeToolPath } from "./src/read-args.ts";
+import { decodeFileChangeInput, prepareFileChangeArguments } from "./src/prepare-arguments.ts";
+import { ReadEvidenceStore } from "./src/read-evidence.ts";
+import { runApplyTransaction } from "./src/apply-transaction.ts";
 import { runReadAnchorsTransaction, runSearchAnchorsTransaction } from "./src/read-transaction.ts";
-import { applyFileChangesResult } from "./src/apply-result.ts";
 import {
-	attachEvidencePath,
 	rejectedToolResult,
 	shouldMarkHleditResultAsError,
 	type TextResult,
@@ -45,7 +24,6 @@ import {
 	HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,
 	HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 	HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA,
-	type FileChangeParams,
 } from "./src/schema.ts";
 import {
 	renderFileChangesResult,
@@ -55,171 +33,6 @@ import {
 
 export { buildReadArgs, normalizeToolPath } from "./src/read-args.ts";
 export type { FileChangeParams, ReadAnchorsParams, SearchAnchorsParams } from "./src/schema.ts";
-
-function appendResultText(result: TextResult, text: string | undefined): TextResult["content"] {
-	if (!text) {
-		return result.content;
-	}
-	const [first, ...rest] = result.content;
-	if (first?.type === "text" && typeof first.text === "string") {
-		return [{ ...first, text: `${first.text}\n\n${text}` }, ...rest];
-	}
-	return [{ type: "text", text }, ...result.content];
-}
-
-function appendCurrentProofId(result: TextResult, proofId: string | undefined): TextResult {
-	const hasCurrentSnapshot = result.details.disposition === "rejected" && result.details.error?.code === "stale"
-		&& result.details.error.currentAnchors && !result.details.error.currentAnchors.truncated
-		&& result.details.error.currentAnchors.lines.every((line) => !line.textTruncated);
-	if (!proofId || (result.details.disposition !== "succeeded" && !hasCurrentSnapshot)) return result;
-	return {
-		...result,
-		content: appendResultText(result, `proof_id: ${proofId}`),
-		details: { ...result.details, proofId },
-	};
-}
-
-// 成功响应和锚点正文已由 apply-result.ts 验证并生成；这里追加提交绑定的 change preview。
-// 不再前后读取完整文件：preview 只由已验证输入构成，外部并发修改不可能混入
-//（详见 change-preview.ts 与 D4）。preview 构建失败只降级为 previewError，
-// 不得改变已确认成功的 disposition。
-function finalizeSuccessfulEditResult(
-	result: TextResult,
-	normalizedPath: string,
-	evidencePath: string,
-	changePreview: VerifiedChangePreview | undefined,
-): TextResult {
-	return {
-		...result,
-		details: {
-			...result.details,
-			path: normalizedPath,
-			evidencePath,
-			...(changePreview
-				? { changePreview }
-				: { previewError: "A verified change preview could not be built for this edit; the write itself succeeded." }),
-		},
-	};
-}
-
-// 已确认成功的提交绑定 preview；任何构建异常都只降级，不影响 disposition。
-function tryBuildChangePreview(result: TextResult, build: () => VerifiedChangePreview | undefined): VerifiedChangePreview | undefined {
-	try {
-		if (result.details.contentChanged === false) return emptyChangePreview();
-		return build();
-	} catch {
-		return undefined;
-	}
-}
-
-async function runFileChangesWithDiff(
-	params: FileChangeParams,
-	ctx: ExtensionContext,
-	signal: AbortSignal | undefined,
-	evidence: ReadEvidenceStore,
-): Promise<TextResult> {
-	const normalizedPath = normalizeToolPath(params.path);
-	const evidencePath = await resolveReadEvidencePath(ctx.cwd, normalizedPath);
-	const normalizedParams = { ...params, path: normalizedPath };
-	if (!normalizedParams.proof_id) {
-		return attachEvidencePath(
-			rejectedToolResult("The apply request is missing proof_id. Call hledit_read_anchors first and use its returned proof_id.", {
-				code: "invalid_proof_id",
-				message: "proof_id is required for anchored edits.",
-			}),
-			normalizedPath,
-			evidencePath,
-		);
-	}
-	const applyWithinQueue = async (): Promise<TextResult> => {
-		// 请求层自洽性先于 evidence 校验：它不依赖文件状态，且重读无法修复，
-		// 不能让它落到 insufficient_read_proof 的"去重读"指令上。锚点前缀检查
-		// 只在疑似误贴的行首 token 出现时查询当前证据，因此仍放在队列内。
-		const shapeIssue = findChangeShapeIssue(normalizedParams, {
-			has: (anchor) => evidence.anchorsRequiringRead(evidencePath, [anchor]).length === 0,
-		});
-		if (shapeIssue) {
-			return attachEvidencePath(changeShapeIssueResult(shapeIssue), normalizedPath, evidencePath);
-		}
-		const proofSelection = evidence.selectProof(evidencePath, normalizedParams.changes, normalizedParams.proof_id);
-		if ("failure" in proofSelection) {
-			const { failure } = proofSelection;
-			if (failure.code === "insufficient_read_proof") {
-				const requiredRanges = evidence.recoveryRequirements(normalizedParams.changes);
-				const recovered = await recoverMissingReadProof({
-					failure,
-					path: normalizedPath,
-					evidencePath,
-					cwd: ctx.cwd,
-					signal,
-					run: runHledit,
-					requiredRanges,
-					canRetain: (reads, proofId) => evidence.canRetainRecovery(evidencePath, reads, proofId, requiredRanges),
-					requiredLastLine: Math.max(...normalizedParams.changes.map((change) =>
-						lineFromAnchor("end_anchor" in change ? change.end_anchor : change.anchor) ?? 0)),
-				});
-				if (recovered) return recovered;
-			}
-			return attachEvidencePath(
-				rejectedToolResult(formatReadProofFailure(normalizedPath, failure), {
-					code: failure.code,
-					message: failure.message,
-					...readProofFailureContext(failure),
-				}),
-				normalizedPath,
-				evidencePath,
-			);
-		}
-
-		// selectProof 只迁移可验证存续的目标，不改操作种类、消费范围或输出内容。
-		// CLI 统一验证当前 raw revision、完整 proof、全部 anchors 与冲突，再原子提交。
-		const effectiveParams = proofSelection.normalizedChanges
-			? { ...normalizedParams, changes: proofSelection.normalizedChanges }
-			: normalizedParams;
-		const applyContext = { path: normalizedPath, changes: effectiveParams.changes };
-		const request = buildFileChangeRequest(effectiveParams, proofSelection.proof);
-		const run = await runHledit(request.args, request.stdin, ctx.cwd, signal);
-		const result = applyFileChangesResult(run, applyContext);
-		if (result.details.disposition !== "succeeded") {
-			return attachEvidencePath(result, normalizedPath, evidencePath);
-		}
-		const changePreview = tryBuildChangePreview(result, () =>
-			buildAnchoredChangePreview(effectiveParams.changes, proofSelection.consumedLines));
-		const finalized = finalizeSuccessfulEditResult(result, normalizedPath, evidencePath, changePreview);
-		if (!proofSelection.renamedAnchors) return finalized;
-		const resolved = proofSelection.renamedAnchors
-			.map((rename) => `${rename.requested} -> ${rename.current}`)
-			.join(", ");
-		return {
-			...finalized,
-			content: appendResultText(finalized, `Resolved verified anchors: ${resolved}.`),
-			details: { ...finalized.details, resolvedAnchors: proofSelection.renamedAnchors },
-		};
-	};
-
-	// D6：evidence 重映射/失效/记录属于同文件 mutation 的完整操作，必须在队列放行前
-	// 完成，保证同文件下一项排队调用的 selectProof 立即看到本次结果。
-	return withFileMutationQueue(evidencePath, async () => {
-		let result = await applyWithinQueue();
-		evidence.updateFromToolResult(HLEDIT_APPLY_FILE_CHANGES_TOOL, result.details, ctx.cwd);
-		if (result.details.disposition === "succeeded") {
-			const anchors = result.details.updatedAnchorSpans?.flatMap((span) => span.lines.map((line) => line.anchor)) ?? [];
-			const blocked = evidence.anchorsRequiringRead(evidencePath, anchors);
-			if (blocked.length > 0) {
-				const warning = `Preview-only anchors (NOT directly usable): ${blocked.join(", ")}. Complete evidence for these lines was not retained. Read the intended target before editing it; do not repeat the successful edit.`;
-				const blockedSet = new Set(blocked);
-				const content = result.content.map((block) => ({ ...block, text: block.text.split("\n").map((line) => {
-					const colon = line.indexOf(":");
-					const anchor = line.slice(0, colon);
-					return colon >= 0 && blockedSet.has(anchor) ? `[Preview only, line ${lineFromAnchor(anchor)}]${line.slice(colon)}` : line;
-				}).join("\n") }));
-				const warnings = Array.isArray(result.details.warnings) ? result.details.warnings : [];
-				result = { ...result, content: appendResultText({ ...result, content }, warning), details: { ...result.details, unprovenAnchors: blocked, warnings: [...warnings, warning] } };
-			}
-		}
-		return appendCurrentProofId(result, evidence.getProofId(evidencePath));
-	});
-}
 
 export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 	let warnedHleditUnavailable = false;
@@ -306,17 +119,9 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			if ("error" in decoded) {
 				return { ...rejectedToolResult(decoded.error, { code: "invalid", message: decoded.error }), isError: true };
 			}
-			const result = await runFileChangesWithDiff(decoded.params, ctx, signal, readEvidence);
+			const result = await runApplyTransaction(decoded.params, ctx.cwd, signal, readEvidence);
 			synchronizeAnchoredTools();
-			// [喵喵喵]: 在首段标明编号来源，不改变 proof 的末行位置或补读源码预算。
-			const inputMap = formatFileChangeInputMap(params);
-			const content = result.content.map((block, index) => {
-				if (index !== 0 || block.type !== "text") return block;
-				const newline = block.text.indexOf("\n");
-				const text = newline < 0 ? `${block.text}\n${inputMap}` : `${block.text.slice(0, newline)}\n${inputMap}${block.text.slice(newline)}`;
-				return { ...block, text };
-			});
-			return { ...result, content, isError: shouldMarkHleditResultAsError(result.details) };
+			return { ...result, isError: shouldMarkHleditResultAsError(result.details) };
 		},
 	});
 

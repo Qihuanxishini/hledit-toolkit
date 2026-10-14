@@ -111,6 +111,13 @@ function formatWindowsRead(read: WindowsReadMetadata, proofId?: string): string 
 
 export function readWindowsResult(run: HleditRun, request: WindowsRequest): TextResult {
 	const parsed = parseRunObject(run);
+	if (run.exitCode === 0 && parsed?.ok === false && parsed.error === "windows_budget_exceeded" &&
+		safeInteger(parsed.requestedLines, MAX_READ_LIMIT + 1) && parsed.maxLines === MAX_READ_LIMIT) {
+		return rejectedToolResult(
+			`Merged windows require ${parsed.requestedLines} lines; shared limit is ${MAX_READ_LIMIT}. No source text or proof was returned. Request smaller ranges, or read the required ranges in separate calls.`,
+			{ code: "windows_budget_exceeded", message: "Read windows exceed the shared line budget." },
+		);
+	}
 	// [喵喵喵]: 文件/编码/越界错误复用单窗口诊断，成功响应才走独立的窗口协议。
 	if (run.exitCode !== 0 || parsed?.ok !== true) {
 		return readAnchorsResult(run, { path: request.path, ...request.windows[0]! });

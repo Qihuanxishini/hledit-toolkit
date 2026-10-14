@@ -39,7 +39,12 @@ function render(component: { render(width: number): string[] }, width = 120): st
 }
 
 test("diff hides operation separators but retains omitted content markers", () => {
-	const output = renderStandaloneDiff("+2 inserted\n\n-2 old\n+3 new\n   ...\n-9 distant", "notes.txt", false, theme)!.render(72);
+	const output = renderStandaloneDiff({ truncated: false, lines: [
+		{ kind: "add", newLine: 2, text: "inserted", changeIndex: 0 },
+		{ kind: "remove", oldLine: 2, text: "old", changeIndex: 1 },
+		{ kind: "add", newLine: 3, text: "new", changeIndex: 1 },
+		{ kind: "remove", oldLine: 9, text: "distant", changeIndex: 2 },
+	] }, "notes.txt", false, theme)!.render(72);
 	const inserted = output.findIndex((line) => line.includes("inserted"));
 	assert.match(output[inserted + 1]!, /old/);
 	assert.equal(output.filter((line) => line.includes("⋮")).length, 1);
@@ -65,11 +70,11 @@ for (const mode of ["truecolor", "256color"] as const) {
 			for (const background of ["", light ? "#fafafa" : "#283228", "#282828"]) {
 				const nativeTheme = createNativeTheme(mode, background, appearance);
 				const containerBg = nativeTheme.getBgAnsi("toolSuccessBg");
-				const component = renderStandaloneDiff(" 1 context\n-2 beta\n+2 BETA\n   ...\n+9 tail", "notes.txt", false, nativeTheme, undefined, [
+				const component = renderStandaloneDiff({ truncated: false, lines: [
 					{ kind: "context", oldLine: 1, newLine: 1, text: "context" },
 					...replacementPreview.lines,
 					{ kind: "add", newLine: 9, text: "tail", changeIndex: 1 },
-				])!;
+				] }, "notes.txt", false, nativeTheme)!;
 				for (const width of [72, 160]) {
 					const addedGutter = nativeTheme.style(width === 160 ? "▌   2" : "▌ +  2", { fg: parseColor(light ? "#116329" : "#B5BD68") });
 					const removedGutter = nativeTheme.style(width === 160 ? "▌   2" : "▌ -  2", { fg: parseColor(light ? "#82071E" : "#CC6666") });
@@ -101,7 +106,7 @@ test("diff invalidation refreshes native theme colors", () => {
 		style: (text, options) => activeTheme.style(text, options),
 		getBgAnsi: (name) => activeTheme.getBgAnsi(name),
 	};
-	const component = renderStandaloneDiff("-2 beta\n+2 BETA", "notes.txt", false, switchingTheme)!;
+	const component = renderStandaloneDiff(replacementPreview, "notes.txt", false, switchingTheme)!;
 	const first = component.render(72);
 	activeTheme = createNativeTheme("256color", "#fafafa", "light");
 	component.invalidate();
@@ -469,7 +474,7 @@ test("renderFileChangesResult switches between paired unified and split layouts"
 
 test("unified diff uses full width and preserves wrapped Unicode source", () => {
 	const text = "const value = " + "字🙂e\u0301".repeat(12) + ";";
-	const component = renderStandaloneDiff(`+100 ${text}`, "notes.txt", true, theme)!;
+	const component = renderStandaloneDiff({ truncated: false, lines: [{ kind: "add", newLine: 100, text }] }, "notes.txt", true, theme)!;
 	for (const width of [40, 80, 119, 120, 200, 40]) {
 		const output = component.render(width);
 		const rows = output.slice(2, -1);
@@ -483,7 +488,7 @@ test("unified diff uses full width and preserves wrapped Unicode source", () => 
 });
 
 test("standalone diff caches an unchanged width and invalidates theme-dependent output", () => {
-	const component = renderStandaloneDiff("-2 beta\n+2 BETA", "notes.txt", false, theme);
+	const component = renderStandaloneDiff(replacementPreview, "notes.txt", false, theme);
 	assert.ok(component);
 	const first = component.render(72);
 
@@ -757,7 +762,7 @@ test("renderFileChangesResult shows a durability warning", () => {
 
 
 test("collapsed diffs only color visible rows while keeping complete summary counts", () => {
-	const diff = Array.from({ length: 2_000 }, (_, index) => `+${index + 1} value-${index}`).join("\n");
+	const diff = { truncated: false, lines: Array.from({ length: 2_000 }, (_, index) => ({ kind: "add" as const, newLine: index + 1, text: `value-${index}` })) };
 	let calls = 0;
 	const countingTheme: RenderTheme = { ...theme, fg: (_name, text) => { calls++; return text; } };
 	const component = renderStandaloneDiff(diff, "notes.txt", false, countingTheme)!;
@@ -776,7 +781,7 @@ test("collapsed diffs only color visible rows while keeping complete summary cou
 test("a long first diff row only colors visible wrapped fragments", () => {
 	let calls = 0;
 	const countingTheme: RenderTheme = { ...theme, fg: (_name, text) => { calls++; return text; } };
-	const component = renderStandaloneDiff(`+1 ${"x".repeat(8_000)}`, "notes.txt", false, countingTheme)!;
+	const component = renderStandaloneDiff({ truncated: false, lines: [{ kind: "add", newLine: 1, text: "x".repeat(8_000) }] }, "notes.txt", false, countingTheme)!;
 	for (const width of [80, 120]) {
 		calls = 0;
 		const rows = component.render(width);
@@ -791,10 +796,10 @@ test("a long first diff row only colors visible wrapped fragments", () => {
 test("long highlighted diff rows keep wrapping bounded by the visible row budget", () => {
 	const before = "const value = 0;";
 	const after = `const value = ${"x".repeat(32_000)}`;
-	const component = renderStandaloneDiff(`-1 ${before}\n+1 ${after}`, "sample.ts", false, theme, undefined, [
+	const component = renderStandaloneDiff({ truncated: false, lines: [
 		{ kind: "remove", oldLine: 1, text: before, changeIndex: 0 },
 		{ kind: "add", newLine: 1, text: after, changeIndex: 0 },
-	])!;
+	] }, "sample.ts", false, theme)!;
 	for (const width of [80, 160]) {
 		const rows = component.render(width);
 		assert.ok(rows.some((line) => line.includes("展开")));
@@ -828,7 +833,7 @@ test("source controls are visibly escaped in reads, diffs and updated anchors wi
 		const components = [
 			renderReadAnchorsResult(result, options(true), theme, { args: { path } }),
 			renderFileChangesResult(result, options(true), coloredTheme, { args: { path } }),
-			renderStandaloneDiff(`+1 ${payload}`, path, true, theme)!,
+			renderStandaloneDiff({ truncated: false, lines: [{ kind: "add", newLine: 1, text: payload }] }, path, true, theme)!,
 		];
 		for (const component of components) {
 			const output = component.render(240).join("\n");
@@ -840,7 +845,7 @@ test("source controls are visibly escaped in reads, diffs and updated anchors wi
 	assert.equal(JSON.stringify(result), original);
 });
 
-test("terminal controls are escaped in paths, patterns, errors, warnings and diff metadata", () => {
+test("terminal controls are escaped in paths, patterns, errors and warnings", () => {
 	const payload = "\x1b[2J\x1b]52;c;VEVTVA==\x07\x9b2J";
 	const failure: TextResult = {
 		content: [{ type: "text", text: payload }],
@@ -855,7 +860,6 @@ test("terminal controls are escaped in paths, patterns, errors, warnings and dif
 		renderReadAnchorsResult(failure, options(), theme, {}),
 		renderReadAnchorsResult(failure, options(true), theme, {}),
 		renderFileChangesResult(success, options(true), theme, {}),
-		renderStandaloneDiff(payload, "notes.txt", true, theme)!,
 	];
 	for (const component of components) {
 		const output = component.render(240).join("\n");
@@ -870,11 +874,11 @@ test("diff line limits only show continuation when a row is actually hidden", ()
 		const limit = expanded ? 2_000 : 24;
 		for (const width of [80, 120]) {
 			const sourceLines = limit;
-			const exact = Array.from({ length: sourceLines }, (_, index) => `+${index + 1} value`).join("\n");
-			const exactRows = renderStandaloneDiff(exact, "notes.txt", expanded, theme)!.render(width);
+			const exact = Array.from({ length: sourceLines }, (_, index) => ({ kind: "add" as const, newLine: index + 1, text: "value" }));
+			const exactRows = renderStandaloneDiff({ truncated: false, lines: exact }, "notes.txt", expanded, theme)!.render(width);
 			assert.equal(exactRows.length, limit + 3);
 			assert.ok(exactRows.every((line) => !/更多差异|预览已折叠/.test(line)));
-			const overflowing = renderStandaloneDiff(`${exact}\n+${sourceLines + 1} extra`, "notes.txt", expanded, theme)!.render(width);
+			const overflowing = renderStandaloneDiff({ truncated: false, lines: [...exact, { kind: "add", newLine: sourceLines + 1, text: "extra" }] }, "notes.txt", expanded, theme)!.render(width);
 			assert.equal(overflowing.length, limit + 5);
 			assert.ok(overflowing.some((line) => line.includes(expanded ? "更多差异" : "预览已折叠")));
 		}

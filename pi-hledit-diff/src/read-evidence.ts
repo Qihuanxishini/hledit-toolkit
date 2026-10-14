@@ -8,7 +8,7 @@ import {
 } from "./active-tools.ts";
 import { computeAnchorTag } from "./anchor-hash.ts";
 import { lineFromAnchor } from "./anchor.ts";
-import type { HleditBatchReadProof } from "./file-changes.ts";
+import { fileChangeReference, type HleditBatchReadProof } from "./file-changes.ts";
 import { parseAnchorContext, parseUpdatedAnchorSpans } from "./post-edit-context.ts";
 import { nextProofId } from "./proof-id.ts";
 import { parseHleditReadMetadata, parseRecoveredReads } from "./read-result.ts";
@@ -33,6 +33,7 @@ type FileChangeOperation = FileChangeParams["changes"][number]["operation"];
 
 type RequestedSourceRange = ReadProofLineRange & {
 	changeNumber: number;
+	reference: string;
 	operation: FileChangeOperation;
 };
 
@@ -42,11 +43,13 @@ type RequestedEndpointAnchor = {
 	line: number;
 	anchor: string;
 	changeNumber: number;
+	reference: string;
 	operation: FileChangeOperation;
 };
 
 export type ReadProofGap = ReadProofLineRange & {
 	changeNumber: number;
+	reference?: string;
 	operation: FileChangeOperation;
 	requiredStart: number;
 	requiredEnd: number;
@@ -116,21 +119,22 @@ function requestedChangeEvidence(changes: FileChangeParams["changes"]): Requeste
 	const endpointAnchors: RequestedEndpointAnchor[] = [];
 	for (const [changeIndex, change] of changes.entries()) {
 		const changeNumber = changeIndex + 1;
+		const reference = fileChangeReference(changes, changeIndex);
 		if (change.operation === "insert_before" || change.operation === "insert_after") {
 			const line = lineFromAnchor(change.anchor);
 			if (line === undefined) return undefined;
-			sourceRanges.push({ start: line, end: line, changeNumber, operation: change.operation });
-			endpointAnchors.push({ line, anchor: change.anchor, changeNumber, operation: change.operation });
+			sourceRanges.push({ start: line, end: line, changeNumber, reference, operation: change.operation });
+			endpointAnchors.push({ line, anchor: change.anchor, changeNumber, reference, operation: change.operation });
 			continue;
 		}
 
 		const start = lineFromAnchor(change.start_anchor);
 		const end = lineFromAnchor(change.end_anchor);
 		if (start === undefined || end === undefined || start > end) return undefined;
-		sourceRanges.push({ start, end, changeNumber, operation: change.operation });
+		sourceRanges.push({ start, end, changeNumber, reference, operation: change.operation });
 		endpointAnchors.push(
-			{ line: start, anchor: change.start_anchor, changeNumber, operation: change.operation },
-			{ line: end, anchor: change.end_anchor, changeNumber, operation: change.operation },
+			{ line: start, anchor: change.start_anchor, changeNumber, reference, operation: change.operation },
+			{ line: end, anchor: change.end_anchor, changeNumber, reference, operation: change.operation },
 		);
 	}
 
@@ -169,6 +173,7 @@ function proofGapFromMissingRange(
 		start: Math.max(missingRange.start, sourceRange.start),
 		end: Math.min(missingRange.end, sourceRange.end),
 		changeNumber: sourceRange.changeNumber,
+		reference: sourceRange.reference,
 		operation: sourceRange.operation,
 		requiredStart: sourceRange.start,
 		requiredEnd: sourceRange.end,
@@ -178,9 +183,9 @@ function proofGapFromMissingRange(
 function formatProofGapMessage(gap: ReadProofGap): string {
 	const missingRange = lineRangeDescription(gap);
 	if (gap.operation === "replace_range" || gap.operation === "delete_range") {
-		return `Change ${gap.changeNumber} (${gap.operation} ${gap.requiredStart}-${gap.requiredEnd}) requires complete read proof for every source line in the inclusive range; missing ${missingRange}. Endpoint anchors alone are insufficient.`;
+		return `${gap.reference ?? `Change ${gap.changeNumber}`} (${gap.operation} ${gap.requiredStart}-${gap.requiredEnd}) requires complete read proof for every source line in the inclusive range; missing ${missingRange}. Endpoint anchors alone are insufficient.`;
 	}
-	return `Change ${gap.changeNumber} (${gap.operation} at line ${gap.requiredStart}) requires complete read proof for its anchor line; missing ${missingRange}.`;
+	return `${gap.reference ?? `Change ${gap.changeNumber}`} (${gap.operation} at line ${gap.requiredStart}) requires complete read proof for its anchor line; missing ${missingRange}.`;
 }
 
 function collectProofCoverage(
@@ -278,7 +283,7 @@ function replaceRenamedAnchors(
 	const seen = new Set<string>();
 	const substitute = (anchor: string): string => {
 		const current = renames.get(anchor);
-		if (current && !seen.has(anchor)) {
+		if (current && current !== anchor && !seen.has(anchor)) {
 			seen.add(anchor);
 			renamedAnchors.push({ requested: anchor, current });
 		}
@@ -352,7 +357,7 @@ function evaluateProofAgainstEvidence(
 		if (evidenceLines.get(endpoint.line)?.anchor !== endpoint.anchor) {
 			return {
 				failure: {
-				message: `Change ${endpoint.changeNumber} (${endpoint.operation}) submitted anchor for line ${endpoint.line} does not match the most recently read anchor on this branch.`,
+					message: `${endpoint.reference} submitted anchor for line ${endpoint.line} does not match the most recently read anchor on this branch.`,
 					reportedMissingLines: [endpoint.line],
 					suggestedReadRange: { start: endpoint.line, end: endpoint.line },
 					recoveryRanges: recoveryRangesFor(requested, evidenceLines),
@@ -415,7 +420,7 @@ export function formatReadProofFailure(path: string, failure: ReadProofFailure):
 	const lastLine = failure.suggestedReadRange?.end ?? targetLines[targetLines.length - 1] ?? firstLine;
 	const { offset, limit, lastLine: lastSuggestedLine } = suggestedReadWindow(firstLine, lastLine);
 	const completionTarget = failure.proofGap
-		? `all required source lines for change ${failure.proofGap.changeNumber} through line ${lastLine}`
+		? `all required source lines for ${failure.proofGap.reference ?? `change ${failure.proofGap.changeNumber}`} through line ${lastLine}`
 		: firstLine === lastLine ? "the target line" : "the complete target range";
 	const readCall = formatReadCall(path, { offset, limit });
 	const readInstruction = lastSuggestedLine < lastLine

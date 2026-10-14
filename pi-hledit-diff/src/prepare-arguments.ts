@@ -73,7 +73,7 @@ export function decodeFileChangeInput(input: FileChangeDecodeInput): FileChangeI
 	let producedLines = 0;
 	const changes: CanonicalFileChange[] = [];
 	// [喵喵喵]: 显式映射方向，避免同形 insert 被误映射；分组仅改变编号，不改变 CLI 的物理排序。
-	// 该顺序必须与 FILE_CHANGE_GROUPS 保持一致，编号映射由同一常量生成。
+	// 分组顺序只用于内部编号，模型回包直接使用公开分组位置。
 	const submitted = [
 		...input.replace_ranges.map((item) => ({ ...item, operation: "replace_range" as const })),
 		...input.delete_ranges.map((item) => ({ ...item, operation: "delete_range" as const })),
@@ -103,16 +103,4 @@ export function decodeFileChangeInput(input: FileChangeDecodeInput): FileChangeI
 		changes.push({ ...change, lines });
 	}
 	return { params: { path: input.path, ...(input.proof_id ? { proof_id: input.proof_id } : {}), changes } };
-}
-
-export function formatFileChangeInputMap(input: FileChangeInput): string {
-	let changeNumber = 1;
-	const groups = FILE_CHANGE_GROUPS.flatMap((group) => {
-		const count = input[group].length;
-		if (!count) return [];
-		const start = changeNumber;
-		changeNumber += count;
-		return [count === 1 ? `change ${start}=${group}[0]` : `changes ${start}-${changeNumber - 1}=${group}[0-${count - 1}]`];
-	});
-	return `Input mapping (0-based indexes): ${groups.join("; ")}.`;
 }

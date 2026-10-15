@@ -66,11 +66,11 @@ function changeAnchorFields(change: FileChangeParams["changes"][number]): Array<
 	switch (change.operation) {
 		case "replace":
 			return change.start_anchor === change.end_anchor
-				? [["anchor", change.start_anchor]]
-				: [["anchor", change.start_anchor], ["end_anchor", change.end_anchor]];
+				? [["anchors[0]", change.start_anchor]]
+				: [["anchors[0]", change.start_anchor], ["anchors[1]", change.end_anchor]];
 		case "insert_before":
 		case "insert_after":
-			return [["anchor", change.anchor]];
+			return [["anchors[0]", change.anchor]];
 	}
 }
 
@@ -189,10 +189,10 @@ function localizeInvalidApplyMessage(rawMessage: string, failedChange: number | 
 	if (rawMessage.includes("contains LF")) return `${prefix} contains LF inside a CLI line-array element. Each element must contain exactly one logical line.`;
 	if (rawMessage.includes("reinterpret leading U+FEFF")) return "The batch would reinterpret leading U+FEFF text as a UTF-8 BOM. Keep that character out of the first text position; existing file BOM metadata is preserved.";
 	if (rawMessage.includes("invalid batch request")) return "The batch JSON shape is invalid and could not be parsed.";
-	if (rawMessage.includes("invalid end anchor")) return `${prefix} has an invalid end_anchor format.`;
-	if (rawMessage.includes("invalid anchor")) return `${prefix} has an invalid anchor format.`;
+	if (rawMessage.includes("invalid end anchor")) return `${prefix} has an invalid anchors[1] format.`;
+	if (rawMessage.includes("invalid anchor")) return `${prefix} has an invalid anchors[0] format.`;
 	if (rawMessage.includes("start line") && rawMessage.includes("> end line")) return `${prefix} starts after its end line.`;
-	if (rawMessage.includes("insert does not accept end_pos")) return `${prefix} is an insert and cannot include end_anchor.`;
+	if (rawMessage.includes("insert does not accept end_pos")) return `${prefix} is an insert and requires exactly one anchor in anchors.`;
 	if (rawMessage.includes("insert requires non-empty content")) return `${prefix} is an insert and lines must contain at least one line.`;
 	if (rawMessage.includes("unknown op")) return `${prefix} uses an unsupported operation.`;
 	if (rawMessage.includes("overlaps") || rawMessage.includes("conflicts") || rawMessage.includes("already consumed range")) {
@@ -457,7 +457,7 @@ function invalidApplyResponseText(): string {
 }
 
 function outcomeUnknownText(run: HleditRun): string {
-	const rawDiagnostic = run.stdout.trimEnd() || run.stderr.trimEnd();
+	const rawDiagnostic = [run.stdout.trimEnd(), run.stderr.trimEnd()].filter(Boolean).join("\n");
 	const recoveryFilesRetained = rawDiagnostic.includes("recovery files were retained");
 	// [喵喵喵]: 恢复路径是人工找回数据的依据，不能按普通错误预算截断；子进程输出已有总上限。(2026-09-24)
 	const diagnostic = recoveryFilesRetained ? rawDiagnostic : rawDiagnostic.slice(0, 800);

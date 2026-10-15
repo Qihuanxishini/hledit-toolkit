@@ -82,12 +82,12 @@ test("feedback recovery diagnostics preserve safety and give actionable next ste
 			const initial = await read(path);
 			const [first, last] = initial.details.read!.lines;
 			const replacementLines = text === "" ? "\n" : text;
-			const changed = await apply(path, initial.details.proofId, [{ action: "replace", anchor: first!.anchor, end_anchor: last!.anchor, lines: replacementLines }]);
+			const changed = await apply(path, initial.details.proofId, [{ action: "replace", anchors: first!.anchor === last!.anchor ? [first!.anchor] : [first!.anchor, last!.anchor], lines: replacementLines }]);
 			assert.equal(changed.details.disposition, "succeeded");
 			assert.notEqual(changed.details.proofId, initial.details.proofId);
 			assert.doesNotMatch(changed.content[0]!.text, /requiring explicit reread/);
 			assert.ok(changed.content[0]!.text.includes(first!.anchor));
-			const deletion = [{ action: "replace", anchor: first!.anchor }];
+			const deletion = [{ action: "replace", anchors: [first!.anchor], lines: "" }];
 			const wrongFile = await apply(path, other.details.proofId, deletion);
 			assert.match(wrongFile.content[0]!.text, /was issued for.*other\.txt.*not/);
 			assert.doesNotMatch(wrongFile.content[0]!.text, /lost its unique identity|Correct the request anchors/);
@@ -115,7 +115,7 @@ test("feedback recovery diagnostics preserve safety and give actionable next ste
 			const initial = await read(path, [{ offset: 1, limit: 1 }]);
 			const first = initial.details.read!.lines[0]!.anchor;
 			if (kind === "empty") await writeFile(join(directory, path), "");
-			const result = await apply(path, initial.details.proofId, [{ action: "replace", anchor: kind === "end" ? first : "9999#aaa", end_anchor: kind === "end" ? "3#aaa" : "9999#aaa", lines: "X" }]);
+			const result = await apply(path, initial.details.proofId, [{ action: "replace", anchors: kind === "end" ? [first, "3#aaa"] : ["9999#aaa"], lines: "X" }]);
 			assert.equal(result.details.disposition, "rejected");
 			assert.match(result.content[0]!.text, /Stop this recovery plan/);
 			assert.doesNotMatch(result.content[0]!.text, /Remaining read windows|offset: 9999/);
@@ -143,7 +143,7 @@ test("apply returns native errors for invalid input and missing proof", async ()
 	const apply = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
 	for (const params of [
 		{ path: "target.txt" },
-		{ path: "target.txt", changes: [{ action: "replace", anchor: "1#abc" }] },
+		{ path: "target.txt", changes: [{ action: "replace", anchors: ["1#abc"], lines: "" }] },
 	]) {
 		const result = await apply.execute("invalid", params as never, undefined, undefined, { cwd: process.cwd() });
 		assert.equal(result.isError, true);
@@ -188,13 +188,13 @@ test("registered tool metadata explains the contract within its budget and names
 	assert.match(searchGuidelines, /matching lines, not broad source inspection[\s\S]*hledit_read_anchors/);
 	assert.match(searchGuidelines, /hledit_read_anchors for gaps[\s\S]*Only complete returned lines provide proof/);
 	const applySchema = JSON.stringify(applyTool.parameters);
-	assert.match(`${applyTool.description} ${applySchema}`, /atomic batch[\s\S]*complete read proof[\s\S]*ordered changes array/);
+	assert.match(`${applyTool.description} ${applySchema}`, /atomic batch[\s\S]*complete read proof[\s\S]*Ordered array of 1-200 file changes in pre-edit coordinates/);
 	assert.match(applyGuidelines, /proof_id and anchors from the same evidence generation[\s\S]*Old pairs work only for verified surviving targets/);
 	assert.match(applyGuidelines, /Failed reads create no proof/);
-	assert.match(applyGuidelines, /for replace without lines \(or lines: ""\), the target range is deleted/);
+	assert.match(applyGuidelines, /replace with lines: "" deletes the target/);
 	assert.match(applyGuidelines, /Use write only for new\/empty files[\s\S]*full rewrites permitted by recovery guidance/);
 	assert.match(applySchema, /anchors' file and generation/);
-	assert.ok(applySchema.includes(JSON.stringify("Raw text (\\n separated). Omit or pass \"\" for deletion; pass \"\\n\" for one blank line. Required for inserts.")));
+	assert.ok(applySchema.includes(JSON.stringify("Raw text (\\n separated). Use \"\" for deletion, \"\\n\" for one blank line. Inserts require non-empty text.")));
 
 	assert.match(searchTool.description, /one text file[\s\S]*not a directory/i);
 	assert.match(searchGuidelines, /one file[\s\S]*enumerate files first[\s\S]*project-wide search/);
@@ -368,7 +368,7 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 	assert.match(readResult.content[0]?.text ?? "", new RegExp(`proof_id: ${readResult.details.proofId}`));
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchor, lines: "TWO" }] } as never,
+		{ path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchors: [anchor], lines: "TWO" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -407,7 +407,7 @@ test("apply tool reports a no-op without touching the target", async (t) => {
 	assert.ok(anchor);
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchor, lines: "two" }] } as never,
+		{ path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchors: [anchor], lines: "two" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -440,7 +440,7 @@ test("apply tool returns a complete produced span for a long-line file", async (
 	assert.ok(anchor);
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchor, lines: "CHANGED" }] } as never,
+		{ path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchors: [anchor], lines: "CHANGED" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -482,8 +482,8 @@ test("apply tool lists only produced lines for a wide multi-change batch", async
 			path: "target.txt",
 			proof_id: readResult.details.proofId,
 			changes: [
-				{ action: "replace", anchor: first, lines: "FIRST" },
-				{ action: "replace", anchor: last, lines: "LAST" },
+				{ action: "replace", anchors: [first], lines: "FIRST" },
+				{ action: "replace", anchors: [last], lines: "LAST" },
 			],
 		} as never,
 		undefined,
@@ -521,7 +521,7 @@ test("apply tool deleting the only line leaves an empty file", async (t) => {
 	assert.ok(anchor);
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchor }] } as never,
+		{ path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchors: [anchor], lines: "" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -533,7 +533,7 @@ test("apply tool deleting the only line leaves an empty file", async (t) => {
 	assert.deepEqual(applyResult.details.updatedAnchorSpans, []);
 	assert.ok(applyResult.details.proofId);
 	assert.notEqual(applyResult.details.proofId, readResult.details.proofId);
-	const followup = await applyTool.execute("empty-followup", { path: "target.txt", proof_id: applyResult.details.proofId, changes: [{ action: "replace", anchor }] } as never, undefined, undefined, context);
+	const followup = await applyTool.execute("empty-followup", { path: "target.txt", proof_id: applyResult.details.proofId, changes: [{ action: "replace", anchors: [anchor], lines: "" }] } as never, undefined, undefined, context);
 	assert.equal(followup.details.error?.code, "invalid_anchor_range");
 	assert.doesNotMatch(followup.content[0]!.text, /offset:/);
 	assert.equal(await readFile(target, "utf8"), "");
@@ -561,8 +561,8 @@ test("apply tool accepts batched single-line expansions with replacement semanti
 			path: "target.txt",
 			proof_id: readResult.details.proofId,
 			changes: [
-				{ action: "replace", anchor: first, lines: "two\ninserted-after-two" },
-				{ action: "replace", anchor: second, lines: "four\ninserted-after-four" },
+				{ action: "replace", anchors: [first], lines: "two\ninserted-after-two" },
+				{ action: "replace", anchors: [second], lines: "four\ninserted-after-four" },
 			],
 		} as never,
 		undefined,
@@ -605,7 +605,7 @@ test("apply tool rejects an anchor token pasted into lines instead of writing it
 	// 模型把 read 输出的 "LN#HASH:text" 展示格式整行抄进了替换内容。
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchor, lines: `${anchor}:const b = 20;` }] } as never,
+		{ path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchors: [anchor], lines: `${anchor}:const b = 20;` }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -643,7 +643,7 @@ test("apply tool rejects read output pasted into an insert even when the tokens 
 		"apply",
 		{
 			path: "target.txt", proof_id: readResult.details.proofId,
-			changes: [{ action: "insert_after", anchor: first!.anchor, lines: `${second!.anchor}:${second!.text}\n${third!.anchor}:${third!.text}` }],
+			changes: [{ action: "insert_after", anchors: [first!.anchor], lines: `${second!.anchor}:${second!.text}\n${third!.anchor}:${third!.text}` }],
 		} as never,
 		undefined,
 		undefined,
@@ -680,7 +680,7 @@ test("zero-match search keeps same-revision proof and echoes the current proof_i
 	const anchor = readResult.details.read!.lines[1]!.anchor;
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: proofId, changes: [{ action: "replace", anchor, lines: "TWO" }] } as never,
+		{ path: "target.txt", proof_id: proofId, changes: [{ action: "replace", anchors: [anchor], lines: "TWO" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -713,7 +713,7 @@ test("same-epoch read proofs stay valid while externally invalidated proofs requ
 	const anchor = page2.details.read!.lines[0]!.anchor;
 	const applyWithFirstPage = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: page1.details.proofId, changes: [{ action: "replace", anchor, lines: "THREE" }] } as never,
+		{ path: "target.txt", proof_id: page1.details.proofId, changes: [{ action: "replace", anchors: [anchor], lines: "THREE" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -725,7 +725,7 @@ test("same-epoch read proofs stay valid while externally invalidated proofs requ
 	const fresh = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
 	const expired = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: page1.details.proofId, changes: [{ action: "replace", anchor: fresh.details.read!.lines[3]!.anchor, lines: "FOUR" }] } as never,
+		{ path: "target.txt", proof_id: page1.details.proofId, changes: [{ action: "replace", anchors: [fresh.details.read!.lines[3]!.anchor], lines: "FOUR" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -754,7 +754,7 @@ test("revision snapshots support explicit continuation both live and after branc
 			lines[0] = "external change";
 			const changed = lines.join("\n") + "\n";
 			await writeFile(target, changed);
-			const changes = [{ action: "replace" as const, anchor, lines: "updated target" }];
+			const changes = [{ action: "replace" as const, anchors: [anchor], lines: "updated target" }];
 			const stale = await applyTool.execute("stale", { path: "target.txt", proof_id: read.details.proofId, changes } as never, undefined, undefined, context);
 			assert.equal(stale.details.error?.code, "stale");
 			assert.match(stale.content[0]!.text, /file revision changed/);
@@ -798,17 +798,17 @@ test("apply tool rejects a reversed anchor range with a swap instruction instead
 	const third = readResult.details.read?.lines[2]?.anchor;
 	assert.ok(first && third);
 
-	const reversed = { path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchor: third, end_anchor: first, lines: "merged" }] };
+	const reversed = { path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchors: [third, first], lines: "merged" }] };
 	const applyResult = await applyTool.execute("apply", reversed as never, undefined, undefined, context);
 
 	assert.equal(applyResult.details.disposition, "rejected");
 	assert.deepEqual(applyResult.details.error, {
 		code: "reversed_anchor_range",
-		message: `changes[0] submitted anchor ${third} below end_anchor ${first}; swap them instead of rereading.`,
+		message: `changes[0] submitted anchors[0] ${third} below anchors[1] ${first}; swap them instead of rereading.`,
 		changeNumber: 1,
 	});
 	const text = applyResult.content[0]?.text ?? "";
-	assert.match(text, new RegExp(`Swap them: set anchor to ${first} and end_anchor to ${third}`));
+	assert.ok(text.includes(`Swap them: set anchors to ["${first}", "${third}"].`));
 	// 旧行为会返回 insufficient_read_proof 并要求重读，而重读后重发会复现同一错误。
 	assert.doesNotMatch(text, /Call hledit_read_anchors/);
 	assert.doesNotMatch(text, /resubmit the original hledit_apply_file_changes call/);
@@ -817,7 +817,7 @@ test("apply tool rejects a reversed anchor range with a swap instruction instead
 	// 交换后无需重读即可成功，证明拒绝未损失已有证据。
 	const fixed = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchor: first, end_anchor: third, lines: "merged" }] } as never,
+		{ path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchors: [first, third], lines: "merged" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -845,7 +845,7 @@ test("apply tool rejects an anchor that does not match its read proof before sta
 	const staleAnchor = `${currentAnchor.slice(0, -3)}${staleHash === "AAB" ? "AAC" : "AAB"}`;
 	const applyResult = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchor: staleAnchor, lines: "two\ninserted" }] } as never,
+		{ path: "target.txt", proof_id: readResult.details.proofId, changes: [{ action: "replace", anchors: [staleAnchor], lines: "two\ninserted" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -881,7 +881,7 @@ test("proof recovery stops on source-line truncation", async (t) => {
 
 	const apply = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: read.details.proofId, changes: [{ action: "replace", anchor, lines: "short" }] } as never,
+		{ path: "target.txt", proof_id: read.details.proofId, changes: [{ action: "replace", anchors: [anchor], lines: "short" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -908,7 +908,7 @@ test("truncated recovery preserves its source budget and proof across session re
 	const last = await readTool.execute("last", { path: "target.txt", windows: [{ offset: 4, limit: 1 }] } as never, undefined, undefined, context);
 	const apply = await applyTool.execute("apply", {
 		path: "target.txt", proof_id: last.details.proofId,
-		changes: [{ action: "replace", anchor: first.details.read!.lines[0]!.anchor, end_anchor: last.details.read!.lines[0]!.anchor, lines: "replacement" }],
+		changes: [{ action: "replace", anchors: [first.details.read!.lines[0]!.anchor, last.details.read!.lines[0]!.anchor], lines: "replacement" }],
 	} as never, undefined, undefined, context);
 	assert.equal(apply.details.error?.code, "source_line_truncated");
 	assert.equal(apply.details.recoveredReads?.length, 1);
@@ -933,7 +933,7 @@ test("truncated recovery preserves its source budget and proof across session re
 	const retained = apply.details.recoveredReads![0]!.lines.find((line) => line.line === 2)!;
 	const continuationParams = {
 		path: "target.txt", proof_id: proofId,
-		changes: [{ action: "replace", anchor: retained.anchor, lines: "short" }],
+		changes: [{ action: "replace", anchors: [retained.anchor], lines: "short" }],
 	};
 	const beforeReplay = await restoredApply.execute("before-replay", continuationParams as never, undefined, undefined, emptyContext);
 	assert.equal(beforeReplay.details.error?.code, "invalid_proof_id");
@@ -965,7 +965,7 @@ test("successive single-line edits use published proof generations and preserve 
 	for (const lines of ["a\rB", "a\rC"]) {
 		const result = await applyTool.execute("apply", {
 			path: "target.txt", proof_id: proof,
-			changes: [{ action: "replace", anchor, lines }],
+			changes: [{ action: "replace", anchors: [anchor], lines }],
 		} as never, undefined, undefined, context);
 		assert.equal(result.details.disposition, "succeeded", JSON.stringify(result.details.error));
 		assert.equal(await readFile(target, "utf8"), `${lines}\nkeep\n`);
@@ -983,7 +983,7 @@ test("apply without proof_id rejects before trying to recover a missing target",
 	t.after(() => rm(directory, { recursive: true, force: true }));
 	const result = await applyTool.execute(
 		"apply",
-		{ path: "missing.txt", changes: [{ action: "replace", anchor: "1#AAA", lines: "short" }] } as never,
+		{ path: "missing.txt", changes: [{ action: "replace", anchors: ["1#AAA"], lines: "short" }] } as never,
 		undefined,
 		undefined,
 		{ cwd: directory },
@@ -1013,7 +1013,7 @@ test("multi-page proof recovery completes internally before apply is retried", a
 
 	const apply = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: last.details.proofId, changes: [{ action: "replace", anchor: startAnchor, end_anchor: endAnchor, lines: "replacement" }] } as never,
+		{ path: "target.txt", proof_id: last.details.proofId, changes: [{ action: "replace", anchors: [startAnchor, endAnchor], lines: "replacement" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -1052,7 +1052,7 @@ test("an oversized proof gap is refused without reading anything back", async (t
 
 	const apply = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: last.details.proofId, changes: [{ action: "replace", anchor: startAnchor, end_anchor: endAnchor, lines: "replacement" }] } as never,
+		{ path: "target.txt", proof_id: last.details.proofId, changes: [{ action: "replace", anchors: [startAnchor, endAnchor], lines: "replacement" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -1065,7 +1065,7 @@ test("an oversized proof gap is refused without reading anything back", async (t
 	assert.match(text, /No recovery read was started/);
 	assert.match(text, /Call hledit_read_anchors\(\{ path: "target\.txt", windows: \[\{ offset: \d+, limit: \d+ \}\] \}\)/);
 	assert.match(text, /current anchors and the latest proof_id/);
-	assert.match(text, /narrow the replace range \(anchor\/end_anchor\)/);
+	assert.match(text, /narrow the replace range in anchors/);
 	// 关键：拒绝的正文里不得夹带任何源码行，否则预算就白设了。
 	assert.doesNotMatch(text, /^\d+#[A-Za-z0-9_-]{3}:/m);
 	assert.equal(await readFile(target, "utf8"), original);
@@ -1092,7 +1092,7 @@ test("proof recovery stops at its byte budget and keeps the pages it already rea
 
 	const apply = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: last.details.proofId, changes: [{ action: "replace", anchor: startAnchor, end_anchor: endAnchor, lines: "replacement" }] } as never,
+		{ path: "target.txt", proof_id: last.details.proofId, changes: [{ action: "replace", anchors: [startAnchor, endAnchor], lines: "replacement" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -1135,7 +1135,7 @@ test("a failed recovery read surfaces the read error instead of a proof gap", as
 	await rm(target);
 	const apply = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: read.details.proofId, changes: [{ action: "replace", anchor: startAnchor, end_anchor: "5#AAA", lines: "replacement" }] } as never,
+		{ path: "target.txt", proof_id: read.details.proofId, changes: [{ action: "replace", anchors: [startAnchor, "5#AAA"], lines: "replacement" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -1163,7 +1163,7 @@ test("multi-page proof continuation completes without rereading the payload", as
 	const startAnchor = first.details.read?.lines[0]?.anchor;
 	const endAnchor = last.details.read?.lines[0]?.anchor;
 	assert.ok(startAnchor && endAnchor);
-	const params = { path: "target.txt", proof_id: last.details.proofId, changes: [{ action: "replace", anchor: startAnchor, end_anchor: endAnchor, lines: "replacement" }] };
+	const params = { path: "target.txt", proof_id: last.details.proofId, changes: [{ action: "replace", anchors: [startAnchor, endAnchor], lines: "replacement" }] };
 	const initial = await applyTool.execute("apply-1", params as never, undefined, undefined, context);
 	assert.equal(initial.details.disposition, "rejected");
 	assert.ok((initial.details.recoveredReads?.length ?? 0) > 1);
@@ -1199,8 +1199,8 @@ test("apply tool preserves unselected lines between an expansion and a separate 
 			path: "target.txt",
 			proof_id: readResult.details.proofId,
 			changes: [
-				{ action: "replace", anchor: replacementAnchor, lines: "two\nreplacement" },
-				{ action: "replace", anchor: deleteAnchor, end_anchor: deleteEndAnchor },
+				{ action: "replace", anchors: [replacementAnchor], lines: "two\nreplacement" },
+				{ action: "replace", anchors: [deleteAnchor, deleteEndAnchor], lines: "" },
 			],
 		} as never,
 		undefined,
@@ -1238,7 +1238,7 @@ test("apply tool preserves untouched terminators in a mixed line ending file", a
 
 	const result = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: read.details.proofId, changes: [{ action: "replace", anchor, lines: "B" }] } as never,
+		{ path: "target.txt", proof_id: read.details.proofId, changes: [{ action: "replace", anchors: [anchor], lines: "B" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -1274,7 +1274,7 @@ test("queued same-file apply sees the previous apply's remapped evidence", async
 	// 先发起 insert（会把第 3 行平移到第 4 行），随后在其 CLI 仍在运行时排队第二个 apply。
 	const insertPromise = applyTool.execute(
 		"apply-insert",
-		{ path: "target.txt", proof_id: read.details.proofId, changes: [{ action: "insert_after", anchor: anchorAt(1), lines: "inserted" }] } as never,
+		{ path: "target.txt", proof_id: read.details.proofId, changes: [{ action: "insert_after", anchors: [anchorAt(1)], lines: "inserted" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -1285,7 +1285,7 @@ test("queued same-file apply sees the previous apply's remapped evidence", async
 	const staleAnchor = anchorAt(3);
 	const replacePromise = applyTool.execute(
 		"apply-replace",
-		{ path: "target.txt", proof_id: read.details.proofId, changes: [{ action: "replace", anchor: staleAnchor, lines: "THREE" }] } as never,
+		{ path: "target.txt", proof_id: read.details.proofId, changes: [{ action: "replace", anchors: [staleAnchor], lines: "THREE" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -1333,7 +1333,7 @@ test("path aliases share the canonical apply queue", async (t) => {
 
 	const insertPromise = applyTool.execute(
 		"apply-target",
-		{ path: "target.txt", proof_id: read.details.proofId, changes: [{ action: "insert_after", anchor: anchorAt(1), lines: "inserted" }] } as never,
+		{ path: "target.txt", proof_id: read.details.proofId, changes: [{ action: "insert_after", anchors: [anchorAt(1)], lines: "inserted" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -1342,7 +1342,7 @@ test("path aliases share the canonical apply queue", async (t) => {
 	const staleAnchor = anchorAt(3);
 	const replacePromise = applyTool.execute(
 		"apply-alias",
-		{ path: "alias.txt", proof_id: read.details.proofId, changes: [{ action: "replace", anchor: staleAnchor, lines: "THREE" }] } as never,
+		{ path: "alias.txt", proof_id: read.details.proofId, changes: [{ action: "replace", anchors: [staleAnchor], lines: "THREE" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -1372,7 +1372,7 @@ test("identical inserted and surviving lines remain distinct under their origina
 	assert.ok(oldAnchor);
 	const inserted = await applyTool.execute(
 		"insert-identical",
-		{ path: "target.txt", proof_id: initialRead.details.proofId, changes: [{ action: "insert_before", anchor: oldAnchor, lines: "needle" }] } as never,
+		{ path: "target.txt", proof_id: initialRead.details.proofId, changes: [{ action: "insert_before", anchors: [oldAnchor], lines: "needle" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -1382,7 +1382,7 @@ test("identical inserted and surviving lines remain distinct under their origina
 
 	const originalEdit = await applyTool.execute(
 		"edit-original-target",
-		{ path: "target.txt", proof_id: initialRead.details.proofId, changes: [{ action: "replace", anchor: oldAnchor, lines: "CHANGED" }] } as never,
+		{ path: "target.txt", proof_id: initialRead.details.proofId, changes: [{ action: "replace", anchors: [oldAnchor], lines: "CHANGED" }] } as never,
 		undefined, undefined, context,
 	);
 	assert.equal(originalEdit.details.disposition, "succeeded");
@@ -1391,7 +1391,7 @@ test("identical inserted and surviving lines remain distinct under their origina
 
 	const currentEdit = await applyTool.execute(
 		"edit-current-line",
-		{ path: "target.txt", proof_id: inserted.details.proofId, changes: [{ action: "replace", anchor: oldAnchor, lines: "CHANGED" }] } as never,
+		{ path: "target.txt", proof_id: inserted.details.proofId, changes: [{ action: "replace", anchors: [oldAnchor], lines: "CHANGED" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -1418,7 +1418,7 @@ test("consumed historical targets stay rejected even after rereading a shifted d
 	assert.ok(consumedAnchor);
 	const deleted = await applyTool.execute(
 		"delete-first-duplicate",
-		{ path: "target.txt", proof_id: initialRead.details.proofId, changes: [{ action: "replace", anchor: consumedAnchor }] } as never,
+		{ path: "target.txt", proof_id: initialRead.details.proofId, changes: [{ action: "replace", anchors: [consumedAnchor], lines: "" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -1428,7 +1428,7 @@ test("consumed historical targets stay rejected even after rereading a shifted d
 
 	const ambiguous = await applyTool.execute(
 		"reuse-consumed-anchor",
-		{ path: "target.txt", proof_id: initialRead.details.proofId, changes: [{ action: "replace", anchor: consumedAnchor, lines: "CHANGED" }] } as never,
+		{ path: "target.txt", proof_id: initialRead.details.proofId, changes: [{ action: "replace", anchors: [consumedAnchor], lines: "CHANGED" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -1439,12 +1439,12 @@ test("consumed historical targets stay rejected even after rereading a shifted d
 
 	const explicitRead = await readTool.execute("read-current", { path: "target.txt", windows: [{ offset: 2, limit: 1 }] } as never, undefined, undefined, context);
 	assert.equal(explicitRead.details.read?.lines[0]?.anchor, consumedAnchor);
-	const stillConsumed = await applyTool.execute("old-after-reread", { path: "target.txt", proof_id: initialRead.details.proofId, changes: [{ action: "replace", anchor: consumedAnchor }] } as never, undefined, undefined, context);
+	const stillConsumed = await applyTool.execute("old-after-reread", { path: "target.txt", proof_id: initialRead.details.proofId, changes: [{ action: "replace", anchors: [consumedAnchor], lines: "" }] } as never, undefined, undefined, context);
 	assert.equal(stillConsumed.details.error?.code, "target_consumed");
 	assert.equal(await readFile(target, "utf8"), "before\nneedle\nafter\n");
 	const currentEdit = await applyTool.execute(
 		"edit-current-duplicate",
-		{ path: "target.txt", proof_id: explicitRead.details.proofId, changes: [{ action: "replace", anchor: consumedAnchor, lines: "CHANGED" }] } as never,
+		{ path: "target.txt", proof_id: explicitRead.details.proofId, changes: [{ action: "replace", anchors: [consumedAnchor], lines: "CHANGED" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -1547,9 +1547,9 @@ test("apply tool attaches a commit-bound change preview instead of a full-file d
 			path: "target.txt",
 			proof_id: read.details.proofId,
 			changes: [
-				{ action: "replace", anchor: anchorAt(2), lines: "TWO\nTWO2" },
-				{ action: "replace", anchor: anchorAt(5) },
-				{ action: "insert_after", anchor: anchorAt(4), lines: "N" },
+				{ action: "replace", anchors: [anchorAt(2)], lines: "TWO\nTWO2" },
+				{ action: "replace", anchors: [anchorAt(5)], lines: "" },
+				{ action: "insert_after", anchors: [anchorAt(4)], lines: "N" },
 			],
 		} as never,
 		undefined,
@@ -1592,7 +1592,7 @@ test("no-op apply carries an empty commit-bound preview", async (t) => {
 
 	const noop = await applyTool.execute(
 		"apply",
-		{ path: "target.txt", proof_id: read.details.proofId, changes: [{ action: "replace", anchor, lines: "two" }] } as never,
+		{ path: "target.txt", proof_id: read.details.proofId, changes: [{ action: "replace", anchors: [anchor], lines: "two" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -1623,8 +1623,8 @@ test("text boundary edits return anchors usable without an intervening read", as
 			const anchor = read.details.read!.lines[0]!.anchor;
 			const lines = fixture.text === "" ? "\n" : fixture.text;
 			const changes = fixture.insert
-				? [{ action: "insert_after" as const, anchor, lines }]
-				: [{ action: "replace" as const, anchor, lines }];
+				? [{ action: "insert_after" as const, anchors: [anchor], lines }]
+				: [{ action: "replace" as const, anchors: [anchor], lines }];
 			const applied = await applyTool.execute("apply", {
 				path: "target.txt", proof_id: read.details.proofId, changes,
 			} as never, undefined, undefined, context);
@@ -1635,7 +1635,7 @@ test("text boundary edits return anchors usable without an intervening read", as
 			assert.ok(applied.details.proofId);
 			const next = await applyTool.execute("continue", {
 				path: "target.txt", proof_id: applied.details.proofId,
-				changes: [{ action: "replace", anchor: updated.anchor, lines: "verified" }],
+				changes: [{ action: "replace", anchors: [updated.anchor], lines: "verified" }],
 			} as never, undefined, undefined, context);
 			assert.equal(next.details.disposition, "succeeded", next.content[0]?.text);
 			const reread = await readTool.execute("verify", { path: "target.txt", windows: [{ offset: 1, limit: 160 }] } as never, undefined, undefined, context);
@@ -1658,8 +1658,8 @@ test("text boundary rejections preserve the file and provide input-specific guid
 	const second = read.details.read!.lines[1]!.anchor;
 	const nul = await applyTool.execute("nul", {
 		path: "target.txt", proof_id: read.details.proofId, changes: [
-			{ action: "replace", anchor: first, lines: "changed" },
-			{ action: "replace", anchor: second, lines: "new\u0000text" },
+			{ action: "replace", anchors: [first], lines: "changed" },
+			{ action: "replace", anchors: [second], lines: "new\u0000text" },
 		],
 	} as never, undefined, undefined, context);
 	assert.equal(nul.details.disposition, "rejected");
@@ -1667,7 +1667,7 @@ test("text boundary rejections preserve the file and provide input-specific guid
 	assert.equal(await readFile(target, "utf8"), "old\nkeep\n");
 	const bom = await applyTool.execute("bom", {
 		path: "target.txt", proof_id: read.details.proofId,
-		changes: [{ action: "replace", anchor: first, lines: "\uFEFFnew" }],
+		changes: [{ action: "replace", anchors: [first], lines: "\uFEFFnew" }],
 	} as never, undefined, undefined, context);
 	assert.equal(bom.details.disposition, "rejected");
 	assert.match(bom.content[0]?.text ?? "", /reinterpret leading U\+FEFF text as a UTF-8 BOM/);
@@ -1704,8 +1704,8 @@ test("read tool merges multi-window reads into one proof and rejects oversized m
 	const applyResult = await applyTool.execute("apply", {
 		path: "target.txt", proof_id: merged.details.proofId,
 		changes: [
-			{ action: "replace", anchor: lineTwelve, lines: "edited twelve" },
-			{ action: "replace", anchor: lineHundredOne, lines: "edited one-oh-one" },
+			{ action: "replace", anchors: [lineTwelve], lines: "edited twelve" },
+			{ action: "replace", anchors: [lineHundredOne], lines: "edited one-oh-one" },
 		],
 	} as never, undefined, undefined, context);
 	assert.equal(applyResult.details.disposition, "succeeded");
@@ -1734,8 +1734,8 @@ test("apply keeps verified spans compact while a truncated span falls back to a 
 	const mixed = await applyTool.execute("apply", {
 		path: "target.txt", proof_id: read.details.proofId,
 		changes: [
-			{ action: "replace", anchor: smallAnchor, lines: "small a\nsmall b" },
-			{ action: "replace", anchor: bulkAnchor, lines: bulkLines },
+			{ action: "replace", anchors: [smallAnchor], lines: "small a\nsmall b" },
+			{ action: "replace", anchors: [bulkAnchor], lines: bulkLines },
 		],
 	} as never, undefined, undefined, context);
 	assert.equal(mixed.details.disposition, "succeeded");
@@ -1753,8 +1753,8 @@ test("apply keeps verified spans compact while a truncated span falls back to a 
 	const followUp = await applyTool.execute("apply", {
 		path: "target.txt", proof_id: mixed.details.proofId,
 		changes: [
-			{ action: "replace", anchor: compactAnchor, lines: "final small" },
-			{ action: "replace", anchor: shownBulkAnchor, lines: "final bulk" },
+			{ action: "replace", anchors: [compactAnchor], lines: "final small" },
+			{ action: "replace", anchors: [shownBulkAnchor], lines: "final bulk" },
 		],
 	} as never, undefined, undefined, context);
 	assert.equal(followUp.details.disposition, "succeeded");
@@ -1777,8 +1777,8 @@ test("disjoint changes recover all missing ranges before an explicit batch retry
 	const read = await search.execute("search", { path: "target.txt", pattern: "^row-(1|3|4|1598|1600)$" } as never, undefined, undefined, context);
 	const anchor = (n: number) => read.details.read!.lines.find((line) => line.line === n)!.anchor;
 	const changes = [
-		{ action: "replace" as const, anchor: anchor(1), end_anchor: anchor(4), lines: "first" },
-		{ action: "replace" as const, anchor: anchor(1598), end_anchor: anchor(1600), lines: "last" },
+		{ action: "replace" as const, anchors: [anchor(1), anchor(4)], lines: "first" },
+		{ action: "replace" as const, anchors: [anchor(1598), anchor(1600)], lines: "last" },
 	];
 	const recovered = await apply.execute("recover", { path: "target.txt", proof_id: read.details.proofId, changes } as never, undefined, undefined, context);
 	assert.equal(recovered.details.disposition, "rejected");
@@ -1803,22 +1803,22 @@ test("historical ranges never consume inserted or replaced interior lines, but s
 			const initial = await call(HLEDIT_READ_ANCHORS_TOOL, { path, windows: [{ offset: 1, limit: 160 }] });
 			const [first, middle, last] = initial.details.read!.lines;
 			const changes = operation === "insert_after"
-				? [{ action: "insert_after" as const, anchor: first!.anchor, lines: "inserted" }]
+				? [{ action: "insert_after" as const, anchors: [first!.anchor], lines: "inserted" }]
 				: operation === "replace"
-					? [{ action: "replace" as const, anchor: middle!.anchor, lines: "changed" }]
-					: [{ action: "replace" as const, anchor: middle!.anchor }];
+					? [{ action: "replace" as const, anchors: [middle!.anchor], lines: "changed" }]
+					: [{ action: "replace" as const, anchors: [middle!.anchor], lines: "" }];
 			const edited = await call(HLEDIT_APPLY_FILE_CHANGES_TOOL, { path, proof_id: initial.details.proofId, changes });
 			assert.equal(edited.details.disposition, "succeeded");
 			const before = await readFile(join(directory, path), "utf8");
 			const blocked = await call(HLEDIT_APPLY_FILE_CHANGES_TOOL, { path, proof_id: initial.details.proofId,
-				changes: [{ action: "replace", anchor: first!.anchor, end_anchor: last!.anchor }] });
+				changes: [{ action: "replace", anchors: [first!.anchor, last!.anchor], lines: "" }] });
 			assert.equal(blocked.details.disposition, "rejected");
 			assert.equal(blocked.details.error?.code, operation === "insert_after" ? "target_changed" : "target_consumed");
 			assert.equal(blocked.details.error?.nextAction, "relocate_target");
 			assert.equal(blocked.details.recoveredReads, undefined);
 			assert.equal(await readFile(join(directory, path), "utf8"), before);
 			const survivor = await call(HLEDIT_APPLY_FILE_CHANGES_TOOL, { path, proof_id: initial.details.proofId,
-				changes: [{ action: "replace", anchor: last!.anchor, lines: "THREE" }] });
+				changes: [{ action: "replace", anchors: [last!.anchor], lines: "THREE" }] });
 			assert.equal(survivor.details.disposition, "succeeded");
 		});
 	}

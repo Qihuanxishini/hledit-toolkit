@@ -40,12 +40,12 @@ test("decodeFileChangeInput converts unified changes in file order", () => {
 	const decoded = decodeFileChangeInput({
 		path: "src/a.ts",
 		changes: [
-			{ action: "replace", anchor: "1#BHJ", end_anchor: "1#BHJ", lines: "first\r\nsecond\r\n" },
-			{ action: "replace", anchor: "2#DEL" }, // 删除单行
-			{ action: "insert_before", anchor: "3#BJM", lines: "inserted\n" },
-			{ action: "insert_after", anchor: "2#BJL", lines: "first\n\n" },
-			{ action: "replace", anchor: "4#BMO", lines: "\n" }, // 单行空行
-			{ action: "replace", anchor: "5#BNP", lines: "" }, // 显式空字符串即删除
+			{ action: "replace", anchors: ["1#BHJ"], lines: "first\r\nsecond\r\n" },
+			{ action: "replace", anchors: ["2#DEL"], lines: "" }, // 删除单行
+			{ action: "insert_before", anchors: ["3#BJM"], lines: "inserted\n" },
+			{ action: "insert_after", anchors: ["2#BJL"], lines: "first\n\n" },
+			{ action: "replace", anchors: ["4#BMO"], lines: "\n" }, // 单行空行
+			{ action: "replace", anchors: ["5#BNP", "6#BQR"], lines: "" }, // 删除连续范围
 		],
 	});
 	assert.deepEqual(decoded, { params: { path: "src/a.ts", changes: [
@@ -54,7 +54,7 @@ test("decodeFileChangeInput converts unified changes in file order", () => {
 		{ operation: "insert_before", anchor: "3#BJM", lines: ["inserted"] },
 		{ operation: "insert_after", anchor: "2#BJL", lines: ["first", ""] },
 		{ operation: "replace", start_anchor: "4#BMO", end_anchor: "4#BMO", lines: [""] },
-		{ operation: "replace", start_anchor: "5#BNP", end_anchor: "5#BNP", lines: [] },
+		{ operation: "replace", start_anchor: "5#BNP", end_anchor: "6#BQR", lines: [] },
 	] } });
 });
 
@@ -64,16 +64,16 @@ test("decodeFileChangeInput preserves lone carriage returns as source text", () 
 		["first\r", ["first\r"]],
 		["first\r\r\nsecond\n", ["first\r", "second"]],
 	] as const) {
-		assert.deepEqual(decodeFileChangeInput({ path: "src/a.ts", changes: [{ action: "insert_after", anchor: "1#BHJ", lines: text }] }), {
+		assert.deepEqual(decodeFileChangeInput({ path: "src/a.ts", changes: [{ action: "insert_after", anchors: ["1#BHJ"], lines: text }] }), {
 			params: { path: "src/a.ts", changes: [{ operation: "insert_after", anchor: "1#BHJ", lines }] },
 		});
 	}
-	const oversized = decodeFileChangeInput({ path: "src/a.ts", changes: [{ action: "insert_after", anchor: "1#BHJ", lines: "a".repeat(MAX_REPLACEMENT_TEXT_BYTES) + "\r" }] });
+	const oversized = decodeFileChangeInput({ path: "src/a.ts", changes: [{ action: "insert_after", anchors: ["1#BHJ"], lines: "a".repeat(MAX_REPLACEMENT_TEXT_BYTES) + "\r" }] });
 	assert.ok("error" in oversized);
 });
 
 test("decodeFileChangeInput enforces aggregate UTF-8 and produced-line limits", () => {
-	const decodeText = (lines: string) => decodeFileChangeInput({ path: "src/a.ts", changes: [{ action: "insert_after", anchor: "1#BHJ", lines }] });
+	const decodeText = (lines: string) => decodeFileChangeInput({ path: "src/a.ts", changes: [{ action: "insert_after", anchors: ["1#BHJ"], lines }] });
 	const oversizedBytes = decodeText("🙂".repeat(300_000));
 	assert.match("error" in oversizedBytes ? oversizedBytes.error : "", /changes\[0\] pushes the batch past the 1 MiB canonical UTF-8 replacement limit/);
 	const canonicalAtLimit = decodeText("a".repeat(MAX_REPLACEMENT_TEXT_BYTES) + "\n");
@@ -95,20 +95,24 @@ test("prepareFileChangeArguments validates changes and rejects invalid fields", 
 		assert.deepEqual(args, original);
 		return validateToolArguments(tool, { type: "toolCall", id: "shape", name: tool.name, arguments: prepared });
 	};
-	const item = { action: "replace" as const, anchor: "12#Ab1", lines: "x" };
+	const item = { action: "replace" as const, anchors: ["12#Ab1"], lines: "x" };
 	const cases: [args: unknown, message: RegExp][] = [
 		[{ ...base, replace_ranges: [{ start_anchor: "12#Ab1", end_anchor: "12#Ab1", lines: "x" }] }, /Grouped arrays.*are no longer supported/],
-		[{ ...base, changes: [{ action: "delete", anchor: "12#Ab1" }] }, /changes\[0\]\.action must be one of 'replace', 'insert_before', 'insert_after'/],
-		[{ ...base, changes: [{ action: "replace", anchor: "12#Ab1", extra: "no" }] }, /changes\[0\] \(replace\) was rejected: must not carry extra/],
-		[{ ...base, changes: [{ action: "insert_before", anchor: "12#Ab1", end_anchor: "13#Ab2", lines: "x" }] }, /changes\[0\] \(insert_before\) was rejected: must not carry end_anchor/],
-		[{ ...base, changes: [{ action: "insert_before", anchor: "12#Ab1" }] }, /changes\[0\] \(insert_before\) requires a non-empty lines string/],
-		[{ ...base, changes: [{ action: "insert_after", anchor: "12#Ab1", lines: "" }] }, /changes\[0\] \(insert_after\) requires a non-empty lines string/],
-		[{ ...base, changes: [{ action: "replace", anchor: "12#Ab1", lines: null }] }, /changes\[0\]\.lines must be a raw text string when provided; omit or pass "" to delete/],
-		[{ ...base, changes: [{ action: "replace", anchor: "12#Ab1", end_anchor: null }] }, /changes\[0\]\.end_anchor must be a string anchor token when provided/],
-		[{ ...base, changes: [{ action: "insert_after", anchor: "12#Ab1", lines: null }] }, /changes\[0\] \(insert_after\) requires a non-empty lines string/],
-		[{ ...base, changes: [{ anchor: "12#Ab1", lines: "x" }] }, /changes\[0\]\.action must be one of/],
+		[{ ...base, changes: [{ ...item, action: "delete" }] }, /changes\[0\]\.action must be one of 'replace', 'insert_before', 'insert_after'/],
+		[{ ...base, changes: [{ ...item, extra: "no" }] }, /changes\[0\] \(replace\) was rejected: must not carry extra/],
+		[{ ...base, changes: [{ action: "insert_before", anchor: "12#Ab1", lines: "x" }] }, /must not carry anchor/],
+		[{ ...base, changes: [{ ...item, end_anchor: "13#Ab2" }] }, /must not carry end_anchor/],
+		[{ ...base, changes: [{ ...item, action: "insert_before", anchors: ["12#Ab1", "13#Ab2"] }] }, /requires exactly one anchor/],
+		[{ ...base, changes: [{ ...item, action: "insert_after", lines: "" }] }, /requires a non-empty lines string/],
+		[{ ...base, changes: [{ action: "replace", anchors: ["12#Ab1"] }] }, /lines must be a raw text string; use "" to delete/],
+		[{ ...base, changes: [{ ...item, lines: null }] }, /lines must be a raw text string/],
+		[{ ...base, changes: [{ ...item, action: "insert_after", lines: null }] }, /lines must be a raw text string/],
+		[{ ...base, changes: [{ anchors: ["12#Ab1"], lines: "x" }] }, /changes\[0\]\.action must be one of/],
 		[{ ...base, changes: ["12#Ab1"] }, /changes\[0\] must be an object/],
-		[{ ...base, changes: [{ action: "replace", anchor: 12 }] }, /changes\[0\]\.anchor must be a string anchor token/],
+		[{ ...base, changes: [{ ...item, anchors: [12] }] }, /anchors\[0\] must be a string anchor token/],
+		[{ ...base, changes: [{ ...item, anchors: ["12#Ab1", "12#Ab1"] }] }, /repeats the same token/],
+		...([undefined, null, [], ["12#Ab1", "13#Ab2", "14#Ab3"]].map((anchors): [unknown, RegExp] =>
+			[{ ...base, changes: [{ ...item, anchors }] }, /anchors must be an array of 1-2 anchor tokens/])),
 		[{ ...base, changes: undefined }, /changes must be an array/],
 		[{ ...base, changes: [] }, /1-200 items in changes/],
 		[{ ...base, changes: Array(201).fill(item) }, /1-200 items in changes/],
@@ -128,10 +132,10 @@ test("prepareFileChangeArguments validates changes and rejects invalid fields", 
 	const valid: FileChangeInput = {
 		path: "src/a.ts", proof_id: "p.1",
 		changes: [
-			{ action: "replace", anchor: "12#Ab1", lines: "x" },
-			{ action: "replace", anchor: "13#Ab2" }, // 删除单行
-			{ action: "insert_before", anchor: "14#Ab3", lines: "before" },
-			{ action: "insert_after", anchor: "15#Ab4", lines: "after" },
+			{ action: "replace", anchors: ["12#Ab1"], lines: "x" },
+			{ action: "replace", anchors: ["13#Ab2"], lines: "" }, // 删除单行
+			{ action: "insert_before", anchors: ["14#Ab3"], lines: "before" },
+			{ action: "insert_after", anchors: ["15#Ab4"], lines: "after" },
 		],
 	};
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, valid), true);

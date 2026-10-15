@@ -16,6 +16,12 @@ fn re2_expression(pattern: &str) -> Result<String, String> {
     while let Some(c) = chars.next() {
         if c == '\\' {
             let escaped = chars.next().ok_or("trailing backslash")?;
+            // [喵喵喵]: RE2 拒绝单个非零八进制数字作为反向引用，但仍接受两至三位八进制转义。
+            if matches!(escaped, '1'..='7') && !matches!(chars.peek(), Some('0'..='7')) {
+                return Err(format!(
+                    "invalid RE2 escape: \\{escaped} (backreferences are not supported)"
+                ));
+            }
             if matches!(escaped, 'u' | 'U') || (in_class && matches!(escaped, 'b' | 'B' | 'Q')) {
                 return Err(format!("invalid RE2 escape: \\{escaped}"));
             }
@@ -234,6 +240,26 @@ mod tests {
             let matcher = compile(pattern, false, false).unwrap();
             assert!(matcher.regex.is_match(included), "{pattern}");
             assert!(!matcher.regex.is_match(excluded), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn numeric_escapes_reject_backreferences_but_preserve_re2_octal() {
+        for pattern in [r"(a)\1", r"[\1]", r"\18"] {
+            assert!(compile(pattern, false, false).is_err(), "{pattern}");
+        }
+        for (pattern, text) in [
+            (r"\0", "\0"),
+            (r"\12", "\n"),
+            (r"\1234", "S4"),
+            (r"[\12]", "\n"),
+            (r"\\1", r"\1"),
+            (r"\Q\1\E", r"\1"),
+        ] {
+            assert!(
+                compile(pattern, false, false).unwrap().regex.is_match(text),
+                "{pattern}"
+            );
         }
     }
 }

@@ -151,7 +151,7 @@ test("renderHleditCall hyperlinks paths when the terminal supports them", () => 
 
 test("renderHleditCall includes changed range and operation count", () => {
 	assert.deepEqual(
-		render(renderHleditCall("apply_file_changes", { path: "src/a.ts", changes: [{ action: "replace", anchor: "4#AAB", end_anchor: "6#BBK" }] }, theme)),
+		render(renderHleditCall("apply_file_changes", { path: "src/a.ts", changes: [{ action: "replace", anchors: ["4#AAB", "6#BBK"], lines: "" }] }, theme)),
 		["apply changes src/a.ts:4-6（1 项操作）"],
 	);
 });
@@ -161,7 +161,7 @@ test("renderHleditCall preserves separate ranges for multiple operations", () =>
 		render(
 			renderHleditCall(
 				"apply_file_changes",
-				{ path: "src/a.ts", changes: [{ action: "replace", anchor: "484#BBK", end_anchor: "489#CCL" }, { action: "insert_before", anchor: "482#AAB", lines: "inserted" }] },
+				{ path: "src/a.ts", changes: [{ action: "replace", anchors: ["484#BBK", "489#CCL"], lines: "" }, { action: "insert_before", anchors: ["482#AAB"], lines: "inserted" }] },
 				theme,
 			),
 		),
@@ -248,13 +248,13 @@ for (const text of ["x".repeat(30_000), "字🙂e\u0301".repeat(2_000)]) {
 	}
 }
 
-test("renderReadAnchorsResult expands structured continuation details", () => {
+test("renderReadAnchorsResult limits continuation to the requested range", () => {
     const lines = [
         { line: 8, anchor: "8#AAB", text: "first", textTruncated: false },
         { line: 9, anchor: "9#BBK", text: "second", textTruncated: false },
     ];
     const result: TextResult = {
-        content: [{ type: "text", text: "8#AAB:first\n9#BBK:second\n-- showing lines 8-9 of 20; use offset 10 to continue --" }],
+        content: [{ type: "text", text: "8#AAB:first\n9#BBK:second\n-- Showing lines 8-9 of 20; requested range complete --" }],
         details: {
             disposition: "succeeded",
             read: {
@@ -272,9 +272,14 @@ test("renderReadAnchorsResult expands structured continuation details", () => {
     };
     const output = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "notes.txt" } }), 80);
 
-    assert.equal(output[0], "↳ 2 行锚点 • 第 8-9 行 / 共 20 行 • 下一页从第 10 行开始");
+    assert.equal(output[0], "↳ 2 行锚点 • 第 8-9 行 / 共 20 行");
     assert.ok(output.includes("8#AAB │ first"));
-    assert.ok(output.some((line) => line.includes("继续读取请使用 windows: [{ offset: 10, limit: 2 }]")));
+    assert.doesNotMatch(output.join("\n"), /下一页|继续读取/);
+
+    result.details.read!.requested.limit = 4;
+    const incomplete = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "notes.txt" } }), 80);
+    assert.equal(incomplete[0], "↳ 2 行锚点 • 第 8-9 行 / 共 20 行 • 下一页从第 10 行开始");
+    assert.ok(incomplete.some((line) => line.includes("继续读取请使用 windows: [{ offset: 10, limit: 2 }]")));
 });
 
 test("renderReadAnchorsResult folds structured errors to the actionable message", () => {

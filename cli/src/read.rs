@@ -120,8 +120,9 @@ pub fn context(lines: &[&str], requested_start: usize, requested_end: usize) -> 
     let start = requested_start.min(requested_end).min(lines.len());
     let end = requested_start.max(requested_end).min(lines.len());
     let offset = start.saturating_sub(2).max(1);
-    let desired = end - offset + 3;
-    let limit = desired.min(20).min(lines.len() - offset + 1);
+    // [喵喵喵]: EOF 之后不存在的上下文不占预算，只有实际可返回的行被预算裁掉才算截断。
+    let desired = end.saturating_add(2).min(lines.len()) - offset + 1;
+    let limit = desired.min(20);
     let mut page = Page::new(4096);
     for (index, text) in lines.iter().enumerate().skip(offset - 1).take(limit) {
         if !page.append(index + 1, text) || page.source_truncated() {
@@ -237,4 +238,20 @@ pub fn run(
         result.as_object_mut().unwrap().remove("nextOffset");
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::context;
+
+    #[test]
+    fn context_clamps_to_eof_before_applying_the_line_budget() {
+        for total in [19, 20, 21] {
+            let lines = vec!["short"; total];
+            let result = context(&lines, 1, total);
+            assert_eq!(result["desiredLimit"], total);
+            assert_eq!(result["limit"], total.min(20));
+            assert_eq!(result["truncated"], total > 20);
+        }
+    }
 }

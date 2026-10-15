@@ -52,7 +52,7 @@ pi-hledit-diff/
 
 三个工具的路径在进入 CLI 与 canonical queue 前统一经 `normalizeToolPath` 处理：展开 `~` / `~/`（Windows 也支持 `~\`）、去除 `@` 前缀并转换 Windows MSYS 盘符。
 
-read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArguments` 依次执行可选 null 归一化、`Value.Convert` 和 schema 校验；整数转换可能接受数字字符串并截断小数，因此范围约束作用于转换后的值，不承诺拒绝所有原始非整数输入。插件不额外引入严格数值策略。apply 使用单一 `changes` 数组，项由 `action` 枚举表达操作，声明不依赖 Union、`anyOf`、`oneOf` 或受约束采样。`prepareFileChangeArguments` 在宿主转换前诊断项字段、字符串类型与 `changes` 总数，不补值、删字段或改写操作；`changes` 缺失或为 null 必须拒绝。锚点格式、path/proof 与顶层额外字段仍由宿主 schema 拒绝，decoder 保留形状检查及文本拆分与聚合限制。
+read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArguments` 依次执行可选 null 归一化、`Value.Convert` 和 schema 校验；整数转换可能接受数字字符串并截断小数，因此范围约束作用于转换后的值，不承诺拒绝所有原始非整数输入。插件不额外引入严格数值策略。apply 使用单一 `changes` 数组，各项统一必填 `action`、`anchors`、`lines`；普通字符串数组用长度表达单锚点或首尾区间，不依赖可选字段、Union、`anyOf`、`oneOf` 或受约束采样。`prepareFileChangeArguments` 在宿主转换前诊断项字段、锚点数组长度和元素原始字符串类型、文本类型与 `changes` 总数，不补值、删字段或改写操作；`changes` 缺失或为 null 必须拒绝。锚点格式、path/proof 与顶层额外字段仍由宿主 schema 拒绝，decoder 保留形状检查及文本拆分与聚合限制。
 
 ### `hledit_read_anchors`
 
@@ -111,10 +111,10 @@ read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArgument
   path: string,
   proof_id: string,
   changes: [
-    { action: "replace", anchor: "12#aB3", end_anchor: "18#xY7", lines: "new line\nanother line" },
-    { action: "replace", anchor: "24#nK2", end_anchor: "29#Qw_" },
-    { action: "insert_before", anchor: "30#xY7", lines: "before" },
-    { action: "insert_after", anchor: "31#Qw_", lines: "after" }
+    { action: "replace", anchors: ["12#aB3", "18#xY7"], lines: "new line\nanother line" },
+    { action: "replace", anchors: ["24#nK2", "29#Qw_"], lines: "" },
+    { action: "insert_before", anchors: ["30#xY7"], lines: "before" },
+    { action: "insert_after", anchors: ["31#Qw_"], lines: "after" }
   ]
 }
 ```
@@ -122,9 +122,9 @@ read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArgument
 规则：
 
 - 一次调用只修改一个文件，并包含该文件全部非冲突 change；所有锚点基于同一批编辑前的快照，不按前项修改后的行号重新计算；
-- 范围包含首尾，单行范围可省略 `end_anchor`。`replace` 按指定范围消费原行，允许一行变多行及在输出中保留原行；缺省 `lines` 或传空字符串表示删除目标范围；insert 不消费依附行。不猜测业务代码块，不自动扩大范围或转换操作；
-- `lines` 接受换行分隔字符串；一个末尾换行只终止末行，无末尾换行也合法；单独一个 `"\n"` 写入一行空行；`replace` 省略 `lines` 或传空字符串代表删除；
-- 单一 `changes` 数组必填，项包含 `action`、`anchor` 等字段，不依赖 anyOf 声明；不接受旧四数组分组，拒绝额外字段；
+- `anchors` 必填，长度为 1–2：单行替换/删除或插入使用一个锚点，多行替换/删除使用 `[start, end]` 闭区间；两个相同 token 会被拒绝，不枚举区间内部行。`replace` 消费原行，允许一行变多行及在输出中保留原行；insert 必须只有一个依附锚点且不消费该行。不猜测业务代码块，不自动扩大范围或转换操作；
+- `lines` 必填，接受换行分隔字符串；一个末尾换行只终止末行，无末尾换行也合法；单独一个 `"\n"` 写入一行空行；`replace` 传空字符串代表删除，insert 的文本必须非空；
+- 单一 `changes` 数组必填，各项只有 `action`、`anchors`、`lines`，不依赖 anyOf 声明；不接受旧四数组分组或 `anchor/end_anchor` 字段，缺省 `lines` 不再表示删除；额外字段一律拒绝，不保留兼容转换；
 - `changes` 数组总计限 1–200 项，replacement 总量限 1 MiB UTF-8，输出总量限 20,000 行；只提交一次原子 CLI batch；
 - 编号与 `changes` 数组下标（`changes[0]`, `changes[1]` 等）1:1 严格对齐，回包紧凑摘要直接引用 `changes[i]`。各项均使用同一编辑前坐标，冲突整批拒绝。内部 canonical changes、CLI wire、proof 和 evidence 格式同步精简。
 - batch stdin request 总大小限 8 MiB；`lines` 与 `proof.anchors` 的每个元素必须是 JSON 字符串，`null` 等类型会被拒绝；
@@ -252,8 +252,8 @@ wrapper 输出上限为 1 MiB，保护异常或不兼容 CLI 输出；单窗口 
 | 文件 | 职责 |
 | --- | --- |
 | `index.ts` | 三工具注册、apply queue 主流程、错误升级与 active-tool 生命周期。 |
-| `src/schema.ts` | 三工具的严格 schema 与参数类型；apply 按操作区分字段，生成与执行使用同一契约。 |
-| `src/prepare-arguments.ts` | apply 的前置字段组合诊断与 execute 边界文本解码、聚合限制。 |
+| `src/schema.ts` | 三工具的 schema 与参数类型；apply 所有动作共用三个必填字段，避免上游严格化改变字段可省略性。 |
+| `src/prepare-arguments.ts` | apply 的前置字段、锚点列表形状诊断与 execute 边界 canonical 解码、文本聚合限制。 |
 | `src/proof-id.ts` | 96 位进程 nonce 与单调序号 proof id 生成器。 |
 | `src/read-transaction.ts` | 单窗口、多窗口和 search CLI、结果校验与 evidence 发布的 canonical queue 事务。 |
 | `src/read-windows.ts` | 多窗口参数、合并契约、实时/重放元数据校验与模型正文。 |
@@ -311,7 +311,7 @@ pi --no-extensions -e ./pi-hledit-diff/index.ts
 
 1. 连续 range read、正则/字面量 search/context 和三种 action（replace 含删除、insert_before/after）的 anchored operation；
 2. 新 proof 链式续编、旧 proof 消费目标拒绝、存续目标迁移、stale 与容量恢复；
-   参数协议变更还须使用现有模型/provider 配置，让模型自行生成三种 action、缺省或空 `lines` 的删除与后续编辑调用；不得用手写参数桥接代替这项验收。
+   参数协议变更还须使用现有模型/provider 配置，让模型自行生成前插、后插、单行/多行替换、显式空 `lines` 删除的混合批次与后续编辑调用；不得用手写参数桥接代替这项验收。
 3. session branch 切换与 `/reload` 后 evidence/active set；
 4. mixed EOL、BOM、trailing newline、中文/emoji preview；
 5. expanded TUI 从 details 显示 anchors，正文格式变化不影响渲染。
@@ -326,4 +326,4 @@ CLI 缺失/2.x/legacy residue fallback、`source_changed_before_commit`、`outco
 4. 不绕过 canonical `withFileMutationQueue()`、read proof 或 CLI 原子 batch。
 5. 不自动 stale 重试，不把旧 proof 的已消费目标改解释成当前同字面 token。
 6. 不解除定向补读的预算上限，也不自动重放补读后的修改：预算是单次工具结果对上下文窗口的唯一约束，那一趟往返是"模型必须看过被消费的行"的执行点。
-7. 修改协议后同步更新 CLI、插件、tracked binary、端到端测试和当前文档。
+7. 公开参数变更同步更新插件、受影响用例和当前文档；仅在 CLI wire 或 Rust 源码需要调整时同步修改 CLI 并重建 tracked binary，不为模型声明形状重写稳定的内部批处理协议。

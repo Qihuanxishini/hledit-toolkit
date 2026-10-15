@@ -40,7 +40,7 @@ export type HleditReadMetadata = {
 	totalMatches?: number;
 };
 
-export type FileChangeAnchorField = "anchor" | "end_anchor";
+export type FileChangeAnchorField = "anchors[0]" | "anchors[1]";
 
 export type HleditStaleAnchor = {
 	changeNumber: number;

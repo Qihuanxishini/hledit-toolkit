@@ -525,9 +525,9 @@ test("applyFileChangesResult exposes validated stale snapshot context", () => {
 
 	assert.match(text, /2#BBK:modified/);
 	assert.match(text, /Review this current snapshot before submitting/);
-	assert.match(text, /explicitly replace anchor with 2#BBK/);
+	assert.match(text, /explicitly replace anchors\[0\] with 2#BBK/);
 	assert.doesNotMatch(text, /Before retrying, call hledit_read_anchors/);
-	assert.match(text, /Field: anchor/);
+	assert.match(text, /Field: anchors\[0\]/);
 	assert.match(text, /Submitted anchor: 2#BHJ/);
 	assert.match(text, /Current line at the same number: 2#BBK:modified/);
 	assert.match(text, /never repairs anchors or retries a batch/);
@@ -535,7 +535,7 @@ test("applyFileChangesResult exposes validated stale snapshot context", () => {
 	assert.deepEqual(result.details.error?.staleAnchors, [
 		{
 			changeNumber: 1,
-			fields: ["anchor"],
+			fields: ["anchors[0]"],
 			requestedAnchor: "2#BHJ",
 			currentAnchor: "2#BBK",
 			currentText: "modified",
@@ -612,10 +612,10 @@ test("model body snapshot: stale rejection with snapshot context and field-level
 		"Error code: stale\n" +
 		"Failed item: changes[0]\n" +
 		"Anchor verification for changes[0]:\n" +
-		"- Field: anchor\n" +
+		"- Field: anchors[0]\n" +
 		"  Submitted anchor: 2#BHJ\n" +
 		"  Current line at the same number: 2#BBK:modified\n" +
-		"  After verifying the intended target, explicitly replace anchor with 2#BBK in a new request.\n" +
+		"  After verifying the intended target, explicitly replace anchors[0] with 2#BBK in a new request.\n" +
 		"This information is for verification only. The tool never repairs anchors or retries a batch automatically.\n" +
 		"Current anchor snapshot at submission time (local span: lines 1-3):\n" +
 		"1#BHJ:one\n" +
@@ -741,12 +741,14 @@ test("failure result constructors preserve disposition and structured errors", (
 
 test("applyFileChangesResult preserves recovery paths for unknown Windows outcomes", () => {
 	const diagnostic = 'write outcome unknown; inspect target "C:/work/file.txt", replacement candidate "C:/work/.hledit-123", and original recovery file "C:/work/.hledit-backup-456"; recovery files were retained';
-	const result = applyFileChangesResult({ stdout: "", stderr: diagnostic, exitCode: 1, started: true });
+	const stdout = `hledit execution was cancelled.\n${"partial output ".repeat(80)}`;
+	const result = applyFileChangesResult({ stdout, stderr: diagnostic, exitCode: 1, started: true });
 	assert.equal(result.details.disposition, "outcome_unknown");
 	assert.match(result.content[0]?.text ?? "", /Do not retry the original request/);
 	assert.match(result.content[0]?.text ?? "", /Do not recreate or overwrite the target/);
 	assert.doesNotMatch(result.content[0]?.text ?? "", /call hledit_read_anchors/i);
 	assert.ok(result.content[0]?.text.includes(diagnostic));
+	assert.ok(result.content[0]?.text.includes(stdout.trimEnd()));
 });
 
 test("applyFileChangesResult reports a restored partial replacement as a zero-write failure", () => {

@@ -13,16 +13,18 @@ const PATH_SCHEMA = Type.String({ minLength: 1, description: "One text file path
 export const CHANGE_ACTIONS = ["replace", "insert_before", "insert_after"] as const;
 export type ChangeAction = typeof CHANGE_ACTIONS[number];
 
-// [喵喵喵]: 单一平铺对象 + 字符串枚举，避免对象 Union 分支属性剥离与枚举丢失；二元操作模型下 replace 涵盖删除，insert 负责依附插入。
+// [喵喵喵]: 所有动作共用必填字段；可变长度 anchors 表达点/区间，避免严格化把可选 end 字段强加给插入。
 const CHANGE_ITEM_SCHEMA = Type.Object({
 	action: Type.Unsafe<ChangeAction>({
 		type: "string",
 		enum: CHANGE_ACTIONS,
 		description: "'replace' (for range replacement or deletion), 'insert_before', or 'insert_after'.",
 	}),
-	anchor: Type.String({ pattern: ANCHOR_PATTERN, description: "Target line anchor (LN#HASH). Start of range for replace; reference line for inserts." }),
-	end_anchor: Type.Optional(Type.String({ pattern: ANCHOR_PATTERN, description: "End of range for multi-line replace. If omitted, defaults to anchor (single line). Must NOT be provided for inserts." })),
-	lines: Type.Optional(Type.String({ description: "Raw text (\\n separated). Omit or pass \"\" for deletion; pass \"\\n\" for one blank line. Required for inserts." })),
+	anchors: Type.Array(Type.String({ pattern: ANCHOR_PATTERN }), {
+		minItems: 1, maxItems: 2,
+		description: "One LN#HASH for inserts or single-line replace; [start, end] for a multi-line inclusive range. Do not repeat a single-line anchor.",
+	}),
+	lines: Type.String({ description: "Raw text (\\n separated). Use \"\" for deletion, \"\\n\" for one blank line. Inserts require non-empty text." }),
 }, STRICT_OBJECT);
 
 export const HLEDIT_READ_ANCHORS_PARAMS_SCHEMA = Type.Object(

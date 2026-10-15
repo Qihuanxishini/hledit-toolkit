@@ -85,7 +85,7 @@ test("anchored editing tools stay active regardless of current read evidence", a
 	assert.ok(applyTool);
 	const prooflessApply = await applyTool.execute(
 		"proofless-apply",
-		{ path: "target.txt", changes: [{ action: "replace", anchor: "1#AAA" }] } as never,
+		{ path: "target.txt", changes: [{ action: "replace", anchors: ["1#AAA"], lines: "" }] } as never,
 		undefined,
 		undefined,
 		context,
@@ -120,7 +120,7 @@ test("anchored editing tools stay active regardless of current read evidence", a
 	const noOpApplyParams = {
 		path: "target.txt",
 		proof_id: successfulRead.details.proofId,
-		changes: [{ action: "replace", anchor: currentAnchor, lines: "two" }],
+		changes: [{ action: "replace", anchors: [currentAnchor], lines: "two" }],
 	} as never;
 
 	branch = [];
@@ -194,7 +194,7 @@ test("search results provide partial proof without a second range read", async (
 		{
 			path: "partial.txt",
 			proof_id: partialRead.details.proofId,
-			changes: [{ action: "replace", anchor: "1#AAA", end_anchor: hitAnchor, lines: "changed" }],
+			changes: [{ action: "replace", anchors: ["1#AAA", hitAnchor], lines: "changed" }],
 		} as never,
 		undefined,
 		undefined,
@@ -209,7 +209,7 @@ test("search results provide partial proof without a second range read", async (
 		{
 			path: "partial.txt",
 			proof_id: uncoveredApply.details.proofId,
-			changes: [{ action: "replace", anchor: hitAnchor, lines: "changed" }],
+			changes: [{ action: "replace", anchors: [hitAnchor], lines: "changed" }],
 		} as never,
 		undefined,
 		undefined,
@@ -236,7 +236,7 @@ test("search results provide partial proof without a second range read", async (
 		{
 			path: "context.txt",
 			proof_id: contextRead.details.proofId,
-			changes: [{ action: "replace", anchor: firstAnchor, end_anchor: lastAnchor, lines: "rewritten" }],
+			changes: [{ action: "replace", anchors: [firstAnchor, lastAnchor], lines: "rewritten" }],
 		} as never,
 		undefined,
 		undefined,

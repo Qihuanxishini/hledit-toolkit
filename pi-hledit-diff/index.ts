@@ -99,11 +99,11 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		exposure: "model-only",
 		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
 		label: "Apply File Changes",
-		description: "Apply one atomic batch of 1-200 changes in one file; requires complete read proof. Pass an ordered changes array with action: 'replace' (replace range, or delete if lines is omitted/\"\"), 'insert_before', or 'insert_after'. No overlapping ranges, inserts inside consumed ranges or duplicate insertion boundaries.",
+		description: "Apply one atomic batch of 1-200 changes in one file; requires complete read proof. Each change has action ('replace', 'insert_before', 'insert_after'), anchors, and lines (\"\" deletes). No overlapping ranges, inserts inside consumed ranges or duplicate insertion boundaries.",
 		promptGuidelines: [
 			"Use hledit_apply_file_changes with proof_id and anchors from the same evidence generation. Reuse verified output anchors with the new proof; read intermediate lines when needed. Old pairs work only for verified surviving targets. Failed reads create no proof.",
 			"In hledit_apply_file_changes, batch independent same-file edits. Keep consumed ranges semantically complete without unrelated lines. Insert preserves its anchor; moving text also requires deletion.",
-			"In hledit_apply_file_changes, for replace without lines (or lines: \"\"), the target range is deleted. For replacement or insertion, one trailing \\n terminates the last line. Use write only for new/empty files or intentional full rewrites permitted by recovery guidance; never bypass proof.",
+			"In hledit_apply_file_changes, replace with lines: \"\" deletes the target. For replacement or insertion, one trailing \\n terminates the last line. Use write only for new/empty files or intentional full rewrites permitted by recovery guidance; never bypass proof.",
 			"After hledit_apply_file_changes, never replay success. Rejected batches made no write; fix the cause and review recovered reads before retrying. Recovery reads do not apply edits. On outcome_unknown, inspect the file and follow recovery guidance before writing.",
 		],
 		parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA,

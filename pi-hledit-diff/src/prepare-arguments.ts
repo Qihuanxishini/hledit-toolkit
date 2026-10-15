@@ -19,11 +19,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const ACTION_ALLOWED_FIELDS: Record<ChangeAction, readonly string[]> = {
-	replace: ["action", "anchor", "end_anchor", "lines"],
-	insert_before: ["action", "anchor", "lines"],
-	insert_after: ["action", "anchor", "lines"],
-};
+const CHANGE_FIELDS = ["action", "anchors", "lines"];
 
 function changeInputRejection(args: unknown): string | undefined {
 	if (!isRecord(args)) return "The apply request must be an object.";
@@ -54,27 +50,28 @@ function changeInputRejection(args: unknown): string | undefined {
 			return `${label}.action must be one of ${CHANGE_ACTIONS.map((a) => `'${a}'`).join(", ")}.`;
 		}
 
-		if (typeof item.anchor !== "string") {
-			return `${label}.anchor must be a string anchor token.`;
-		}
-
-		const allowedFields = ACTION_ALLOWED_FIELDS[action as ChangeAction];
-		const unexpected = Object.keys(item).filter((field) => !allowedFields.includes(field));
+		const unexpected = Object.keys(item).filter((field) => !CHANGE_FIELDS.includes(field));
 		if (unexpected.length > 0) {
-			return `${label} (${action}) was rejected: must not carry ${unexpected.join(" and ")}. Use only ${allowedFields.join(", ")}.`;
+			return `${label} (${action}) was rejected: must not carry ${unexpected.join(" and ")}. Use only ${CHANGE_FIELDS.join(", ")}.`;
 		}
-
-		if (action === "replace") {
-			if (item.end_anchor !== undefined && typeof item.end_anchor !== "string") {
-				return `${label}.end_anchor must be a string anchor token when provided.`;
-			}
-			if (item.lines !== undefined && typeof item.lines !== "string") {
-				return `${label}.lines must be a raw text string when provided; omit or pass \"\" to delete.`;
-			}
-		} else {
-			if (typeof item.lines !== "string" || item.lines.length === 0) {
-				return `${label} (${action}) requires a non-empty lines string.`;
-			}
+		if (!Array.isArray(item.anchors) || item.anchors.length < 1 || item.anchors.length > 2) {
+			return `${label}.anchors must be an array of 1-2 anchor tokens.`;
+		}
+		for (const [anchorIndex, anchor] of item.anchors.entries()) {
+			if (typeof anchor !== "string") return `${label}.anchors[${anchorIndex}] must be a string anchor token.`;
+		}
+		if (action !== "replace" && item.anchors.length !== 1) {
+			return `${label} (${action}) requires exactly one anchor in anchors.`;
+		}
+		// [喵喵喵]: 单行只用一个端点，使 canonical 结果能够准确回指公开参数，而无需另存输入形状。
+		if (item.anchors.length === 2 && item.anchors[0] === item.anchors[1]) {
+			return `${label}.anchors repeats the same token; use one anchor for a single-line replace.`;
+		}
+		if (typeof item.lines !== "string") {
+			return `${label}.lines must be a raw text string; use \"\" to delete.`;
+		}
+		if (action !== "replace" && item.lines.length === 0) {
+			return `${label} (${action}) requires a non-empty lines string.`;
 		}
 	}
 
@@ -117,10 +114,10 @@ export function decodeFileChangeInput(input: FileChangeDecodeInput): FileChangeI
 
 	for (const [index, item] of input.changes.entries()) {
 		if (item.action === "replace") {
-			const start_anchor = item.anchor;
-			const end_anchor = item.end_anchor ?? item.anchor;
-			// [喵喵喵]: lines 缺失或为空字符串即代表删除，映射为 0 行 replacement。
-			if (item.lines === undefined || item.lines === "") {
+			const start_anchor = item.anchors[0]!;
+			const end_anchor = item.anchors[1] ?? start_anchor;
+			// [喵喵喵]: 空字符串表示删除，映射为 0 行 replacement；缺失 lines 已在入口拒绝。
+			if (item.lines === "") {
 				changes.push({ operation: "replace", start_anchor, end_anchor, lines: [] });
 				continue;
 			}
@@ -128,13 +125,9 @@ export function decodeFileChangeInput(input: FileChangeDecodeInput): FileChangeI
 			if ("error" in measured) return { error: measured.error };
 			changes.push({ operation: "replace", start_anchor, end_anchor, lines: measured.lines });
 		} else {
-			// [喵喵喵]: 插入的 lines 必填且非空由前置诊断保证；此处再收窄一次，不用非空断言。
-			if (item.lines === undefined) {
-				return { error: `changes[${index}] (${item.action}) requires a non-empty lines string.` };
-			}
 			const measured = measureReplacement(index, item.lines);
 			if ("error" in measured) return { error: measured.error };
-			changes.push({ operation: item.action, anchor: item.anchor, lines: measured.lines });
+			changes.push({ operation: item.action, anchor: item.anchors[0]!, lines: measured.lines });
 		}
 	}
 

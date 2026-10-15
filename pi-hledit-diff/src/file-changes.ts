@@ -136,9 +136,9 @@ export function formatChangeShapeIssue(issue: ChangeShapeIssue): string {
 	if (issue.code === "reversed_anchor_range") {
 		return [
 			`${reference} was rejected.`,
-			`Received: ${issue.operation} from anchor ${issue.startAnchor} through end_anchor ${issue.endAnchor}, which runs backwards.`,
-			"anchor must not be below end_anchor in the file.",
-			`Swap them: set anchor to ${issue.endAnchor} and end_anchor to ${issue.startAnchor}.`,
+			`Received: ${issue.operation} from anchors[0] ${issue.startAnchor} through anchors[1] ${issue.endAnchor}, which runs backwards.`,
+			"anchors[0] must not be below anchors[1] in the file.",
+			`Swap them: set anchors to [\"${issue.endAnchor}\", \"${issue.startAnchor}\"].`,
 			"Rereading the file cannot resolve this; fix the anchor order and resubmit.",
 		].join("\n");
 	}
@@ -146,7 +146,7 @@ export function formatChangeShapeIssue(issue: ChangeShapeIssue): string {
 		`${reference} was rejected.`,
 		`Line ${issue.replacementLineNumber} of lines begins with ${issue.anchorToken}:, which is hledit_read_anchors display syntax, not file content.`,
 		`Writing it would put the literal text ${issue.anchorToken}: into the file.`,
-		`Remove the leading ${issue.anchorToken}: from that line; lines carries file content only, and anchors belong in the anchor fields.`,
+		`Remove the leading ${issue.anchorToken}: from that line; lines carries file content only, and anchor tokens belong in anchors.`,
 		"Rereading the file cannot resolve this; fix lines and resubmit.",
 	].join("\n");
 }
@@ -156,7 +156,7 @@ export function changeShapeIssueResult(issue: ChangeShapeIssue): TextResult {
 	return rejectedToolResult(`The atomic batch was rejected; no content was written.\n${formatChangeShapeIssue(issue)}`, {
 		code: issue.code,
 		message: issue.code === "reversed_anchor_range"
-			? `${reference} submitted anchor ${issue.startAnchor} below end_anchor ${issue.endAnchor}; swap them instead of rereading.`
+			? `${reference} submitted anchors[0] ${issue.startAnchor} below anchors[1] ${issue.endAnchor}; swap them instead of rereading.`
 			: `${reference} pasted the anchor token ${issue.anchorToken} into lines; strip the prefix instead of rereading.`,
 		changeNumber: issue.changeNumber,
 	});
@@ -171,9 +171,10 @@ export function fileChangeLineRanges(changes: unknown): string | undefined {
 		if (typeof change !== "object" || change === null || Array.isArray(change)) {
 			return [];
 		}
-		const record = change as Record<string, unknown>;
-		const first = lineFromAnchor(record.start_anchor) ?? lineFromAnchor(record.anchor);
-		const last = lineFromAnchor(record.end_anchor);
+		const anchors = (change as Record<string, unknown>).anchors;
+		if (!Array.isArray(anchors) || anchors.length < 1 || anchors.length > 2) return [];
+		const first = lineFromAnchor(anchors[0]);
+		const last = lineFromAnchor(anchors[1]);
 		if (first === undefined && last === undefined) {
 			return [];
 		}

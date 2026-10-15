@@ -10,7 +10,8 @@ import {
 	type HleditRenderTheme,
 } from "./diff-renderer.ts";
 import { fileChangeLineRanges } from "./file-changes.ts";
-import { formatReadWindow, normalizeToolPath } from "./read-args.ts";
+import { normalizeToolPath } from "./read-args.ts";
+import { formatReadContinuation } from "./read-result.ts";
 import { parseUpdatedAnchorSpans, type BatchAnchorContext } from "./post-edit-context.ts";
 import { createHighlightedTextCache, escapeTerminalControls } from "./syntax-highlight.ts";
 import type { HleditErrorMetadata, HleditReadLine, HleditToolKind, TextResult } from "./result.ts";
@@ -214,7 +215,7 @@ export function renderHleditCall(
 		? input.windows.flatMap((window) => isRecord(window) && typeof window.offset === "number" && typeof window.limit === "number"
 			? [formatLineRange(window.offset, window.offset + window.limit - 1)] : []).filter(Boolean).join(", ")
 		: undefined;
-	// [喵喵喵]: 转录展示只认 changes 数组（含更早的 operation/start_anchor 形状）；四数组调用的范围不再展示。
+	// [喵喵喵]: 调用摘要只读当前公开 anchors；不把旧参数形状作为可继续使用的接口展示。
 	const changes = kind === "apply_file_changes" && Array.isArray(input.changes) ? input.changes : undefined;
 	const range = kind === "read_anchors"
 		? windowRanges
@@ -268,6 +269,7 @@ export function renderReadAnchorsResult(
 	if (!read) {
 		return component((width) => [truncateToWidth(theme.fg("warning", "缺少结构化读取结果；请重新读取目标文件"), width, "")]);
 	}
+	const continuation = formatReadContinuation(read);
 	const sourceRowsComponent = createAnchoredPreviewComponent(read.lines, pathFromContext(context), options.expanded, theme);
 	return component((width) => {
 		if (width === 0) return [];
@@ -280,7 +282,7 @@ export function renderReadAnchorsResult(
 				? "↳ 未找到锚点"
 				: `↳ ${theme.bold(String(read.lines.length))} 行锚点`),
 			theme.fg("muted", `• ${actualRange}`),
-			read.nextOffset !== undefined ? theme.fg("warning", `• 下一页从第 ${read.nextOffset} 行开始`) : "",
+			continuation !== undefined ? theme.fg("warning", `• 下一页从第 ${read.nextOffset} 行开始`) : "",
 			read.textTruncated ? theme.fg("warning", "• 行内容已截断") : "",
 			read.eof ? theme.fg("muted", "• 已到文件末尾") : "",
 		].filter(Boolean).join(" ");
@@ -291,10 +293,7 @@ export function renderReadAnchorsResult(
 			theme.fg("dim", "─".repeat(width)),
 			...sourceRowsComponent.render(width),
 		];
-		if (read.nextOffset !== undefined) {
-			const continuation = read.requested.pattern === undefined
-				? formatReadWindow({ offset: read.nextOffset, limit: read.requested.limit })
-				: `offset ${read.nextOffset}`;
+		if (continuation !== undefined) {
 			output.push(truncateToWidth(theme.fg("warning", `继续读取请使用 ${continuation}`), width, ""));
 		}
 		if (read.textTruncated) {

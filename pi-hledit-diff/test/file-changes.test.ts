@@ -44,12 +44,12 @@ test("buildFileChangeRequest omits after for before inserts", () => {
 test("fileChangeLineRanges preserves each operation range", () => {
   assert.equal(
     fileChangeLineRanges([
-      { operation: "replace", start_anchor: "10#BHJ", end_anchor: "12#BBK" },
-      { operation: "insert_after", anchor: "4#JKL" },
+      { action: "replace", anchors: ["10#BHJ", "12#BBK"], lines: "" },
+      { action: "insert_after", anchors: ["4#JKL"], lines: "text" },
     ]),
     "10-12,4",
   );
-  assert.equal(fileChangeLineRanges([{ operation: "replace", start_anchor: "4#JKL", end_anchor: "4#JKL" }]), "4");
+  assert.equal(fileChangeLineRanges([{ action: "replace", anchors: ["4#JKL"], lines: "" }]), "4");
   assert.equal(fileChangeLineRanges([]), undefined);
 });
 
@@ -130,7 +130,7 @@ test("formatChangeShapeIssue tells the model to fix parameters instead of reread
     startAnchor: "9#Ab9",
     endAnchor: "3#Cd1",
   });
-  assert.match(reversed, /Swap them: set anchor to 3#Cd1 and end_anchor to 9#Ab9\./);
+  assert.ok(reversed.includes('Swap them: set anchors to ["3#Cd1", "9#Ab9"].'));
   assert.match(reversed, /Rereading the file cannot resolve this/);
 
   const pasted = formatChangeShapeIssue({

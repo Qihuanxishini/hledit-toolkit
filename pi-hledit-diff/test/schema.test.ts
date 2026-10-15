@@ -21,7 +21,7 @@ test("read and search schemas keep their contracts separate", () => {
 	assert.equal(Value.Check(HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA, { path: "src/a.ts", pattern: "" }), false);
 });
 
-function applyInput(changes: Array<Record<string, unknown>> = [{ action: "replace", anchor: "1#BHJ", lines: "test" }], overrides: Record<string, unknown> = {}) {
+function applyInput(changes: Array<Record<string, unknown>> = [{ action: "replace", anchors: ["1#BHJ"], lines: "test" }], overrides: Record<string, unknown> = {}) {
 	return { path: "src/a.ts", proof_id: "proof-1", changes, ...overrides };
 }
 
@@ -30,29 +30,38 @@ test("read and apply schemas compile", () => {
 	const applyValidator = Compile(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA);
 	assert.equal(readValidator.Check({ path: "src/a.ts", windows: [{ offset: 1, limit: 20 }] }), true);
 	assert.equal(applyValidator.Check(applyInput()), true);
+	const itemSchema = HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA.properties.changes.items;
+	assert.deepEqual(itemSchema.required, ["action", "anchors", "lines"]);
+	assert.deepEqual(Object.keys(itemSchema.properties), itemSchema.required);
 });
 
 test("apply file changes rejects anchors outside the CLI hash alphabet", () => {
 	for (const anchor of ["1#AA", "1#J+0", "1#BHK!", "1#BH", " 1#BHJ", "1 #BHJ", "1#BHJ :text"]) {
-		assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, applyInput([{ action: "replace", anchor }])), false);
+		assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, applyInput([{ action: "replace", anchors: [anchor], lines: "" }])), false);
 	}
 });
 
-test("apply file changes accepts unified changes with action-specific fields", () => {
+test("apply file changes accepts mixed operations with uniform required fields", () => {
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, applyInput([
-		{ action: "replace", anchor: "1#BHJ", end_anchor: "1#BHJ", lines: "next" },
-		{ action: "replace", anchor: "2#BBK" },
-		{ action: "insert_before", anchor: "3#JKL", lines: "before\nafter" },
-		{ action: "insert_after", anchor: "4#MNP", lines: "after\nnext" },
+		{ action: "replace", anchors: ["1#BHJ"], lines: "next" },
+		{ action: "replace", anchors: ["2#BBK"], lines: "" },
+		{ action: "insert_before", anchors: ["3#JKL"], lines: "before\nafter" },
+		{ action: "insert_after", anchors: ["4#MNP"], lines: "after\nnext" },
+		{ action: "replace", anchors: ["5#ABC", "7#DEF"], lines: "range" },
+		{ action: "replace", anchors: ["8#GHI", "9#JKL"], lines: "" },
 	])), true);
 });
 
 test("apply file changes rejects invalid action fields and old shapes", () => {
 	for (const invalid of [
-		applyInput([{ action: "delete", anchor: "1#BHJ" }]),
-		applyInput([{ action: "replace_range", anchor: "1#BHJ" }]),
-		applyInput([{ action: "insert_after", anchor: "1#BHJ", lines: ["array"] }]),
-		applyInput([{ action: "replace", anchor: "1#BHJ", lines: "next", unknown_field: true }]),
+		applyInput([{ action: "delete", anchors: ["1#BHJ"], lines: "" }]),
+		applyInput([{ action: "replace_range", anchors: ["1#BHJ"], lines: "" }]),
+		applyInput([{ action: "insert_after", anchors: ["1#BHJ"], lines: ["array"] }]),
+		applyInput([{ action: "replace", anchors: ["1#BHJ"], lines: "next", unknown_field: true }]),
+		applyInput([{ action: "replace", anchor: "1#BHJ", lines: "" }]),
+		applyInput([{ action: "replace", anchors: ["1#BHJ"], end_anchor: "2#BBK", lines: "" }]),
+		applyInput([{ action: "replace", anchors: ["1#BHJ"] }]),
+		...[[], ["1#BHJ", "2#BBK", "3#JKL"], [null], null].map((anchors) => applyInput([{ action: "replace", anchors, lines: "" }])),
 	]) {
 		assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, invalid), false, JSON.stringify(invalid));
 	}
@@ -61,7 +70,7 @@ test("apply file changes rejects invalid action fields and old shapes", () => {
 test("apply schema requires changes and proof, rejecting extra root properties", () => {
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, applyInput()), true);
 	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, { path: "src/a.ts", proof_id: "p1" }), false);
-	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, { path: "src/a.ts", changes: [{ action: "replace", anchor: "1#BHJ" }] }), false);
+	assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, { path: "src/a.ts", changes: [{ action: "replace", anchors: ["1#BHJ"], lines: "" }] }), false);
 	for (const field of ["replace_ranges", "delete_ranges", "insert_before", "insert_after"]) {
 		assert.equal(Value.Check(HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, applyInput(undefined, { [field]: [] })), false, field);
 	}

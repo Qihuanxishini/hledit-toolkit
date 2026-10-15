@@ -192,7 +192,12 @@ export function waitForHleditProcess(
 		const requestTermination = (run: HleditRun) => {
 			if (settled || terminationRequested) return;
 			terminationRequested = true;
-			terminationResult = run;
+			// [喵喵喵]: 终止原因不能覆盖已收集的输出，其中可能包含人工恢复文件所需的路径。
+			terminationResult = {
+				...run,
+				stdout: [run.stdout, stdout].filter(Boolean).join("\n"),
+				stderr: [run.stderr, stderr].filter(Boolean).join("\n"),
+			};
 			if (timeout) clearTimeout(timeout);
 			options.signal?.removeEventListener("abort", abort);
 			if (processExitConfirmed()) {
@@ -251,7 +256,7 @@ export function waitForHleditProcess(
 		};
 		const onStdinError = (error: Error) => requestTermination({
 			stdout: "Could not send input to hledit; the process was terminated.",
-			stderr: error.message || stderr,
+			stderr: error.message,
 			exitCode: 1,
 		});
 		const onStdout = (chunk: string) => appendOutput("stdout", chunk);

@@ -271,19 +271,23 @@ function parseReadErrorMetadata(parsed: Record<string, unknown>, isSearch: boole
 	};
 }
 
+export function formatReadContinuation(read: HleditReadMetadata): string | undefined {
+	if (read.nextOffset === undefined) return undefined;
+	if (read.requested.pattern !== undefined) return `offset ${read.nextOffset}`;
+	// [喵喵喵]: CLI 的 nextOffset 表示文件还有后续，不等于本次请求尚未完成。
+	const requestedEnd = Math.min(read.actual.totalLines, read.requested.offset + read.requested.limit - 1);
+	return read.nextOffset <= requestedEnd
+		? formatReadWindow({ offset: read.nextOffset, limit: requestedEnd - read.nextOffset + 1 })
+		: undefined;
+}
+
 // 补读路径复用同一份渲染，但省略 proof_id：多页恢复只有一个权威 proof id，
 // 逐页重复输出会让调用方抄到已经作废的那个（见 read-recovery.ts）。
 export function formatReadMetadata(read: HleditReadMetadata, proofId?: string, mode: "read" | "recovery" = "read"): string {
 	const anchoredLines = read.lines.map((line) => `${line.anchor}:${line.text}`);
 	const { firstLine, lastLine, lineCount, totalLines } = read.actual;
 	const pattern = read.requested.pattern;
-	// [喵喵喵]: CLI 的 nextOffset 表示文件还有后续，不等于本次请求尚未完成。
-	const requestedEnd = Math.min(totalLines, read.requested.offset + read.requested.limit - 1);
-	const continuation = read.nextOffset === undefined ? undefined : pattern === undefined
-		? read.nextOffset <= requestedEnd
-			? formatReadWindow({ offset: read.nextOffset, limit: requestedEnd - read.nextOffset + 1 })
-				: undefined
-		: `offset ${read.nextOffset}`;
+	const continuation = formatReadContinuation(read);
 	let notice: string;
 
 	// [喵喵喵]: 补读的下一步由整批协调器统一给出，不能沿用已经完成的中间页续读指令。

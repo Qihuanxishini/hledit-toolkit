@@ -133,6 +133,8 @@ test("abort waits for exit confirmation and does not depend on close", async () 
 	const controller = new AbortController();
 	const runPromise = wait(child, controller.signal);
 	child.emit("spawn");
+	(child.stdout as PassThrough).write("partial output");
+	(child.stderr as PassThrough).write("recovery files were retained: C:/work/.hledit-backup-123");
 	controller.abort();
 	assert.equal(child.killCalls, 1);
 
@@ -145,7 +147,8 @@ test("abort waits for exit confirmation and does not depend on close", async () 
 
 	emitExit(child);
 	const run = await runPromise;
-	assert.equal(run.stdout, "hledit execution was cancelled.");
+	assert.equal(run.stdout, "hledit execution was cancelled.\npartial output");
+	assert.equal(run.stderr, "recovery files were retained: C:/work/.hledit-backup-123");
 	assert.equal(run.started, true);
 	assert.equal(child.stdout.destroyed, true);
 	assert.equal(child.stderr.destroyed, true);

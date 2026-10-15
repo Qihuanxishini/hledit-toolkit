@@ -21,6 +21,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const CHANGE_FIELDS = ["action", "anchors", "lines"];
 
+// [喵喵喵]: 限额拒绝在 CLI 之前返回，需与其它拒绝路径一致地声明零写入并给出下一步。
+const LIMIT_REJECTION_TAIL = " No edit was executed; split the batch into smaller requests and retry.";
+
 function changeInputRejection(args: unknown): string | undefined {
 	if (!isRecord(args)) return "The apply request must be an object.";
 
@@ -68,7 +71,10 @@ function changeInputRejection(args: unknown): string | undefined {
 			return `${label}.anchors repeats the same token; use one anchor for a single-line replace.`;
 		}
 		if (typeof item.lines !== "string") {
-			return `${label}.lines must be a raw text string; use \"\" to delete.`;
+			// [喵喵喵]: delete 与 insert 的合法文本相反，提示不能只给 replace 的取值范围。
+			return action === "replace"
+				? `${label}.lines must be a raw text string; use \"\" to delete.`
+				: `${label}.lines must be a raw text string; ${action} requires non-empty text.`;
 		}
 		if (action !== "replace" && item.lines.length === 0) {
 			return `${label} (${action}) requires a non-empty lines string.`;
@@ -103,11 +109,11 @@ export function decodeFileChangeInput(input: FileChangeDecodeInput): FileChangeI
 			if (lineIndex > 0) replacementBytes++;
 		}
 		if (replacementBytes > MAX_REPLACEMENT_TEXT_BYTES) {
-			return { error: `changes[${index}] pushes the batch past the 1 MiB canonical UTF-8 replacement limit (cumulative across all changes).` };
+			return { error: `changes[${index}] pushes the batch past the 1 MiB canonical UTF-8 replacement limit (cumulative across all changes).${LIMIT_REJECTION_TAIL}` };
 		}
 		producedLines += lines.length;
 		if (producedLines > MAX_REPLACEMENT_LINE_COUNT) {
-			return { error: `changes[${index}] pushes the batch past the ${MAX_REPLACEMENT_LINE_COUNT}-line replacement limit (cumulative across all changes).` };
+			return { error: `changes[${index}] pushes the batch past the ${MAX_REPLACEMENT_LINE_COUNT}-line replacement limit (cumulative across all changes).${LIMIT_REJECTION_TAIL}` };
 		}
 		return { lines };
 	};

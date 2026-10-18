@@ -54,6 +54,10 @@ pi-hledit-diff/
 
 read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArguments` 依次执行可选 null 归一化、`Value.Convert` 和 schema 校验；整数转换可能接受数字字符串并截断小数，因此范围约束作用于转换后的值，不承诺拒绝所有原始非整数输入。插件不额外引入严格数值策略。apply 使用单一 `changes` 数组，各项统一必填 `action`、`anchors`、`lines`；普通字符串数组用长度表达单锚点或首尾区间，不依赖可选字段、Union、`anyOf`、`oneOf` 或受约束采样。`prepareFileChangeArguments` 在宿主转换前诊断项字段、锚点数组长度和元素原始字符串类型、文本类型与 `changes` 总数，不补值、删字段或改写操作；`changes` 缺失或为 null 必须拒绝。锚点格式、path/proof 与顶层额外字段仍由宿主 schema 拒绝，decoder 保留形状检查及文本拆分与聚合限制。
 
+### 协议变更的同步清单
+
+参数与协议语义在四个位置各有表述，改任一处必须同步核对其余：`src/schema.ts`（对外 JSON Schema 与字段描述）、`src/prepare-arguments.ts`（宿主转换前的字段诊断与拒绝文案）、`cli/SPEC.md`（CLI wire、读/批协议语义）与 `cli/src/main.rs`（参数解析、退出码），以及本文件「工具协议与激活」「CLI batch 与结果契约」两节。历史高发缺口是 schema 描述与实际校验不符：只改一边会让模型看到从未生效的约束，或让文档描述一个已移除的限制。
+
 ### `hledit_read_anchors`
 
 ```ts

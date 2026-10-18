@@ -63,7 +63,7 @@ A compatible integration requires CLI 3.x and every positive field above. `conte
 hledit read-range <file> [--offset N] [--limit M]
 ```
 
-`read-range` reads one contiguous source window. `offset` is a 1-indexed physical source line and defaults to `1`; `limit` defaults to `160` and bounds returned source lines. It always returns JSON:
+`read-range` reads one contiguous source window. `offset` is a 1-indexed physical source line and defaults to `1`; `limit` defaults to `160` and bounds returned source lines. A `--limit` of `0` or a negative value is treated as omitted and uses the verb default; a missing, `0` or negative `--offset` is treated as omitted and uses `1`. It always returns JSON:
 
 ```json
 {
@@ -86,13 +86,15 @@ Offset past a non-empty file returns:
 { "ok": false, "error": "range", "message": "offset 500 exceeds file length 120", "requestedOffset": 500, "totalLines": 120 }
 ```
 
+A file with zero lines is rejected by `read-range` instead of returning an empty page: it produces the same `range` error with `totalLines: 0`. `search` on that same file succeeds with `totalMatches: 0`.
+
 ### 3.2 `search`
 
 ```text
 hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N] [--ignore-case]
 ```
 
-`search` is the only search verb. `pattern` uses RE2-compatible syntax by default; `--literal` treats it as a substring. The Rust matcher preserves ASCII Perl classes (`\d`, `\w`, `\s`) and word boundaries, Unicode 15.0 categories and case folding, and rejects lookaround/backreferences. `--ignore-case` enables case folding and `--context N` includes adjacent physical source lines, merging overlapping windows. `offset` is a physical source-line cursor (default `1`), not a match index; `limit` defaults to `100` and bounds returned matching/context lines.
+`search` is the only search verb. `pattern` uses RE2-compatible syntax by default; `--literal` treats it as a substring. The Rust matcher preserves ASCII Perl classes (`\d`, `\w`, `\s`) and word boundaries, Unicode 15.0 categories and case folding, and rejects lookaround/backreferences. Character classes keep RE2's reading rather than Java's: RE2 defines no class set operators, so `[a&&b]` and `[a~~b]` denote the literal characters `&` and `~`. The exception is class difference: `--` is not translated and keeps Rust's difference semantics, which RE2 does not define. `--ignore-case` enables case folding and `--context N` includes adjacent physical source lines, merging overlapping windows. `offset` is a physical source-line cursor (default `1`), not a match index; `limit` defaults to `100` and bounds returned matching/context lines.
 
 ```json
 {
@@ -106,7 +108,7 @@ hledit search <file> <pattern> [--offset N] [--limit M] [--literal] [--context N
 }
 ```
 
-`totalMatches` counts matching lines in the entire file before context expansion, independently of `offset`. The offset is a lower bound on returned source lines; earlier matches may still contribute trailing context. An empty returned page can therefore have a nonzero `totalMatches`. Zero matches in the file return success with `totalMatches:0`, an empty `lines` array, `truncated:false`, and no `nextOffset`. Empty or invalid patterns return `error:"pattern"`. Broad whole-file expressions such as `.*`, `.+`, and their anchored or dot-all variants return `error:"broad_pattern"`; callers must use `read-range` for contiguous source.
+`totalMatches` counts matching lines in the entire file before context expansion, independently of `offset`. The offset is a lower bound on returned source lines; earlier matches may still contribute trailing context. An empty returned page can therefore have a nonzero `totalMatches`. Zero matches in the file return success with `totalMatches:0`, an empty `lines` array, `truncated:false`, and no `nextOffset`. Empty or invalid patterns return `error:"pattern"`. A pattern is classified broad only when an unbounded wildcard repetition (`.`, `.+`, `.{n,}`) has no constraining literal sibling in its concatenation: `.*` and `.+` return `error:"broad_pattern"` while `.*foo` does not, and callers rejected this way must use `read-range` for contiguous source. Expressions that can match the empty string without such a repetition — `^`, `$`, `a*`, `.{0,5}` — are not classified broad; they match every source line by ordinary RE2 matching, so `totalMatches` equals `totalLines`.
 
 `read-range` and `search` reject directories, binary files, and invalid UTF-8 with structured `directory`, `binary`, or `encoding` errors. They cap the serialized JSON page at 50 KiB.
 

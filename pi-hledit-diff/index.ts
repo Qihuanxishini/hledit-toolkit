@@ -99,7 +99,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		exposure: "model-only",
 		annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
 		label: "Apply File Changes",
-		description: "Apply one atomic batch of 1-200 changes in one file; requires complete read proof. Each change has action ('replace', 'insert_before', 'insert_after'), anchors, and lines (\"\" deletes). No overlapping ranges, inserts inside consumed ranges or duplicate insertion boundaries.",
+		description: "Apply one atomic batch of 1-200 changes in one file; requires complete read proof. No overlapping ranges, inserts inside consumed ranges or duplicate insertion boundaries.",
 		promptGuidelines: [
 			"Use hledit_apply_file_changes with proof_id and anchors from the same evidence generation. Reuse verified output anchors with the new proof; read intermediate lines when needed. Old pairs work only for verified surviving targets. Failed reads create no proof.",
 			"In hledit_apply_file_changes, batch independent same-file edits. Keep consumed ranges semantically complete without unrelated lines. Insert preserves its anchor; moving text also requires deletion.",
@@ -163,12 +163,19 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("hledit-status", {
-		description: "检查随扩展附带的 hledit CLI 状态",
+		description: "检查随扩展附带的 hledit CLI 状态；就绪时激活本会话的锚点编辑工具",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => {
 			const run = await runHledit(["capabilities"], undefined, ctx.cwd, undefined);
 			const bin = resolveHleditBin();
 			const capabilities = parseHleditCapabilities(run);
 			if (capabilities) {
+				// [喵喵喵]: 会话中途恢复：仅首次激活时重放分支证据，之后重复执行命令不再全量重放。
+				if (!hleditCapabilitiesAvailable) {
+					readEvidence.restoreFromBranch(ctx);
+					hleditCapabilitiesAvailable = true;
+					warnedHleditUnavailable = false;
+					synchronizeAnchoredTools();
+				}
 				ctx.ui.notify(`hledit 已就绪：${bin}（版本 ${capabilities.version}；支持结构化范围读取、读取证明和提交前 revision 复检）`, "info");
 			} else if (run.exitCode === 0) {
 				ctx.ui.notify(`hledit 版本不兼容：${bin} 未声明所需的结构化读取与原子 batch 能力。\n\n${HLEDIT_INSTALL_HINT}`, "error");

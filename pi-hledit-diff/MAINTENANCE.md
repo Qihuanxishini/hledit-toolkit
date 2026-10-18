@@ -215,9 +215,9 @@ Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标�
 ```
 
 - `findChangeShapeIssue` 在 `selectProof` 之前拦截仅凭请求即可判定的自相矛盾：区间锚点倒置（`reversed_anchor_range`）、`lines` 行首粘贴了本次提交过或当前证据中存在的锚点 token（`anchor_token_in_lines`，在 file queue 内通过 `anchorsRequiringRead(path, [anchor])` 按需查询，不构造或复制全文件锚点集合）。这类问题重读文件无法修复，必须让模型改参数，因此不得落到 `insufficient_read_proof` 的补读指令上；正文明确声明重读无效并给出交换/删前缀的具体动作。检测即拒绝，不自动修正，不在参数预处理阶段改写编辑语义；
-- CLI 冲突诊断中的零基 edit 下标转换为公开的一基 change 编号，保留冲突双方及范围/插入边界原因；指示合并或消除重叠，不引导调用方用重读修复参数冲突；
+- CLI 冲突诊断对外引用公开 changes 数组的零基下标（与模型传入参数 1:1 对齐；内部一基 changeNumber 在输出前减一转换），保留冲突双方及范围/插入边界原因；指示合并或消除重叠，不引导调用方用重读修复参数冲突；
 - 三个工具在 `execute()` 返回边界直接设置 Pi `isError`：插件侧 `insufficient_read_proof` 是可恢复补读结果，设为 `false`；其他非成功结果设为 `true`，包括 `source_line_truncated`、`proof_recovery_read_failed`、`proof_recovery_budget_exceeded` 和 `proof_recovery_source_changed`，要求调用方按失败原因调整动作；
-- 读取错误码全集为 `range` / `binary` / `encoding` / `directory` / `io` / `pattern` / `broad_pattern`，每个码都必须有本地化 message，落到兜底分支等于只把错误码丢给模型；message 本身说不清下一步动作时再补 hint（`range` / `directory` / `pattern` / `broad_pattern`）。`pattern` 转发 CLI 的 RE2 编译原文（出错位置本身就是要改的东西）并点名 RE2 不支持 lookahead/lookbehind/backreference；`broad_pattern` 指向 `hledit_read_anchors`；
+- 读取错误码全集为 `range` / `binary` / `encoding` / `directory` / `io` / `pattern` / `broad_pattern` / `windows_budget_exceeded`，每个码都必须有本地化 message，落到兑底分支等于只把错误码丢给模型；message 本身说不清下一步动作时再补 hint（`range` / `directory` / `pattern` / `broad_pattern`）。`pattern` 转发 CLI 的 RE2 编译原文（出错位置本身就是要改的东西）并点名 RE2 不支持 lookahead/lookbehind/backreference；`broad_pattern` 指向 `hledit_read_anchors`；
 - 读取和写入的 `io` 拒绝保留简洁英文摘要，并在正文追加 `Diagnostic: <rawMessage>`，原样保留操作阶段、系统原文与错误码；`details.error.rawMessage` 和 disposition 不变，不自动重试；
 - revision mismatch 仍为 `stale`，但 `failed:-1` 表示整批版本失效；CLI 从同一当前 snapshot 返回首项请求附近的有界 `currentAnchors` 及该快照的 `totalLines`，不把版本变化说成端点锚点错误。完整 snapshot 供显式复核与续编（`totalLines` 随恢复代登记，使该代保留越界预检，不把越界锚点误导入自动补读），缺失或截断时按请求范围定向重读；stale remap 与 snapshot 均不触发自动修正或重试；
 - `source_changed_before_commit` 是确认零写入；CLI 从未启动使用 `unavailable`；
@@ -307,7 +307,7 @@ npm run check
 pi --no-extensions -e ./pi-hledit-diff/index.ts
 ```
 
-用 `/hledit-status` 确认 CLI 3.4.1 与 capability 健康，并覆盖：
+用 `/hledit-status` 确认 CLI 3.x 与全部 capability 为真，并覆盖：
 
 1. 连续 range read、正则/字面量 search/context 和三种 action（replace 含删除、insert_before/after）的 anchored operation；
 2. 新 proof 链式续编、旧 proof 消费目标拒绝、存续目标迁移、stale 与容量恢复；

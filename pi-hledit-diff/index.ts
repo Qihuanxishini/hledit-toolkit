@@ -38,10 +38,10 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 	let warnedHleditUnavailable = false;
 	let hleditCapabilitiesAvailable = false;
 	const readEvidence = new ReadEvidenceStore();
-	const synchronizeAnchoredTools = () => {
-		if (!hleditCapabilitiesAvailable) return;
+	const synchronizeEditingTools = () => {
 		const activeTools = pi.getActiveTools();
-		const preferredTools = preferAnchoredEditingTools(activeTools);
+		const preferredTools = hleditCapabilitiesAvailable
+			? preferAnchoredEditingTools(activeTools) : preferBuiltInEditFallback(activeTools);
 		if (preferredTools.join("\0") !== activeTools.join("\0")) pi.setActiveTools(preferredTools);
 	};
 
@@ -65,7 +65,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		},
 		async execute(_toolCallId, params, signal, _onUpdate, ctx): Promise<TextResult> {
 			const result = await runReadAnchorsTransaction(params, ctx.cwd, signal, readEvidence, runHledit);
-			synchronizeAnchoredTools();
+			synchronizeEditingTools();
 			return { ...result, isError: shouldMarkHleditResultAsError(result.details) };
 		},
 	});
@@ -89,7 +89,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		},
 		async execute(_toolCallId, params, signal, _onUpdate, ctx): Promise<TextResult> {
 			const result = await runSearchAnchorsTransaction(params, ctx.cwd, signal, readEvidence, runHledit);
-			synchronizeAnchoredTools();
+			synchronizeEditingTools();
 			return { ...result, isError: shouldMarkHleditResultAsError(result.details) };
 		},
 	});
@@ -120,7 +120,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 				return { ...rejectedToolResult(decoded.error, { code: "invalid", message: decoded.error }), isError: true };
 			}
 			const result = await runApplyTransaction(decoded.params, ctx.cwd, signal, readEvidence);
-			synchronizeAnchoredTools();
+			synchronizeEditingTools();
 			return { ...result, isError: shouldMarkHleditResultAsError(result.details) };
 		},
 	});
@@ -140,14 +140,12 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 		hleditCapabilitiesAvailable = capabilities !== undefined;
 		if (capabilities) {
 			readEvidence.restoreFromBranch(ctx);
-			synchronizeAnchoredTools();
+			synchronizeEditingTools();
 			warnedHleditUnavailable = false;
 			return;
 		}
 		readEvidence.clear();
-		const activeTools = pi.getActiveTools();
-		const preferredTools = preferBuiltInEditFallback(activeTools);
-		if (preferredTools.join("\0") !== activeTools.join("\0")) pi.setActiveTools(preferredTools);
+		synchronizeEditingTools();
 		if (!warnedHleditUnavailable) {
 			const message = `hledit is unavailable, so Pi's built-in edit tool remains active. Run /hledit-status for details.\n\n${HLEDIT_INSTALL_HINT}`;
 			if (ctx.hasUI) ctx.ui.notify(message, "warning");
@@ -159,7 +157,7 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 	pi.on("session_tree", (_event, ctx) => {
 		if (!hleditCapabilitiesAvailable) return;
 		readEvidence.restoreFromBranch(ctx);
-		synchronizeAnchoredTools();
+		synchronizeEditingTools();
 	});
 
 	pi.registerCommand("hledit-status", {
@@ -169,18 +167,20 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 			const bin = resolveHleditBin();
 			const capabilities = parseHleditCapabilities(run);
 			if (capabilities) {
-				// [喵喵喵]: 会话中途恢复：仅首次激活时重放分支证据，之后重复执行命令不再全量重放。
-				if (!hleditCapabilitiesAvailable) {
-					readEvidence.restoreFromBranch(ctx);
-					hleditCapabilitiesAvailable = true;
-					warnedHleditUnavailable = false;
-					synchronizeAnchoredTools();
-				}
+				// [喵喵喵]: 仅从不可用状态恢复时重放证据；每次检查成功仍须同步可能被外部改变的工具集合。
+				if (!hleditCapabilitiesAvailable) readEvidence.restoreFromBranch(ctx);
+				hleditCapabilitiesAvailable = true;
+				warnedHleditUnavailable = false;
+				synchronizeEditingTools();
 				ctx.ui.notify(`hledit 已就绪：${bin}（版本 ${capabilities.version}；支持结构化范围读取、读取证明和提交前 revision 复检）`, "info");
-			} else if (run.exitCode === 0) {
-				ctx.ui.notify(`hledit 版本不兼容：${bin} 未声明所需的结构化读取与原子 batch 能力。\n\n${HLEDIT_INSTALL_HINT}`, "error");
 			} else {
-				ctx.ui.notify(`无法启动 hledit：${bin}\n\n${HLEDIT_INSTALL_HINT}`, "error");
+				hleditCapabilitiesAvailable = false;
+				readEvidence.clear();
+				synchronizeEditingTools();
+				const message = run.exitCode === 0
+					? `hledit 版本不兼容：${bin} 未声明所需的结构化读取与原子 batch 能力。\n\n${HLEDIT_INSTALL_HINT}`
+					: `无法启动 hledit：${bin}\n\n${HLEDIT_INSTALL_HINT}`;
+				ctx.ui.notify(message, "error");
 			}
 		},
 	});

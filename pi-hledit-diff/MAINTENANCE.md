@@ -46,7 +46,7 @@ pi-hledit-diff/
 
 三个工具通过普通 JSON Schema 声明参数，由宿主和插件在本地验证，基础调用不要求额外配置模型/provider。CLI 健康时，active set 始终保留这三个工具、移除内置 `edit` 并保留无关工具；`session_tree` 和 `/reload` 后重新同步同一策略。CLI 不可用时恢复内置 `edit`。不存在 `/tools` 假设、动态 evidence 可见性、Plan Mode 联动或内置 `edit` 名称 override。
 
-宿主基线为 Pi 0.99.0。三个工具均声明 `exposure: "model-only"`，保证读写结果进入模型转录并可按 branch 重放；Pi 的嵌套调用记录不保存完整工具结果，不能用于恢复 proof。read/search 的 annotations 声明本地只读，apply 声明本地破坏性写入；权限判断仍由宿主及权限扩展执行。
+宿主基线为 Pi 1.3.0。三个工具均声明 `exposure: "model-only"`，保证读写结果进入模型转录并可按 branch 重放；Pi 的嵌套调用记录不保存完整工具结果，不能用于恢复 proof。read/search 的 annotations 声明本地只读，apply 声明本地破坏性写入；权限判断仍由宿主及权限扩展执行。
 
 当前公开协议按 `JSON.stringify(parameters) + description + promptGuidelines` 计量，回归上限为 6,400 characters。保留准确的操作边界、必要字段语义、proof 与失败恢复规则，不加入示例或重复展开次要细节；精确值由测试和最终验证计量，不在文档中固化。
 

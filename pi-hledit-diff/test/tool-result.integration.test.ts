@@ -1338,7 +1338,6 @@ test("path aliases share the canonical apply queue", async (t) => {
 		undefined,
 		context,
 	);
-	await new Promise((resolveTick) => setImmediate(resolveTick));
 	const staleAnchor = anchorAt(3);
 	const replacePromise = applyTool.execute(
 		"apply-alias",
@@ -1351,7 +1350,13 @@ test("path aliases share the canonical apply queue", async (t) => {
 
 	assert.equal(insertResult.details.disposition, "succeeded");
 	assert.equal(replaceResult.details.disposition, "succeeded");
-	assert.deepEqual(replaceResult.details.resolvedAnchors?.map((rename) => rename.requested), [staleAnchor]);
+	// [喵喵喵]: realpath 的完成顺序不保证发起顺序；proof 链必须证明别名提交在同一队列串行发布。
+	const insertFirst = insertResult.details.baseProofId === read.details.proofId;
+	const [firstResult, secondResult] = insertFirst ? [insertResult, replaceResult] : [replaceResult, insertResult];
+	assert.equal(firstResult.details.baseProofId, read.details.proofId);
+	assert.equal(secondResult.details.baseProofId, firstResult.details.proofId);
+	assert.deepEqual(replaceResult.details.resolvedAnchors?.map((rename) => rename.requested) ?? [], insertFirst ? [staleAnchor] : []);
+	if (insertFirst) assert.match(replaceResult.details.resolvedAnchors?.[0]?.current ?? "", /^4#/);
 	assert.equal(await readFile(target, "utf8"), "one\ninserted\ntwo\nTHREE\n");
 });
 

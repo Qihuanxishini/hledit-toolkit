@@ -379,6 +379,11 @@ export function renderFileChangesResult(
 	});
 
 	const updatedAnchorSpans = parsedDetails.updatedAnchorSpans;
+	const updatedAnchors = options.expanded
+		? updatedAnchorSpans.flatMap((span) => span.lines.map((line) => ({ anchor: line.anchor, lineNumber: line.line, content: line.text })))
+		: [];
+	if (updatedAnchors.length === 0 && !diffWarning && writeWarnings.length === 0) return changeBodyComponent;
+	const updatedAnchorRows = updatedAnchors.length > 0 ? createAnchoredSourceRowsComponent(updatedAnchors, path, theme) : undefined;
 	const spanRanges = updatedAnchorSpans.map((span) => {
 		const last = span.offset + span.desiredLimit - 1;
 		return last === span.offset ? `第 ${span.offset} 行` : `第 ${span.offset}-${last} 行`;
@@ -386,17 +391,11 @@ export function renderFileChangesResult(
 	const updatedAnchorHeading = spanRanges.length === 0
 		? "更新后的锚点（产出区间）"
 		: `更新后的锚点（产出区间：${spanRanges.join("、")}）`;
-	const updatedAnchors = options.expanded
-		? updatedAnchorSpans.flatMap((span) => span.lines.map((line) => ({ anchor: line.anchor, lineNumber: line.line, content: line.text })))
-		: [];
-	const updatedAnchorRows = createAnchoredSourceRowsComponent(updatedAnchors, path, theme);
 	const anchorSpanTruncated = updatedAnchorSpans.some((span) => span.truncated || span.lines.some((line) => line.textTruncated));
-	if (updatedAnchors.length === 0 && !diffWarning && writeWarnings.length === 0) return changeBodyComponent;
-
 	return component((width) => {
 		if (width === 0) return [];
 		const lines = [...changeBodyComponent.render(width)];
-		if (updatedAnchors.length > 0) {
+		if (updatedAnchorRows) {
 			lines.push(
 				"",
 				truncateToWidth(theme.fg("muted", theme.bold(updatedAnchorHeading)), width, ""),
@@ -415,6 +414,6 @@ export function renderFileChangesResult(
 		return lines;
 	}, () => {
 		changeBodyComponent.invalidate();
-		updatedAnchorRows.invalidate();
+		updatedAnchorRows?.invalidate();
 	});
 }

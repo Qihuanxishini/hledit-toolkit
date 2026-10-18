@@ -9,6 +9,7 @@ import { HLEDIT_APPLY_FILE_CHANGES_TOOL, HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH
 import type { TextResult } from "../src/result.ts";
 
 type ExtensionListener = (event: unknown, context: TestContext) => unknown | Promise<unknown>;
+type ExtensionCommand = { handler: (args: string, context: TestContext) => unknown | Promise<unknown> };
 type RegisteredTool = {
 	name: string;
 	execute: (
@@ -36,12 +37,15 @@ type TestContext = {
 function registerActivationHarness() {
 	const tools = new Map<string, RegisteredTool>();
 	const listeners = new Map<string, ExtensionListener>();
+	const commands = new Map<string, ExtensionCommand>();
 	let activeTools = ["read", "edit", "bash"];
 	const pi = {
 		registerTool(tool: RegisteredTool) {
 			tools.set(tool.name, tool);
 		},
-		registerCommand() {},
+		registerCommand(name: string, command: ExtensionCommand) {
+			commands.set(name, command);
+		},
 		on(eventName: string, listener: ExtensionListener) {
 			listeners.set(eventName, listener);
 		},
@@ -55,6 +59,12 @@ function registerActivationHarness() {
 	piHleditDiffExtension(pi as never);
 	return {
 		tools,
+		command(name: string): ExtensionCommand["handler"] {
+			const command = commands.get(name);
+			assert.ok(command, `missing ${name} command`);
+			return command.handler;
+		},
+		setActiveTools: pi.setActiveTools,
 		listener(name: string): ExtensionListener {
 			const listener = listeners.get(name);
 			assert.ok(listener, `missing ${name} listener`);
@@ -156,6 +166,58 @@ test("anchored editing tools stay active regardless of current read evidence", a
 	assert.equal(restoredBranchApply.details.disposition, "succeeded");
 	assert.equal(restoredBranchApply.details.contentChanged, false);
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
+});
+
+test("status resynchronizes tools and restores branch evidence only after recovery", async (t) => {
+	const directory = await mkdtemp(join(process.cwd(), ".status-test-"));
+	t.after(() => rm(directory, { recursive: true, force: true }));
+	const target = join(directory, "target.txt");
+	await writeFile(target, "one\ntwo\n", "utf8");
+	const branch: BranchEntry[] = [];
+	let replays = 0;
+	const notifications: Array<{ message: string; type: string }> = [];
+	const context = {
+		cwd: directory,
+		hasUI: false as const,
+		ui: { notify: (message: string, type: string) => { notifications.push({ message, type }); } },
+		sessionManager: { getBranch: () => { replays++; return branch; } },
+	};
+	const harness = registerActivationHarness();
+	await harness.listener("session_start")({}, context);
+	const expectedTools = harness.activeTools();
+	assert.equal(replays, 1);
+	const readTool = harness.tools.get(HLEDIT_READ_ANCHORS_TOOL)!;
+	const applyTool = harness.tools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
+	const read = await readTool.execute("status-read", { path: target, windows: [{ offset: 2, limit: 1 }] } as never, undefined, undefined, context);
+	assert.equal(read.details.disposition, "succeeded");
+	branch.push({ type: "message", message: { role: "toolResult", toolName: readTool.name, details: read.details } });
+	const params = {
+		path: target, proof_id: read.details.proofId,
+		changes: [{ action: "replace", anchors: [read.details.read!.lines[0]!.anchor], lines: "two" }],
+	} as never;
+	const status = harness.command("hledit-status");
+
+	harness.setActiveTools(["read", "edit", "bash", "custom"]);
+	await status("", context);
+	assert.deepEqual(harness.activeTools(), ["read", "bash", "custom", ...expectedTools.slice(2)]);
+	assert.equal(replays, 1);
+	assert.equal(notifications.at(-1)?.type, "info");
+
+	await status("", { ...context, cwd: join(directory, "missing") });
+	assert.deepEqual(harness.activeTools(), ["read", "bash", "custom", "edit"]);
+	assert.equal(notifications.at(-1)?.type, "error");
+	const invalidated = await applyTool.execute("status-invalidated", params, undefined, undefined, context);
+	assert.equal(invalidated.details.error?.code, "invalid_proof_id");
+
+	await status("", context);
+	assert.equal(replays, 2);
+	assert.deepEqual(harness.activeTools(), ["read", "bash", "custom", ...expectedTools.slice(2)]);
+	await status("", context);
+	assert.equal(replays, 2);
+	const restored = await applyTool.execute("status-restored", params, undefined, undefined, context);
+	assert.equal(restored.details.disposition, "succeeded");
+	assert.equal(restored.details.contentChanged, false);
+	assert.equal(await readFile(target, "utf8"), "one\ntwo\n");
 });
 
 test("search results provide partial proof without a second range read", async (t) => {

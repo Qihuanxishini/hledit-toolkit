@@ -35,6 +35,14 @@ export type FileProofState = {
 	usage: { records: number; bytes: number };
 };
 
+function completeEvidenceLines(rows: readonly HleditReadLine[]): Map<number, EvidenceLine> {
+	const lines = new Map<number, EvidenceLine>();
+	for (const row of rows) {
+		if (!row.textTruncated) lines.set(row.line, { anchor: row.anchor, text: row.text });
+	}
+	return lines;
+}
+
 // [喵喵喵]: 每次提交建立一次前缀位移索引；历史记录只做 O(log edits) 查询，不追逐别名链。
 function coordinateTransform(deltas: readonly HleditEditDelta[]): (line: number) => number | undefined {
 	let sum = 0;
@@ -107,7 +115,7 @@ export class ProofState {
 		if (state) { this.files.delete(path); this.files.set(path, state); }
 	}
 
-	private remapLine(oldLine: number, line: number, info: EvidenceLine): EvidenceLine | undefined {
+	remapLine(oldLine: number, line: number, info: EvidenceLine): EvidenceLine | undefined {
 		// [喵喵喵]: 只缓存与旧 CLI 锚点一致的不可变内存行，不缓存正文副本；新读取/重放仍须首次自校验。
 		let computed = this.verifiedHashes.get(info) ?? computeLineHashInfo(oldLine, info.text);
 		if (`${oldLine}#${computed.hash}` !== info.anchor) return undefined;
@@ -129,7 +137,11 @@ export class ProofState {
 		while (over() && history.length) { history.shift(); size = usage(path, current, history); }
 		// [喵喵喵]: 恢复时优先保留整个待确认目标，不让无关缓存挤掉刚补齐的消费范围。
 		if (over() && priority) {
-			current = { ...current, lines: new Map([...current.lines].filter(([line]) => priority.has(line) || fresh.has(line))), proofIds: new Set([current.proofId]) };
+			const lines = new Map<number, EvidenceLine>();
+			for (const [line, info] of current.lines) {
+				if (priority.has(line) || fresh.has(line)) lines.set(line, info);
+			}
+			current = { ...current, lines, proofIds: new Set([current.proofId]) };
 			evicted = true;
 			size = usage(path, current, history);
 		}
@@ -157,11 +169,14 @@ export class ProofState {
 		const same = previous?.current.revision === revision;
 		const owner = this.owners.get(id);
 		if (owner && (owner !== path || !same || !previous.current.proofIds.has(id))) { this.invalidate(path); return; }
-		const fresh = new Map(rows.filter((line) => !line.textTruncated).map((line) => [line.line, { anchor: line.anchor, text: line.text }]));
+		const fresh = completeEvidenceLines(rows);
+		// [喵喵喵]: 历史代和恢复预检共享旧集合；仅复制索引，保留行对象身份及原有覆盖顺序。
+		const proofIds = new Set(same ? previous.current.proofIds : undefined);
+		proofIds.add(id);
+		const lines = new Map(same ? previous.current.lines : undefined);
+		for (const [line, info] of fresh) lines.set(line, info);
 		const current: ProofEpoch = {
-			revision, proofId: id,
-			proofIds: new Set([...(same ? previous.current.proofIds : []), id]),
-			lines: new Map([...(same ? previous.current.lines : []), ...fresh]),
+			revision, proofId: id, proofIds, lines,
 			totalLines: totalLines ?? (same ? previous.current.totalLines : undefined),
 		};
 		this.store(path, current, same ? [...previous.history] : [], fresh, same && previous.capacityEvicted, priority);
@@ -183,15 +198,16 @@ export class ProofState {
 			positions.set(oldLine, line);
 			lines.set(line, moved);
 		}
-		const history = previous.history.map((item) => ({
-			epoch: item.epoch,
-			positions: new Map([...item.positions].flatMap(([source, target]) => {
+		const history = previous.history.map((item) => {
+			const positions = new Map<number, number>();
+			for (const [source, target] of item.positions) {
 				const line = transform(target);
-				return line === undefined ? [] : [[source, line] as const];
-			})),
-		}));
+				if (line !== undefined) positions.set(source, line);
+			}
+			return { epoch: item.epoch, positions };
+		});
 		history.push({ epoch: previous.current, positions });
-		const fresh = new Map(rows.filter((line) => !line.textTruncated).map((line) => [line.line, { anchor: line.anchor, text: line.text }]));
+		const fresh = completeEvidenceLines(rows);
 		for (const [line, info] of fresh) lines.set(line, info);
 		this.store(path, {
 			revision, proofId: id, proofIds: new Set([id]), lines,

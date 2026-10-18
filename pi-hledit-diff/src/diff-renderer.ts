@@ -57,6 +57,15 @@ type PairedDiffRow = {
 	meta?: string;
 };
 
+type PreparedDiff = {
+	parsed: ParsedDiff;
+	structuredRows: PairedDiffRow[] | undefined;
+	numberWidth: number;
+};
+
+// [喵喵喵]: 已验证 preview 的纯结构跨组件复用；主题 ANSI、宽度布局和高亮失效仍留在各组件内。
+const preparedDiffCache = new WeakMap<VerifiedChangePreview, PreparedDiff>();
+
 type SplitColumnWidths = {
 	left: number;
 	right: number;
@@ -474,13 +483,21 @@ export function renderStandaloneDiff(
 	theme: HleditRenderTheme,
 	summaryStats?: DiffSummaryStats,
 ): HleditRenderComponent | undefined {
-	const parsed = buildPreviewDiff(preview);
+	let prepared = preparedDiffCache.get(preview);
+	if (!prepared) {
+		const parsed = buildPreviewDiff(preview);
+		prepared = {
+			parsed,
+			structuredRows: preview.lines.some((line) => line.changeIndex !== undefined) ? buildStructuredPairs(parsed.entries) : undefined,
+			numberWidth: lineNumberWidth(parsed.entries),
+		};
+		preparedDiffCache.set(preview, prepared);
+	}
+	const { parsed, structuredRows, numberWidth } = prepared;
 	if (parsed.entries.length === 0) return undefined;
 	const highlighter = createHighlightedTextCache(path);
 	const highlightLine = (line: DiffLine): HighlightedText => highlighter.highlight(line);
 	const entries = parsed.entries;
-	const structuredRows = preview.lines.some((line) => line.changeIndex !== undefined) ? buildStructuredPairs(entries) : undefined;
-	const numberWidth = lineNumberWidth(entries);
 	let paletteLoaded = false;
 	let palette: DiffBackgroundPalette | undefined;
 	let cachedWidth: number | undefined;

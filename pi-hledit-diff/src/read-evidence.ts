@@ -6,7 +6,6 @@ import {
 	HLEDIT_READ_ANCHORS_TOOL,
 	HLEDIT_SEARCH_ANCHORS_TOOL,
 } from "./active-tools.ts";
-import { computeAnchorTag } from "./anchor-hash.ts";
 import { lineFromAnchor } from "./anchor.ts";
 import { fileChangeReference, isInsertChange, type HleditBatchReadProof } from "./file-changes.ts";
 import { parseAnchorContext, parseUpdatedAnchorSpans } from "./post-edit-context.ts";
@@ -542,7 +541,9 @@ export class ReadEvidenceStore {
 		for (const source of evaluation.coveredLines) {
 			const current = historical.positions.get(source)!;
 			const info = epoch.lines.get(source)!;
-			currentLines.set(current, { text: info.text, anchor: computeAnchorTag(current, info.text) });
+			const moved = this.state.remapLine(source, current, info);
+			if (!moved) return fail("proof_source_unavailable", "The historical source anchor cannot be verified. Relocate and read the target in the current file.");
+			currentLines.set(current, moved);
 		}
 		const renames = new Map(requested.endpointAnchors.map((endpoint) => [endpoint.anchor, currentLines.get(historical.positions.get(endpoint.line)!)!.anchor]));
 		const resolved = replaceRenamedAnchors(changes, renames);

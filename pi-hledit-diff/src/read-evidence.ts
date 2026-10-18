@@ -371,8 +371,12 @@ function evaluateProofAgainstEvidence(
 // 诊断段：失败原因与已验证的锚点更名。补读成功与未补读两条路径共用同一段诊断，
 // 各自追加自己的后续指令；调用方不得再从完整正文里切割这一段。
 export function formatReadProofDiagnosis(failure: ReadProofFailure): string {
-	if (failure.code === "evidence_capacity_exceeded" || failure.code === "read_evidence_evicted") {
+	if (failure.code === "evidence_capacity_exceeded") {
 		return `Read evidence capacity prevents this batch from proceeding. Batch was not started and no content was written.\nReason: ${failure.message}`;
+	}
+	// [喵喵喵]: evicted 是历史证据被容量淘汰，非容量阻止本批次；措辞须与后文定向补读+重提交指令一致。
+	if (failure.code === "read_evidence_evicted") {
+		return `Earlier read evidence for this file was evicted at the per-file cache limit. Batch was not started and no content was written.\nReason: ${failure.message}`;
 	}
 	if (failure.code === "invalid_proof_id") {
 		return [
@@ -428,7 +432,7 @@ export function formatReadProofFailure(path: string, failure: ReadProofFailure):
 		: `Call ${readCall} first and confirm ${completionTarget}.`;
 	const resubmitInstruction = "After the read succeeds, use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.";
 	if (failure.code === "read_evidence_evicted") {
-		lines.push("Earlier evidence exceeded the per-file cache limit. Use the targeted read below rather than paging the whole file again. If it evicts another required range, stop: narrow the batch or ask whether separate, non-atomic batches are acceptable.");
+		lines.push("Use the targeted read below rather than paging the whole file again. If it evicts another required range, stop: narrow the batch or ask whether separate, non-atomic batches are acceptable.");
 	}
 	lines.push(readInstruction, resubmitInstruction);
 	return lines.join("\n");

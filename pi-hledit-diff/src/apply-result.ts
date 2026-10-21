@@ -207,6 +207,10 @@ function localizeInvalidApplyMessage(rawMessage: string, failedChange: number | 
 	return `${prefix} is invalid. Check operation, anchors, range order, and lines.`;
 }
 
+function isReplacementSharingConflict(rawMessage: string): boolean {
+	return rawMessage.includes("replace target") && rawMessage.includes("(os error 32)");
+}
+
 function localizeIOApplyMessage(rawMessage: string): string {
 	const hardLinks = /file has (\d+) hard links/.exec(rawMessage);
 	if (hardLinks) {
@@ -223,6 +227,7 @@ function localizeIOApplyMessage(rawMessage: string): string {
 	if (rawMessage.includes("synchronize temporary file")) return "Synchronizing the temporary file failed; the target was left unchanged.";
 	if (rawMessage.includes("close temporary file")) return "Closing the temporary file failed; the target was left unchanged.";
 	if (rawMessage.includes("original file was restored unchanged")) return "The atomic target replacement failed partway, and the original file was restored unchanged.";
+	if (isReplacementSharingConflict(rawMessage)) return "Atomic replacement was blocked by a Windows file-sharing conflict (os error 32).";
 	if (rawMessage.includes("replace target")) return "The atomic target replacement failed.";
 	return "The file operation failed. Check the path, permissions, file type, and link state.";
 }
@@ -340,6 +345,9 @@ function formatApplyFailureResult(
 	// [喵喵喵]: I/O 原文含操作阶段与系统错误码，不能只存 details 或被通用摘要替代。
 	if (error.code === "io" && error.rawMessage) {
 		lines.push(`Diagnostic: ${error.rawMessage}`);
+		if (isReplacementSharingConflict(error.rawMessage)) {
+			lines.push("Wait for concurrent file access to finish, or identify the holder before retrying. Changing anchors or proof_id cannot release the file-sharing conflict. Do not blindly retry or fall back to a non-atomic overwrite; the tool does not retry automatically.");
+		}
 	}
 	if (isIntegerAtLeast(result.failed, 0)) {
 		lines.push(`Failed item: ${fileChangeReference(result.failed)}`);

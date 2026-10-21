@@ -52,7 +52,7 @@ pi-hledit-diff/
 
 三个工具的路径在进入 CLI 与 canonical queue 前统一经 `normalizeToolPath` 处理：展开 `~` / `~/`（Windows 也支持 `~\`）、去除 `@` 前缀并转换 Windows MSYS 盘符。
 
-read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArguments` 依次执行可选 null 归一化、`Value.Convert` 和 schema 校验；整数转换可能接受数字字符串并截断小数，因此范围约束作用于转换后的值，不承诺拒绝所有原始非整数输入。插件不额外引入严格数值策略。apply 使用单一 `changes` 数组，各项统一必填 `action`、`anchors`、`lines`；普通字符串数组用长度表达单锚点或首尾区间，不依赖可选字段、Union、`anyOf`、`oneOf` 或受约束采样。`prepareFileChangeArguments` 在宿主转换前诊断项字段、锚点数组长度和元素原始字符串类型、文本类型与 `changes` 总数，不补值、删字段或改写操作；`changes` 缺失或为 null 必须拒绝。锚点格式、path/proof 与顶层额外字段仍由宿主 schema 拒绝，decoder 保留形状检查及文本拆分与聚合限制。
+read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArguments` 依次执行可选 null 归一化、`Value.Convert` 和 schema 校验；整数转换可能接受数字字符串并截断小数，因此范围约束作用于转换后的值，不承诺拒绝所有原始非整数输入。插件不额外引入严格数值策略。apply 使用单一 `changes` 数组，各项统一必填 `action`、`anchors`、`lines`；普通字符串数组用长度表达单锚点或首尾区间，不依赖可选字段、Union、`anyOf`、`oneOf` 或受约束采样。`prepareFileChangeArguments` 在宿主转换前诊断项字段、锚点数组长度、元素原始字符串类型及完整 token 格式、文本类型与 `changes` 总数；最多汇总 8 条独立字段问题，存在更多问题时明确提示省略，不补值、删字段或改写操作。`changes` 缺失或为 null 必须拒绝；path/proof 与顶层额外字段仍由宿主 schema 拒绝，decoder 复用同一诊断并保留文本拆分与聚合限制。
 
 ### 协议变更的同步清单
 
@@ -126,7 +126,7 @@ read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArgument
 规则：
 
 - 一次调用只修改一个文件，并包含该文件全部非冲突 change；所有锚点基于同一批编辑前的快照，不按前项修改后的行号重新计算；
-- `anchors` 必填，长度为 1–2：单行替换/删除或插入使用一个锚点，多行替换/删除使用 `[start, end]` 闭区间；两个相同 token 会被拒绝，不枚举区间内部行。`replace` 消费原行，允许一行变多行及在输出中保留原行；insert 必须只有一个依附锚点且不消费该行。不猜测业务代码块，不自动扩大范围或转换操作；
+- `anchors` 必填，长度为 1–2：单行替换/删除推荐一个锚点，也接受 `[A, A]` 表示同一行；多行替换/删除使用 `[start, end]` 闭区间，不枚举区间内部行。`replace` 消费原行，允许一行变多行及在输出中保留原行；insert 必须只有一个依附锚点且不消费该行。不猜测业务代码块，不自动扩大范围或转换操作；
 - `lines` 必填，接受换行分隔字符串；一个末尾换行只终止末行，无末尾换行也合法；单独一个 `"\n"` 写入一行空行；`replace` 传空字符串代表删除，insert 的文本必须非空；
 - 单一 `changes` 数组必填，各项只有 `action`、`anchors`、`lines`，不依赖 anyOf 声明；不接受旧四数组分组或 `anchor/end_anchor` 字段，缺省 `lines` 不再表示删除；额外字段一律拒绝，不保留兼容转换；
 - `changes` 数组总计限 1–200 项，replacement 总量限 1 MiB UTF-8，输出总量限 20,000 行；只提交一次原子 CLI batch；
@@ -134,7 +134,7 @@ read/search 不注册 `prepareArguments`。参数由宿主 `validateToolArgument
 - batch stdin request 总大小限 8 MiB；`lines` 与 `proof.anchors` 的每个元素必须是 JSON 字符串，`null` 等类型会被拒绝；
 - CLI 的每个 `lines` 元素必须是一行逻辑文本，拒绝实际 NUL 和内嵌 LF；公开工具仍用换行分隔字符串，由插件拆分成行数组。拒绝携带具体 change 与内容原因，不引导调用方无效重读；
 - 公开 schema 要求 `proof_id`，不暴露 raw revision 或 CLI `proof`。先验证 canonical path 归属，再按该 proof 的坐标代解释端点、范围和覆盖；历史目标只有在逐行存续且映射连续时才规范化为当前坐标，并注入完整 hidden proof；
-- 跨文件、未知 proof、目标越界或已消费时不启动编辑 CLI，并给出单一终止/重新定位动作。当前坐标的覆盖缺口才规划补读，合并相邻窗口并最多跨接两行已知源码；锚点不匹配保留确认上下文。结果返回 `recoveredReads` 与最终 proof，调用方审阅后显式重提，不自动重放修改；
+- 跨文件、未知 proof、目标越界或已消费时不启动编辑 CLI，并给出单一终止/重新定位动作。当前坐标的覆盖缺口才规划补读，合并相邻窗口并最多跨接两行已知源码；锚点不匹配保留确认上下文，诊断指出具体 `changes[i].anchors[j]`、提交 token 和同号行的已读 token，要求结合源码重新确认目标，不按同号行替换 hash 或按 hash 自动重定位。结果返回 `recoveredReads` 与最终 proof，调用方审阅后显式重提，不自动重放修改；
 - 定向补读共享硬预算（`src/read-recovery.ts`）：计划窗口累计 1,200 行（含确认上下文）、4 页、96 KiB 正文。累计行数超限时不启动子进程；页数或正文超限时保留已返回页面并列出剩余窗口，返回 `proof_recovery_budget_exceeded`。预算按整批计算，不按每个 change 重置，也不按远端窗口之间的距离计数；
 - 多页补读正文不带中间页续读指令，由最终结果统一给出下一步。正文与 `details.proofId` 使用同一个最终 proof id；调用方在队列放行前经 `updateFromToolResult` 按返回页面顺序登记。实时执行与 branch replay 使用相同的登记顺序和容量淘汰规则；
 - 补读 revision 与计划或先前页面不一致时，返回 `proof_recovery_source_changed`，丢弃此次所有补读页且不发出 proof id；错误携带 `currentRevision`，让实时状态和分支重放均失效旧 evidence，调用方必须重新确认目标。source-line truncation 返回终止性指导，read 失败通过 `recoveryReadError` 暴露；
@@ -204,7 +204,7 @@ Batch wire v3 是唯一 canonical 形状：`replace` 消费 `pos` 至可选 `end
 
 插件验证 revision、统计、warning、每项 `editDeltas` 与 `updatedAnchorSpans`：delta 条数、区间、物理顺序、总和必须与公开 change 一一对应；窗口数量、`offset` 与 `desiredLimit` 必须与由 delta 换算出的非空产出区间逐项对应（纯删除无窗口）。窗口无上下文行，共享 CLI 侧 400 行 / 96 KiB serialized-row 预算；超长首行可返回 `textTruncated:true`，耗尽后的窗口仍以空 `lines` + `truncated:true` 保持可计数。非法结构、delta 或产出范围属于 `outcome_unknown`，不得用于 evidence。
 
-通过上述校验后，还须逐行核对执行参数与实际 span 文本，全部完整一致才输出紧凑 change→首尾 anchor 摘要；结构化全文留在 details。正文不一致、截断或缺少执行文本则取消紧凑显示，回退为最多 80 行 / 16 KiB 已显示正文，只把显示的完整行和范围元数据留在 `details.updatedAnchorSpans`。回退不把未知写入结果降级成成功；`contentChanged:false` 仍不触碰文件、不消费身份或推进 proof 代。
+通过上述校验后，还须逐行核对执行参数与实际 span 文本，全部完整一致才输出紧凑 `changes[i].anchors` JSON 数组（一个端点或两个首尾端点）与行数，可直接复用输入语法；结构化全文留在 details。正文不一致、截断或缺少执行文本则取消紧凑显示，回退为最多 80 行 / 16 KiB 已显示正文，只把显示的完整行和范围元数据留在 `details.updatedAnchorSpans`。回退不把未知写入结果降级成成功；`contentChanged:false` 仍不触碰文件、不消费身份或推进 proof 代。
 
 CLI 写入保留非空结果的 BOM 与未修改行尾，真实空末行必要地补 terminator；正文以 CR 结尾的已终止行使用 CRLF，避免丢失正文 CR。会把首字符 U+FEFF 重新解释为 BOM 的修改在 check/apply 共同入口零写入拒绝，删除全部逻辑行则生成真正空文件。CLI 拒绝 multi-hardlink target，保留 symlink entry，并在 temp sync 后、atomic replace 前复检原始字节 revision。recheck 与 rename 之间仍有极短外部竞态，不宣称线性化 CAS。
 
@@ -222,7 +222,7 @@ Windows 使用 `windows-sys` 处理 DACL，创建临时文件时即传入目标�
 - CLI 冲突诊断对外引用公开 changes 数组的零基下标（与模型传入参数 1:1 对齐；内部一基 changeNumber 在输出前减一转换），保留冲突双方及范围/插入边界原因；指示合并或消除重叠，不引导调用方用重读修复参数冲突；
 - 三个工具在 `execute()` 返回边界直接设置 Pi `isError`：插件侧 `insufficient_read_proof` 是可恢复补读结果，设为 `false`；其他非成功结果设为 `true`，包括 `source_line_truncated`、`proof_recovery_read_failed`、`proof_recovery_budget_exceeded` 和 `proof_recovery_source_changed`，要求调用方按失败原因调整动作；
 - 读取错误码全集为 `range` / `binary` / `encoding` / `directory` / `io` / `pattern` / `broad_pattern` / `windows_budget_exceeded`，每个码都必须有本地化 message，落到兑底分支等于只把错误码丢给模型；message 本身说不清下一步动作时再补 hint（`range` / `directory` / `pattern` / `broad_pattern`）。`pattern` 转发 CLI 的 RE2 编译原文（出错位置本身就是要改的东西）并点名 RE2 不支持 lookahead/lookbehind/backreference；`broad_pattern` 指向 `hledit_read_anchors`；
-- 读取和写入的 `io` 拒绝保留简洁英文摘要，并在正文追加 `Diagnostic: <rawMessage>`，原样保留操作阶段、系统原文与错误码；`details.error.rawMessage` 和 disposition 不变，不自动重试；
+- 读取和写入的 `io` 拒绝保留简洁英文摘要，并在正文追加 `Diagnostic: <rawMessage>`，原样保留操作阶段、系统原文与错误码；`replace target` 阶段的 `os error 32` 单独说明 Windows 共享冲突，要求等待并发访问结束或核实占用方，不换锚点、不盲目重试或降级非原子覆盖。`details.error.rawMessage` 和 disposition 不变，不自动重试；
 - revision mismatch 仍为 `stale`，但 `failed:-1` 表示整批版本失效；CLI 从同一当前 snapshot 返回首项请求附近的有界 `currentAnchors` 及该快照的 `totalLines`，不把版本变化说成端点锚点错误。完整 snapshot 供显式复核与续编（`totalLines` 随恢复代登记，使该代保留越界预检，不把越界锚点误导入自动补读），缺失或截断时按请求范围定向重读；stale remap 与 snapshot 均不触发自动修正或重试；
 - `source_changed_before_commit` 是确认零写入；CLI 从未启动使用 `unavailable`；
 - 已启动进程的取消、超时、输出超限、stdin 错误、非零退出或响应不完整按 `outcome_unknown`，先重读，禁止原样重试。

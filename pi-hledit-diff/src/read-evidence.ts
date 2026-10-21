@@ -41,6 +41,7 @@ type RequestedSourceRange = ReadProofLineRange & {
 type RequestedEndpointAnchor = {
 	line: number;
 	anchor: string;
+	anchorIndex: 0 | 1;
 	changeNumber: number;
 	reference: string;
 	operation: FileChangeOperation;
@@ -66,6 +67,7 @@ export type ReadProofFailure = {
 	reportedMissingLines: number[];
 	suggestedReadRange?: ReadProofLineRange;
 	proofGap?: ReadProofGap;
+	anchorMismatch?: { field: string; requested: string; current: string };
 	recoveryRanges?: ReadProofLineRange[];
 	recoveryRevision?: string;
 };
@@ -123,7 +125,7 @@ function requestedChangeEvidence(changes: FileChangeParams["changes"]): Requeste
 			const line = lineFromAnchor(change.anchor);
 			if (line === undefined) return undefined;
 			sourceRanges.push({ start: line, end: line, changeNumber, reference, operation: change.operation });
-			endpointAnchors.push({ line, anchor: change.anchor, changeNumber, reference, operation: change.operation });
+			endpointAnchors.push({ line, anchor: change.anchor, anchorIndex: 0, changeNumber, reference, operation: change.operation });
 			continue;
 		}
 
@@ -132,8 +134,8 @@ function requestedChangeEvidence(changes: FileChangeParams["changes"]): Requeste
 		if (start === undefined || end === undefined || start > end) return undefined;
 		sourceRanges.push({ start, end, changeNumber, reference, operation: change.operation });
 		endpointAnchors.push(
-			{ line: start, anchor: change.start_anchor, changeNumber, reference, operation: change.operation },
-			{ line: end, anchor: change.end_anchor, changeNumber, reference, operation: change.operation },
+			{ line: start, anchor: change.start_anchor, anchorIndex: 0, changeNumber, reference, operation: change.operation },
+			{ line: end, anchor: change.end_anchor, anchorIndex: change.end_anchor === change.start_anchor ? 0 : 1, changeNumber, reference, operation: change.operation },
 		);
 	}
 
@@ -303,13 +305,7 @@ function replaceRenamedAnchors(
 	};
 }
 
-type EvidenceProofFailure = {
-	message: string;
-	reportedMissingLines: number[];
-	suggestedReadRange?: ReadProofLineRange;
-	proofGap?: ReadProofGap;
-	recoveryRanges?: ReadProofLineRange[];
-};
+type EvidenceProofFailure = Omit<ReadProofFailure, "code" | "recoveryRevision">;
 
 type EvidenceProofEvaluation =
 	| { anchors: string[]; coveredLines: number[] }
@@ -353,10 +349,13 @@ function evaluateProofAgainstEvidence(
 		};
 	}
 	for (const endpoint of requested.endpointAnchors) {
-		if (evidenceLines.get(endpoint.line)?.anchor !== endpoint.anchor) {
+		const known = evidenceLines.get(endpoint.line)!;
+		if (known.anchor !== endpoint.anchor) {
+			const field = `${endpoint.reference}.anchors[${endpoint.anchorIndex}]`;
 			return {
 				failure: {
-					message: `${endpoint.reference} submitted anchor for line ${endpoint.line} does not match the most recently read anchor on this branch.`,
+					message: `${field} submitted anchor for line ${endpoint.line} does not match the most recently read anchor on this branch.`,
+					anchorMismatch: { field, requested: endpoint.anchor, current: known.anchor },
 					reportedMissingLines: [endpoint.line],
 					suggestedReadRange: { start: endpoint.line, end: endpoint.line },
 					recoveryRanges: recoveryRangesFor(requested, evidenceLines),
@@ -385,6 +384,17 @@ export function formatReadProofDiagnosis(failure: ReadProofFailure): string {
 	}
 	if (RELOCATE_TARGET_FAILURE_CODES.has(failure.code)) {
 		return `The target cannot be authorized by this proof. Batch was not started and no content was written.\nReason: ${failure.message}`;
+	}
+	if (failure.anchorMismatch) {
+		const { field, requested, current } = failure.anchorMismatch;
+		return [
+			"A submitted endpoint anchor does not match the retained read proof. Batch was not started and no content was written.",
+			`Reason: ${failure.message}`,
+			`Anchor verification for ${field}:`,
+			`- Submitted anchor: ${requested}`,
+			`- Latest read anchor at the same line number: ${current}`,
+			"Reconfirm the intended target against source before choosing current anchors; do not simply swap the hash at the same line number or relocate by hash.",
+		].join("\n");
 	}
 	const lines = [
 		"Valid read proof does not cover every source line required by this change. Batch was not started and no content was written.",

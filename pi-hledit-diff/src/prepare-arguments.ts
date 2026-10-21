@@ -1,3 +1,4 @@
+import { anchorTokenLine } from "./anchor.ts";
 import {
 	CHANGE_ACTIONS,
 	MAX_FILE_CHANGE_COUNT,
@@ -20,6 +21,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const CHANGE_FIELDS = ["action", "anchors", "lines"];
+const MAX_INPUT_DIAGNOSTICS = 8;
 
 // [喵喵喵]: 限额拒绝在 CLI 之前返回，需与其它拒绝路径一致地声明零写入并给出下一步。
 const LIMIT_REJECTION_TAIL = " No edit was executed; split the batch into smaller requests and retry.";
@@ -44,44 +46,50 @@ function changeInputRejection(args: unknown): string | undefined {
 		return `Atomic batch must contain 1-${MAX_FILE_CHANGE_COUNT} items in changes.`;
 	}
 
+	// [喵喵喵]: 汇总独立字段错误，避免删掉额外字段后才发现锚点格式错误；只诊断，不修参。
+	const issues: string[] = [];
 	for (const [index, item] of changes.entries()) {
 		const label = `changes[${index}]`;
-		if (!isRecord(item)) return `${label} must be an object.`;
+		if (!isRecord(item)) {
+			issues.push(`${label} must be an object.`);
+		} else {
+			const action = item.action;
+			const validAction = typeof action === "string" && CHANGE_ACTIONS.includes(action as ChangeAction);
+			if (!validAction) {
+				issues.push(`${label}.action must be one of ${CHANGE_ACTIONS.map((a) => `'${a}'`).join(", ")}.`);
+			}
 
-		const action = item.action;
-		if (typeof action !== "string" || !CHANGE_ACTIONS.includes(action as ChangeAction)) {
-			return `${label}.action must be one of ${CHANGE_ACTIONS.map((a) => `'${a}'`).join(", ")}.`;
+			const unexpected = Object.keys(item).filter((field) => !CHANGE_FIELDS.includes(field));
+			if (unexpected.length > 0) {
+				issues.push(`${label} (${validAction ? action : "invalid action"}) was rejected: must not carry ${unexpected.slice(0, MAX_INPUT_DIAGNOSTICS).join(" and ")}${unexpected.length > MAX_INPUT_DIAGNOSTICS ? " or other unexpected fields" : ""}. Use only ${CHANGE_FIELDS.join(", ")}.`);
+			}
+			if (!Array.isArray(item.anchors) || item.anchors.length < 1 || item.anchors.length > 2) {
+				issues.push(`${label}.anchors must be an array of 1-2 anchor tokens. Use [anchor] for a single line or insert, or [start, end] for a replace range; do not enumerate interior lines.`);
+			} else {
+				for (const [anchorIndex, anchor] of item.anchors.entries()) {
+					if (typeof anchor !== "string") {
+						issues.push(`${label}.anchors[${anchorIndex}] must be a string anchor token.`);
+					} else if (anchorTokenLine(anchor) === undefined) {
+						issues.push(`${label}.anchors[${anchorIndex}] must be one complete LN#HASH token copied from read output. For a replace range, use two separate array elements [start, end], not a joined string; do not guess hashes.`);
+					}
+				}
+				if (validAction && action !== "replace" && item.anchors.length !== 1) {
+					issues.push(`${label} (${action}) requires exactly one anchor in anchors.`);
+				}
+			}
+			if (typeof item.lines !== "string") {
+				issues.push(validAction && action !== "replace"
+					? `${label}.lines must be a raw text string; ${action} requires non-empty text.`
+					: `${label}.lines must be a raw text string; use \"\" to delete with replace.`);
+			} else if (validAction && action !== "replace" && item.lines.length === 0) {
+				issues.push(`${label} (${action}) requires a non-empty lines string.`);
+			}
 		}
-
-		const unexpected = Object.keys(item).filter((field) => !CHANGE_FIELDS.includes(field));
-		if (unexpected.length > 0) {
-			return `${label} (${action}) was rejected: must not carry ${unexpected.join(" and ")}. Use only ${CHANGE_FIELDS.join(", ")}.`;
-		}
-		if (!Array.isArray(item.anchors) || item.anchors.length < 1 || item.anchors.length > 2) {
-			return `${label}.anchors must be an array of 1-2 anchor tokens.`;
-		}
-		for (const [anchorIndex, anchor] of item.anchors.entries()) {
-			if (typeof anchor !== "string") return `${label}.anchors[${anchorIndex}] must be a string anchor token.`;
-		}
-		if (action !== "replace" && item.anchors.length !== 1) {
-			return `${label} (${action}) requires exactly one anchor in anchors.`;
-		}
-		// [喵喵喵]: 单行只用一个端点，使 canonical 结果能够准确回指公开参数，而无需另存输入形状。
-		if (item.anchors.length === 2 && item.anchors[0] === item.anchors[1]) {
-			return `${label}.anchors repeats the same token; use one anchor for a single-line replace.`;
-		}
-		if (typeof item.lines !== "string") {
-			// [喵喵喵]: delete 与 insert 的合法文本相反，提示不能只给 replace 的取值范围。
-			return action === "replace"
-				? `${label}.lines must be a raw text string; use \"\" to delete.`
-				: `${label}.lines must be a raw text string; ${action} requires non-empty text.`;
-		}
-		if (action !== "replace" && item.lines.length === 0) {
-			return `${label} (${action}) requires a non-empty lines string.`;
-		}
+		if (issues.length > MAX_INPUT_DIAGNOSTICS) break;
 	}
 
-	return undefined;
+	return issues.length === 0 ? undefined : issues.slice(0, MAX_INPUT_DIAGNOSTICS).join(" ") +
+		(issues.length > MAX_INPUT_DIAGNOSTICS ? " Additional argument errors were omitted; fix these and resubmit." : "");
 }
 
 // [喵喵喵]: prepareArguments 早于宿主类型转换；只诊断，不补值、删字段或改变编辑语义。

@@ -160,7 +160,7 @@ test("proof validation checks every endpoint submitted for the same line", () =>
 	]);
 	assert.ok("failure" in selection);
 	assert.deepEqual(selection.failure.reportedMissingLines, [2]);
-	assert.match(selection.failure.message, /submitted anchor for line 2 does not match/);
+	assert.match(formatReadProofFailure("target.txt", selection.failure), /changes\[0\]\.anchors\[0\][\s\S]*Submitted anchor: 2#ZZZ[\s\S]*Latest read anchor at the same line number: 2#AAB[\s\S]*do not simply swap the hash/);
 });
 
 test("search context merges with unfiltered proof from the same revision", () => {

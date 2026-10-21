@@ -182,6 +182,6 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 		], "reduce_batch");
 	}
 	return recoveryResult(failure.code, failure.message, [
-		`The batch recovery plan was read and recorded in ${reads.length} page(s). Review the displayed source, replace any mismatched endpoint anchors with the returned current anchors, then explicitly resubmit the batch using the proof_id above. The batch has not been executed.`,
+		`The batch recovery plan was read and recorded in ${reads.length} page(s). Review the displayed source and reconfirm the intended target locations before choosing current endpoint anchors, then explicitly resubmit the batch using the proof_id above. The batch has not been executed.`,
 	], "review_and_retry");
 }

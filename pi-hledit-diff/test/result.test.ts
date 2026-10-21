@@ -675,7 +675,7 @@ test("applyFileChangesResult surfaces the hardlink rejection reason", () => {
 });
 
 for (const [tool, rawMessage] of [
-	["apply", "create temporary sibling: 这个安全 ID 不能分配为此对象的所有者。 (os error 1307)"],
+	["apply", "replace target: 另一个程序正在使用此文件，进程无法访问。 (os error 32)"],
 	["read", "file could not be read: 拒绝访问。 (os error 5)"],
 ] as const) {
 	test(`${tool} I/O diagnostics preserve the native cause in the model body`, () => {
@@ -688,6 +688,7 @@ for (const [tool, rawMessage] of [
 		assert.equal(result.details.error?.code, "io");
 		assert.equal(result.details.error?.rawMessage, rawMessage);
 		assert.ok(result.content[0]?.text.includes(`Diagnostic: ${rawMessage}`));
+		if (tool === "apply") assert.match(result.content[0]!.text, /Windows file-sharing conflict[\s\S]*Changing anchors or proof_id cannot release[\s\S]*Do not blindly retry or fall back to a non-atomic overwrite/);
 	});
 }
 

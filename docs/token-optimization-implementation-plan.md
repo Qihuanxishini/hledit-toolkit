@@ -43,8 +43,8 @@
 Applied N changes (+A -D lines).
 proof_id: p_...
 New output anchors (submitted text verified):
-- changes[0]: 42#abc–45#jkl (4 lines)
-- changes[1]: 71#mno (1 line)
+- changes[0].anchors: ["42#abc","45#jkl"] (4 lines)
+- changes[1].anchors: ["71#mno"] (1 line)
 ```
 
 纯删除没有新输出锚点，仍保留成功摘要和新 `proof_id`。后续若需引用或编辑未展示的中间新行，调用方必须使用 `hledit_read_anchors` 精确读取；不能凭紧凑摘要猜测正文。
@@ -83,11 +83,11 @@ CLI 对 `updatedAnchorSpans` 的共享预算需要从现有 80 行 / 16 KiB 上�
 
 可合并等价的路径、锚点、连续读取等描述；不可删除以下规则：完整 proof、截断源行不可用、`replace` 消费范围、`outcome_unknown` 不得盲目重放、拒绝与已写入的区别，以及原子批量冲突语义。
 
-三个工具仍保持独立，不合并为带 `action` 的大工具，以免增加参数分支和误用概率。apply 统一使用单一有序数组 `changes`：每项只有必填的 `action`（`replace`、`insert_before`、`insert_after`）、`anchors` 和 `lines`。`anchors` 是包含 1–2 个字符串的普通数组：单行替换/删除或插入使用一个锚点，多行替换/删除使用两个不同端点表示首尾闭区间；插入不消费依附行且文本必须非空。`replace` 使用 `lines: ""` 删除，单独传入 `"\n"` 写入一行空行，不接受缺省文本或旧 `anchor/end_anchor` 字段。
+三个工具仍保持独立，不合并为带 `action` 的大工具，以免增加参数分支和误用概率。apply 统一使用单一有序数组 `changes`：每项只有必填的 `action`（`replace`、`insert_before`、`insert_after`）、`anchors` 和 `lines`。`anchors` 是包含 1–2 个字符串的普通数组：单行替换/删除推荐一个锚点，也接受相同双端点；多行替换/删除使用两个端点表示首尾闭区间；插入严格只接受一个锚点，不消费依附行且文本必须非空。`replace` 使用 `lines: ""` 删除，单独传入 `"\n"` 写入一行空行，不接受缺省文本或旧 `anchor/end_anchor` 字段。
 
 该形状保留平铺对象和字符串 `enum`，不依赖对象 Union、`anyOf` 或可选字段。调整依据是已实际发生的声明严格化冲突：模型侧把可选 `end_anchor` 变成必填，执行侧却禁止插入携带该字段。统一必填字段和可变长度锚点列表消除这一矛盾，不要求额外配置模型/provider，也不加入受约束采样声明。
 
-操作级错误诊断在宿主 schema 转换前完成，不补值、删字段或改写输入；随后解码为现有 `CanonicalFileChange[]`。内部 CLI wire、proof/evidence 与混合批次的原子提交契约保持不变，模型参数形状调整不要求重写 CLI。
+操作级错误诊断在宿主 schema 转换前完成，最多汇总 8 条独立字段问题（包括锚点格式），不补值、删字段或改写输入；随后解码为现有 `CanonicalFileChange[]`。成功锚点摘要直接使用与输入一致的 `changes[i].anchors` JSON 数组，不要求模型转换区间连写记法。内部 CLI wire、proof/evidence 与混合批次的原子提交契约保持不变，模型参数形状调整不要求重写 CLI。
 
 ## 5. 方案四：同文件多窗口锚点读取
 

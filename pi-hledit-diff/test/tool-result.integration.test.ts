@@ -452,7 +452,7 @@ test("apply tool returns a complete produced span for a long-line file", async (
 	assert.equal(spans?.length, 1);
 	const updatedLine = spans?.[0]?.lines.find((line) => line.line === 5);
 	assert.ok(updatedLine);
-	assert.equal(applyResult.content[0]?.text ?? "", `Applied 1 change; line delta: +1 -1.\n\nNew output anchors (submitted text verified):\n- changes[0]: ${updatedLine.anchor} (1 line)\n\nproof_id: ${applyResult.details.proofId}`);
+	assert.equal(applyResult.content[0]?.text ?? "", `Applied 1 change; line delta: +1 -1.\n\nNew output anchors (submitted text verified):\n- changes[0].anchors: ["${updatedLine.anchor}"] (1 line)\n\nproof_id: ${applyResult.details.proofId}`);
 	assert.equal(spans?.[0]?.truncated, false);
 	assert.equal(spans?.[0]?.lines.length, 1);
 	assert.equal((await readFile(target, "utf8")).split(/\r?\n/)[4], "CHANGED");
@@ -482,7 +482,7 @@ test("apply tool lists only produced lines for a wide multi-change batch", async
 			path: "target.txt",
 			proof_id: readResult.details.proofId,
 			changes: [
-				{ action: "replace", anchors: [first], lines: "FIRST" },
+				{ action: "replace", anchors: [first, first], lines: "FIRST" },
 				{ action: "replace", anchors: [last], lines: "LAST" },
 			],
 		} as never,
@@ -494,7 +494,7 @@ test("apply tool lists only produced lines for a wide multi-change batch", async
 	assert.equal(applyResult.details.disposition, "succeeded");
 	const resultText = applyResult.content[0]?.text ?? "";
 	// 每个变更各得一个产出 span：相距很远的两处修改都返回新锚点，且不混入未变更的上下文行。
-	assert.match(resultText, /^Applied 2 changes; line delta: \+2 -2\.\n\nNew output anchors \(submitted text verified\):\n- changes\[0\]: 10#[A-Za-z0-9_-]{3} \(1 line\)\n- changes\[1\]: 180#[A-Za-z0-9_-]{3} \(1 line\)\n/);
+	assert.match(resultText, /^Applied 2 changes; line delta: \+2 -2\.\n\nNew output anchors \(submitted text verified\):\n- changes\[0\]\.anchors: \["10#[A-Za-z0-9_-]{3}"\] \(1 line\)\n- changes\[1\]\.anchors: \["180#[A-Za-z0-9_-]{3}"\] \(1 line\)\n/);
 	assert.doesNotMatch(resultText, /Updated anchors are incomplete/);
 	assert.doesNotMatch(resultText, /:line \d+/);
 	assert.ok(resultText.length < 350);
@@ -856,7 +856,7 @@ test("apply tool rejects an anchor that does not match its read proof before sta
 	assert.equal(applyResult.isError, false);
 	assert.equal(applyResult.details.recoveredReads?.[0]?.lines.find((line) => line.line === 2)?.anchor, currentAnchor);
 	assert.equal((applyResult.details.error as Record<string, unknown> | undefined)?.recoveredReads, undefined);
-	assert.match(applyResult.content[0]?.text ?? "", /submitted anchor for line 2 does not match/);
+	assert.match(applyResult.content[0]?.text ?? "", new RegExp(`Anchor verification for changes\\[0\\]\\.anchors\\[0\\]:[\\s\\S]*Submitted anchor: ${staleAnchor}[\\s\\S]*Latest read anchor at the same line number: ${currentAnchor}[\\s\\S]*do not simply swap the hash`));
 	assert.match(applyResult.content[0]?.text ?? "", /batch recovery plan was read and recorded/);
 	assert.match(applyResult.content[0]?.text ?? "", new RegExp(`${currentAnchor}:two`));
 	assert.doesNotMatch(applyResult.content[0]?.text ?? "", /Current anchor snapshot/);
@@ -1745,13 +1745,13 @@ test("apply keeps verified spans compact while a truncated span falls back to a 
 	} as never, undefined, undefined, context);
 	assert.equal(mixed.details.disposition, "succeeded");
 	const mixedText = mixed.content[0]?.text ?? "";
-	assert.match(mixedText, /- changes\[0\]: \d+#[A-Za-z0-9_-]{3}–\d+#[A-Za-z0-9_-]{3} \(2 lines\)/);
-	assert.doesNotMatch(mixedText, /- changes\[1\]: /);
+	assert.match(mixedText, /- changes\[0\]\.anchors: \["\d+#[A-Za-z0-9_-]{3}","\d+#[A-Za-z0-9_-]{3}"\] \(2 lines\)/);
+	assert.doesNotMatch(mixedText, /- changes\[1\]\.anchors: /);
 	assert.match(mixedText, /Updated anchors above are incomplete; read any missing or text-truncated target lines before editing them\./);
 	assert.equal((mixedText.match(/:bulk \d+/g) ?? []).length, 80);
 	assert.doesNotMatch(mixedText, /:bulk 500/);
 
-	const compactAnchor = /- changes\[0\]: (\d+#[A-Za-z0-9_-]{3})–/.exec(mixedText)?.[1];
+	const compactAnchor = /- changes\[0\]\.anchors: \["(\d+#[A-Za-z0-9_-]{3})",/.exec(mixedText)?.[1];
 	const shownBulkAnchor = /^(\d+#[A-Za-z0-9_-]{3}):bulk 1$/m.exec(mixedText)?.[1];
 	assert.ok(compactAnchor && shownBulkAnchor);
 

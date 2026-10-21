@@ -19,7 +19,7 @@
 - 三个工具统一展开 `~`、`~/` 主目录路径（Windows 同时支持 `~\`），并处理 `@` 前缀和 Windows MSYS 盘符路径。
 - 编辑现有非空文本文件前，使用 `hledit_read_anchors` 读取会被消费的连续原始行，或使用 `hledit_search_anchors` 定位并读取匹配/上下文行；普通 `read` 只用于参考文件或尚未确定修改目标的探索。`write` 只用于新文件、空文件或读取工具报告 source-line truncation 的例外场景。
 - 规范锚点是 `LN#[A-Za-z0-9_-]{3}` token。公开 change 只复制范围首尾或 insert 依附行；区间内部 proof 由插件从 evidence 注入。apply 使用严格输入，不剥离带源码后缀的 anchor，也不迁移旧字段或包装形状。
-- 公开修改协议由单一有序数组 `changes` 表达，每项统一必填 `action`（`replace`、`insert_before`、`insert_after`）、`anchors` 和 `lines`。`anchors` 使用一个 token 定位单行或插入依附行，两个不同 token 表示替换/删除的首尾闭区间；插入必须只有一个锚点且文本非空。`replace` 使用 `lines: ""` 表示删除，不接受缺省文本。普通 JSON Schema 无需可选字段或 anyOf 对象联合，不要求额外模型/provider 模式；不接受旧 `anchor/end_anchor` 字段。
+- 公开修改协议由单一有序数组 `changes` 表达，每项统一必填 `action`（`replace`、`insert_before`、`insert_after`）、`anchors` 和 `lines`。单行替换/删除推荐一个 token，也接受相同双端点；两个端点表示替换/删除的首尾闭区间。插入必须只有一个锚点且文本非空。`replace` 使用 `lines: ""` 表示删除，不接受缺省文本。普通 JSON Schema 无需可选字段或 anyOf 对象联合，不要求额外模型/provider 模式；不接受旧 `anchor/end_anchor` 字段。
 - 所有项都使用本批编辑前的快照坐标；提交顺序不要求按文件位置排列，回包 delta 按物理位置给出。`replace` 精确替换指定范围或删除；`insert_before` / `insert_after` 依附于锚点行前/后插入，不消费依附行。
 - `lines` 接受换行分隔字符串；一个末尾换行仅终止末行，无尾换行也合法；单独一个 `"\n"` 写入一行空行。`replace` 中显式空字符串表示删除目标范围。
 - `changes` 数组限 1–200 项、1 MiB replacement UTF-8 bytes 和 20,000 个输出行；单次提交原子 batch，任一项非法、冲突、proof 不完整或 stale 时均不写入。
@@ -32,7 +32,7 @@
 - 单窗口复用连续读取的分页和 proof 规则。多个窗口由 CLI 单次加载 `Snapshot`，按物理位置合并重叠或相邻窗口，并共享 2,000 行 / 96 KiB JSON 预算。只有所有请求段均完整返回时才登记联合证据；任一段不完整则本次结果仅供预览，不发 proof，应分小批重新读取，包括先前已完成段。
 - 超过单页预算的源行会标记 `textTruncated`，不能作为编辑 proof；若后面还有待读行或匹配，结果仍提供 `nextOffset` 和续读提示。
 - CLI 在临时文件同步后、原子替换前复检原始字节 revision。`source_changed_before_commit` 是确认零写入；已启动进程的取消、超时、输出超限或异常响应属于 `outcome_unknown`，必须重新读取。
-- 改变文件的成功 apply 建立新证据代并返回新 `proof_id`。CLI span 与实际执行文本逐行一致且完整时，仅回显 change 编号、新锚点首尾和行数；完整 span 保存在 `details`。返回的端点可直接续编，中间新行按需精确读取。旧 proof/token 对只迁移逐行存续且连续的目标；已消费身份不会因内容恢复而复活，无变化批次不推进证据代。
+- 改变文件的成功 apply 建立新证据代并返回新 `proof_id`。CLI span 与实际执行文本逐行一致且完整时，仅回显 `changes[i].anchors` JSON 数组（单行一个 token，多行首尾两个 token）和行数，可直接复用输入语法；完整 span 保存在 `details`。返回的端点可直接续编，中间新行按需精确读取。旧 proof/token 对只迁移逐行存续且连续的目标；已消费身份不会因内容恢复而复活，无变化批次不推进证据代。
 - 后编辑内部 span 预算为 400 行 / 96 KiB；不满足紧凑条件时，模型正文及对应 evidence 限为实际显示的 80 行 / 16 KiB，并明确标示不完整。非法 delta、产出范围或结构仍属于 `outcome_unknown`，不能退成成功正文。
 - 读取、proof 选择、CLI mutation 与 evidence 更新按 canonical real path 使用同一 file mutation queue。同文件状态事务串行，不同文件仍可并行。
 - evidence 有界：单文件 10,000 records / 4 MiB 计费额度，session 50,000 records / 16 MiB；历史坐标、proof 与行证据共同计费，最多保留 32 个历史代。优先淘汰历史，其次保留当前发布窗口或恢复目标。整批必需证据无法容纳时终止为 `evidence_capacity_exceeded`，不让补读循环；拆分写入必须接受失去整批原子性的代价。重放使用记录的发布顺序，而不是 Pi 并行结果的请求顺序。

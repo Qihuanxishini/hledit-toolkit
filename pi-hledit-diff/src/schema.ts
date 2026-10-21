@@ -22,7 +22,7 @@ const CHANGE_ITEM_SCHEMA = Type.Object({
 	}),
 	anchors: Type.Array(Type.String({ pattern: ANCHOR_PATTERN }), {
 		minItems: 1, maxItems: 2,
-		description: "One LN#HASH for inserts or single-line replace; [start, end] for a multi-line inclusive range. Do not repeat a single-line anchor.",
+		description: "Exactly one LN#HASH for inserts; prefer [anchor] for single-line replace. Replace also accepts [start, end] inclusive, including equal endpoints.",
 	}),
 	lines: Type.String({ description: "Raw text (\\n separated). Use \"\" for deletion, \"\\n\" for one blank line. Inserts require non-empty text." }),
 }, STRICT_OBJECT);

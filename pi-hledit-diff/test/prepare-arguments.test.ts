@@ -40,7 +40,7 @@ test("decodeFileChangeInput converts unified changes in file order", () => {
 	const decoded = decodeFileChangeInput({
 		path: "src/a.ts",
 		changes: [
-			{ action: "replace", anchors: ["1#BHJ"], lines: "first\r\nsecond\r\n" },
+			{ action: "replace", anchors: ["1#BHJ", "1#BHJ"], lines: "first\r\nsecond\r\n" },
 			{ action: "replace", anchors: ["2#DEL"], lines: "" }, // 删除单行
 			{ action: "insert_before", anchors: ["3#BJM"], lines: "inserted\n" },
 			{ action: "insert_after", anchors: ["2#BJL"], lines: "first\n\n" },
@@ -99,7 +99,7 @@ test("prepareFileChangeArguments validates changes and rejects invalid fields", 
 	const cases: [args: unknown, message: RegExp][] = [
 		[{ ...base, replace_ranges: [{ start_anchor: "12#Ab1", end_anchor: "12#Ab1", lines: "x" }] }, /Grouped arrays.*are no longer supported/],
 		[{ ...base, changes: [{ ...item, action: "delete" }] }, /changes\[0\]\.action must be one of 'replace', 'insert_before', 'insert_after'/],
-		[{ ...base, changes: [{ ...item, extra: "no" }] }, /changes\[0\] \(replace\) was rejected: must not carry extra/],
+		[{ ...base, changes: [{ ...item, extra: "no", anchors: ["12#Ab1-13#Ab2"] }] }, /changes\[0\] \(replace\) was rejected: must not carry extra[\s\S]*changes\[0\]\.anchors\[0\] must be one complete LN#HASH token[\s\S]*two separate array elements/],
 		[{ ...base, changes: [{ action: "insert_before", anchor: "12#Ab1", lines: "x" }] }, /must not carry anchor/],
 		[{ ...base, changes: [{ ...item, end_anchor: "13#Ab2" }] }, /must not carry end_anchor/],
 		[{ ...base, changes: [{ ...item, action: "insert_before", anchors: ["12#Ab1", "13#Ab2"] }] }, /requires exactly one anchor/],
@@ -110,7 +110,6 @@ test("prepareFileChangeArguments validates changes and rejects invalid fields", 
 		[{ ...base, changes: [{ anchors: ["12#Ab1"], lines: "x" }] }, /changes\[0\]\.action must be one of/],
 		[{ ...base, changes: ["12#Ab1"] }, /changes\[0\] must be an object/],
 		[{ ...base, changes: [{ ...item, anchors: [12] }] }, /anchors\[0\] must be a string anchor token/],
-		[{ ...base, changes: [{ ...item, anchors: ["12#Ab1", "12#Ab1"] }] }, /repeats the same token/],
 		...([undefined, null, [], ["12#Ab1", "13#Ab2", "14#Ab3"]].map((anchors): [unknown, RegExp] =>
 			[{ ...base, changes: [{ ...item, anchors }] }, /anchors must be an array of 1-2 anchor tokens/])),
 		[{ ...base, changes: undefined }, /changes must be an array/],
@@ -132,7 +131,7 @@ test("prepareFileChangeArguments validates changes and rejects invalid fields", 
 	const valid: FileChangeInput = {
 		path: "src/a.ts", proof_id: "p.1",
 		changes: [
-			{ action: "replace", anchors: ["12#Ab1"], lines: "x" },
+			{ action: "replace", anchors: ["12#Ab1", "12#Ab1"], lines: "x" },
 			{ action: "replace", anchors: ["13#Ab2"], lines: "" }, // 删除单行
 			{ action: "insert_before", anchors: ["14#Ab3"], lines: "before" },
 			{ action: "insert_after", anchors: ["15#Ab4"], lines: "after" },

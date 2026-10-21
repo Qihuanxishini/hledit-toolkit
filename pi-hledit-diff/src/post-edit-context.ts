@@ -103,7 +103,9 @@ export function formatPostEditContext(
 		if (!verified[index]) return [];
 		const first = span.lines[0]!.anchor;
 		const last = span.lines[span.lines.length - 1]!.anchor;
-		return [`- ${producing![index]!.reference}: ${first}${span.limit > 1 ? `–${last}` : ""} (${span.limit} ${span.limit === 1 ? "line" : "lines"})`];
+		// [喵喵喵]: 与输入使用相同数组语法，避免模型把摘要区间连写成一个 token。
+		const anchors = span.limit > 1 ? [first, last] : [first];
+		return [`- ${producing![index]!.reference}.anchors: ${JSON.stringify(anchors)} (${span.limit} ${span.limit === 1 ? "line" : "lines"})`];
 	});
 	const visible = formatUpdatedAnchorSpans(fallback);
 	return {

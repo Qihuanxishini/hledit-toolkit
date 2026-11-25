@@ -245,9 +245,10 @@ wrapper 输出上限为 1 MiB，保护异常或不兼容 CLI 输出；单窗口 
 - 只读失败显示“读取失败”；编辑失败区分待复核（未写入）、未写入、未执行与结果未知，只有已返回可用 proof 的恢复结果标为待复核。I/O 优先展示原始诊断，补读失败优先展示内层读取原因；宿主错误标记与已确认成功回包冲突时显示“状态不一致”，不推翻已确认的写入状态。展开正文保留完整路径与指令；折叠摘要仍有单行宽度限制，模型正文不受影响；
 - 模型正文在提交文本核对一致时只展示 change 编号和新锚点首尾，完整证据保存在 details；返回端点可配新 proof 续编，中间新行按需补读。不满足紧凑条件则显示有界 Updated anchors 正文。区间外存续目标由历史 proof/token 对迁移；纯删除无 anchor 块。截断或容量导致证据不完整时明确说明后续可用性，不得改报提交失败；
 - expanded updated-anchor rows 只来自 `details.updatedAnchorSpans`，不解析模型正文；
-- diff 在组件净宽达到 120 列、两侧行号区之外仍有正文空间时切为 split，与 `pi-tool-display` 的默认自动分栏门槛一致；纯单侧或缺少操作关联的旧预览保持 unified。双栏左旧右新并保留独立行号与续行对齐；
-- 两种布局沿用 `changePreview.lines` 的原文件操作位置顺序，只配对同一 `changeIndex` 的连续片段；单栏按每对旧行、新行依次展开，上下文仅显示一次，多出的行单独显示。双栏复用同一配对；不跨操作同文匹配，也不把 `oldLine` / `newLine` 混为同一套坐标排序。缺少操作关联的旧预览保持原始顺序；
-- 差异使用按深浅主题和 truecolor/256-color 模式选择的独立整行红绿底色，保留语法高亮，不叠加字词级底色；摘要、上下文、空栏、中缝、省略行、边框和折叠提示固定使用 `#283228` 并填满宽度（取自 `pi-tool-display` 使用的 `classic-dark.toolSuccessBg`，256 色模式由宿主量化）。摘要保留 `↳ diff`、增删计数和按比例分配红绿段的色条；窄屏先为色条留位，再按完整信息单元缩略辅助说明，增删计数与局部预览状态放不下时色条让位，不截断数字或状态文本。续行留空标记与行号，不显示箭头。`theme.style()` 处理内部 reset，单元格末尾恢复工具容器背景；布局缓存必须在 `invalidate()` 正确清理；高亮缓存按“语言 + 行文本”内容键跨组件复用，`invalidate()` 时重验哨兵输出，主题或语言可用性变化才整体丢弃；
+- diff 始终单栏，使用 `+/- 行号 │ 代码` 和紧凑摘要；长行按字素硬折行，保留原有空白，不拆开 Unicode 字素，续行保留增删标记但不重复源行号。窄屏隐藏行号，极窄时只显示摘要；
+- 布局沿用 `changePreview.lines` 的文件位置顺序，连续变更段先删后增；只将同一 `changeIndex` 连续片段中的旧／新行配对用于行内强调，不跨操作同文匹配，也不把 `oldLine` / `newLine` 混为一套坐标排序。缺少操作关联的旧预览保持原始顺序，不猜测配对；
+- 差异行底色从 `theme.colors.toolSuccessBg` 与 `toolDiffAdded` / `toolDiffRemoved` 混合，配对行的不同片段使用更深的红绿底色；保留语法前景与文字属性，由宿主量化为 truecolor 或 256 色。摘要使用 `↳ diff`、增删计数、hunk 数和增删比例色条；局部预览不显示完整 hunk 数。色条按比例分配红绿格，两类变更都有时各至少一格；空间不足时优先保留计数和局部预览状态；
+- 折叠态最多 24 个屏幕行，优先露出增删；展开态最多 2,000 个屏幕行。只布局展示片段预算加一行哨兵，高亮和 ANSI 着色仅处理可见行，不为隐藏尾部生成完整折行数组或统计精确隐藏行数。布局与颜色缓存在 `invalidate()` 清理；高亮缓存按“语言 + 行文本”跨组件复用，失效时重验哨兵，主题或语言可用性变化才整体丢弃；
 - 语法高亮只处理规范化显示行不超过 8,192 UTF-16 code units 的内容；超长行保留完整纯文本、控制字符转义与宽度计算，只跳过同步语法着色。预算不影响源码、proof 或模型正文；
 - `session_before_compact` 从三个工具的结构化结果补充 fileOps：read/search 成功 → read；已验证且返回过源码的不完整多窗口预览 → read（不授予 proof）；带严格验证 `recoveredReads` 的零写入 apply → read；apply content change → modified；apply no-op → read；`outcome_unknown` → modified；其余确认零写入结果不记录。
 
@@ -273,7 +274,7 @@ wrapper 输出上限为 1 MiB，保护异常或不兼容 CLI 输出；单窗口 
 | `src/read-args.ts` | 工具路径归一化、读取/搜索参数、补读窗口及 read 提示的统一参数格式。 |
 | `src/change-preview.ts` | 提交绑定 preview、UTF-8 cap、结构重验和 diff 文本桥。 |
 | `src/post-edit-context.ts` | `updatedAnchorSpans` 验证与模型正文格式化。 |
-| `src/render.ts` / `src/diff-renderer.ts` | 结构化锚点与自适应 diff TUI；读取预览共用 12 个源码屏幕行的折叠预算，按实际换行溢出显示展开提示，展开保留完整页面，模型正文与 proof 不受展示裁剪影响。 |
+| `src/render.ts` / `src/diff-renderer.ts` | 结构化锚点与单栏 diff TUI；读取预览共用 12 个源码屏幕行的折叠预算，按实际换行溢出显示展开提示，展开保留完整页面，模型正文与 proof 不受展示裁剪影响。 |
 | `src/syntax-highlight.ts` | 两套 TUI 共用的语言解析与按行高亮缓存。 |
 | `src/compaction-files.ts` | 三工具结构化结果的 compaction fileOps。 |
 

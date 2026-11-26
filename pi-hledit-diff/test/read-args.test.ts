@@ -9,21 +9,16 @@ import {
 	MAX_READ_LIMIT,
 	buildReadArgs,
 	buildSearchArgs,
-	normalizeReadRequest,
 	normalizeSearchRequest,
 	normalizeToolPath,
 } from "../src/read-args.ts";
 
 test("buildReadArgs protects flag-like paths with the positional separator", () => {
-	assert.deepEqual(buildReadArgs(normalizeReadRequest({ path: "--limit" })), ["read-range", "--offset", "1", "--limit", String(DEFAULT_READ_LIMIT), "--", "--limit"]);
+	assert.deepEqual(buildReadArgs({ path: "--limit", offset: 1, limit: DEFAULT_READ_LIMIT }), ["read-range", "--offset", "1", "--limit", String(DEFAULT_READ_LIMIT), "--", "--limit"]);
 });
 
 test("buildReadArgs accepts positive integer offset and limit", () => {
-	assert.deepEqual(buildReadArgs(normalizeReadRequest({ path: "src/a.ts", offset: 10, limit: 20 })), ["read-range", "--offset", "10", "--limit", "20", "--", "src/a.ts"]);
-});
-
-test("buildReadArgs ignores invalid offset and clamps oversized limit", () => {
-	assert.deepEqual(buildReadArgs(normalizeReadRequest({ path: "src/a.ts", offset: 0, limit: MAX_READ_LIMIT + 100 })), ["read-range", "--offset", "1", "--limit", String(MAX_READ_LIMIT), "--", "src/a.ts"]);
+	assert.deepEqual(buildReadArgs({ path: "src/a.ts", offset: 10, limit: 20 }), ["read-range", "--offset", "10", "--limit", "20", "--", "src/a.ts"]);
 });
 
 test("buildSearchArgs applies regex defaults and protects flag-like patterns", () => {
@@ -57,6 +52,10 @@ test("normalizeToolPath converts msys drive paths on Windows", () => {
 	const normalized = normalizeToolPath("/c/Users/example/file.ts");
 	const expected = process.platform === "win32" ? "c:/Users/example/file.ts" : "/c/Users/example/file.ts";
 	assert.equal(normalized, expected);
+	for (const prefix of ["/c", "/mnt/c", "/cygdrive/c"]) {
+		const mixed = `${prefix}/folder\\file.ts`;
+		assert.equal(normalizeToolPath(mixed), mixed);
+	}
 });
 
 test("normalizeToolPath expands home paths without expanding named users", () => {
@@ -64,7 +63,6 @@ test("normalizeToolPath expands home paths without expanding named users", () =>
 	assert.equal(normalizeToolPath("~/"), join(homedir(), ""));
 	assert.equal(normalizeToolPath("~/.pi/settings.json"), join(homedir(), ".pi/settings.json"));
 	assert.equal(normalizeToolPath("@~/.pi/settings.json"), join(homedir(), ".pi/settings.json"));
-	assert.equal(normalizeReadRequest({ path: "~/read.txt" }).path, join(homedir(), "read.txt"));
 	assert.equal(normalizeSearchRequest({ path: "~/search.txt", pattern: "token" }).path, join(homedir(), "search.txt"));
 	assert.equal(normalizeToolPath("~other/file.txt"), "~other/file.txt");
 	assert.equal(normalizeToolPath("src/~/file.txt"), "src/~/file.txt");

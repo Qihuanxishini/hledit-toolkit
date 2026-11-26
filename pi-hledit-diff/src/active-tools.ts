@@ -1,39 +1,23 @@
-export const HLEDIT_READ_ANCHORS_TOOL = "hledit_read_anchors";
+export const HLEDIT_READ_TOOL = "read";
+export const HLEDIT_READ_ANCHORS_TOOL = "read_windows";
 export const HLEDIT_SEARCH_ANCHORS_TOOL = "hledit_search_anchors";
-export const HLEDIT_APPLY_FILE_CHANGES_TOOL = "hledit_apply_file_changes";
+export const HLEDIT_APPLY_FILE_CHANGES_TOOL = "edit";
 
-const HLEDIT_TOOL_NAMES = new Set([
-	"edit",
-	"hledit",
-	HLEDIT_READ_ANCHORS_TOOL,
-	HLEDIT_SEARCH_ANCHORS_TOOL,
-	HLEDIT_APPLY_FILE_CHANGES_TOOL,
-]);
+const RETIRED_TOOLS = new Set(["hledit", "hledit_read_anchors", "hledit_apply_file_changes"]);
 
-export function preferAnchoredEditingTools(activeTools: string[]): string[] {
-	const withoutReplacedTools = activeTools.filter((toolName) => !HLEDIT_TOOL_NAMES.has(toolName));
-	return [...withoutReplacedTools, HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL];
+export function preferAnchoredEditingTools(activeTools: string[], availableTools: readonly string[]): string[] {
+	return [...new Set([
+		...activeTools.filter((name) => !RETIRED_TOOLS.has(name)),
+		...[HLEDIT_READ_TOOL, HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL]
+			.filter((name) => availableTools.includes(name)),
+	])];
 }
 
-export function preferBuiltInEditFallback(activeTools: string[]): string[] {
-	const fallbackTools: string[] = [];
-	let hasBuiltInEdit = false;
-	for (const toolName of activeTools) {
-		if (toolName === "hledit" || isAnchoredEditingTool(toolName)) {
-			continue;
-		}
-		if (toolName === "edit") {
-			if (!hasBuiltInEdit) {
-				fallbackTools.push(toolName);
-				hasBuiltInEdit = true;
-			}
-			continue;
-		}
-		fallbackTools.push(toolName);
-	}
-	return hasBuiltInEdit ? fallbackTools : [...fallbackTools, "edit"];
+// [喵喵喵]: 旧名称仅用于恢复历史事件，不注册为可调用别名。
+export function isAnchoredReadTool(name: string): boolean {
+	return name === HLEDIT_READ_TOOL || name === HLEDIT_READ_ANCHORS_TOOL || name === HLEDIT_SEARCH_ANCHORS_TOOL || name === "hledit_read_anchors";
 }
 
-export function isAnchoredEditingTool(toolName: string): boolean {
-	return toolName === HLEDIT_READ_ANCHORS_TOOL || toolName === HLEDIT_SEARCH_ANCHORS_TOOL || toolName === HLEDIT_APPLY_FILE_CHANGES_TOOL;
+export function isAnchoredEditTool(name: string): boolean {
+	return name === HLEDIT_APPLY_FILE_CHANGES_TOOL || name === "hledit_apply_file_changes";
 }

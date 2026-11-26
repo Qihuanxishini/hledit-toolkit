@@ -1,4 +1,4 @@
-import { buildReadArgs, formatReadCall, MAX_READ_LIMIT, normalizeReadRequest, suggestedReadWindow } from "./read-args.ts";
+import { buildReadArgs, formatReadCall, MAX_READ_LIMIT, suggestedReadWindow } from "./read-args.ts";
 import {
 	formatReadProofDiagnosis,
 	lineRangeDescription,
@@ -105,7 +105,7 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 			return budgetResult(`Automatic recovery stopped at its budget (${MAX_RECOVERY_PAGES} pages / ${Math.floor(MAX_RECOVERY_TEXT_BYTES / 1024)} KiB).`);
 		}
 		const range = pending[0]!;
-		const readRequest = normalizeReadRequest({ path, offset: range.start, limit: Math.min(MAX_READ_LIMIT, range.end - range.start + 1) });
+		const readRequest = { path, offset: range.start, limit: Math.min(MAX_READ_LIMIT, range.end - range.start + 1) };
 		const readResult = attachEvidencePath(
 			readAnchorsResult(await run(buildReadArgs(readRequest), undefined, cwd, signal), readRequest),
 			path,
@@ -140,7 +140,7 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 			changedRevision = recoveredRead.revision;
 			const message = "The file revision changed during proof recovery; the previous read plan is no longer valid.";
 			return recoveryResult("proof_recovery_source_changed", message, [
-				`${message} No content was written. Recovery pages were discarded. Reread the intended targets with hledit_read_anchors, reconfirm their locations, and use fresh anchors and proof_id; do not blindly resubmit the old batch.`,
+				`${message} No content was written. Recovery pages were discarded. Reread the intended targets with read, reconfirm their locations, and use fresh anchors and proof_id; do not blindly resubmit the old batch.`,
 			], "relocate_target");
 		}
 		expectedRevision = recoveredRead.revision;
@@ -160,7 +160,7 @@ export async function recoverMissingReadProof(request: ReadProofRecoveryRequest)
 			const truncatedLine = recoveredRead.lines.find((line) => line.textTruncated)!.line;
 			const message = `Source-line text at line ${truncatedLine} was truncated and cannot establish edit proof.`;
 			return recoveryResult("source_line_truncated", message, [
-				`${message} Do not resubmit this hledit_apply_file_changes call. Use write only if an intentional complete-file rewrite is safe.`,
+				`${message} Do not resubmit this edit call. Use write only if an intentional complete-file rewrite is safe.`,
 				...(!fitsBudget ? ["The truncated source page was omitted to stay within the recovery text budget."] : []),
 			], "inspect_source");
 		}

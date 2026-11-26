@@ -1,6 +1,6 @@
 // LN#HHH 锚点 token 的唯一语法定义，与 CLI anchorRE 一致：行号为不带前导零的正整数，
 // hash 为三位 URL-safe Base64（CLI anchorHashAlphabet）。
-export const ANCHOR_HASH_PATTERN = "[A-Za-z0-9_-]{3}";
+const ANCHOR_HASH_PATTERN = "[A-Za-z0-9_-]{3}";
 const ANCHOR_LINE_PATTERN = "[1-9]\\d*";
 export const ANCHOR_PATTERN = `^${ANCHOR_LINE_PATTERN}#${ANCHOR_HASH_PATTERN}$`;
 const ANCHOR_TOKEN = new RegExp(`^(${ANCHOR_LINE_PATTERN})#${ANCHOR_HASH_PATTERN}$`);

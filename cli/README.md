@@ -15,7 +15,7 @@ make build
 make check
 ```
 
-The toolchain is pinned in `rust-toolchain.toml` and dependencies in `Cargo.lock`. Windows metadata preservation uses `windows-sys`. Read-only commands borrow lines from a single UTF-8 buffer; batch sorting and file reconstruction each run once.
+The toolchain is pinned in `rust-toolchain.toml` and dependencies in `Cargo.lock`. Make uses an explicit `TARGET` (the Rust host triple by default) and `TARGET_DIR` (`target` by default) for builds, checks, installation, and cleanup. Override these Make variables rather than Cargo's `CARGO_BUILD_TARGET` or `CARGO_TARGET_DIR`; `make install` copies the executable from that same target/output pair. Windows metadata preservation uses `windows-sys`. Read-only commands borrow lines from a single UTF-8 buffer; batch sorting and file reconstruction each run once.
 
 Build or verify the bundled Windows x64 CLI from the repository root:
 
@@ -24,7 +24,7 @@ pwsh -NoProfile -File cli/build-bundle.ps1
 pwsh -NoProfile -File cli/build-bundle.ps1 -VerifyOnly
 ```
 
-The bundle uses a static CRT and includes dependency licenses plus a source/artifact fingerprint. Fingerprints detect stale artifacts; they are not a reproducible-build or authenticity proof. CI validates both the tracked and rebuilt binaries against the plugin contract.
+The bundle explicitly builds `x86_64-pc-windows-msvc` under `cli/target` and packages from that same output path, independent of Cargo target/output configuration. It uses a static CRT and includes dependency licenses plus a source/artifact fingerprint. Fingerprints detect stale artifacts; they are not a reproducible-build or authenticity proof. CI validates both the tracked and rebuilt binaries against the plugin contract.
 
 ## Commands
 
@@ -111,7 +111,7 @@ Confirmed zero-write failures return JSON on stdout with exit code `0`; malforme
 
 ## Pi extension
 
-[`../pi-hledit-diff`](../pi-hledit-diff/) bundles this CLI and exposes `hledit_read_anchors`, `hledit_search_anchors`, and `hledit_apply_file_changes`. It requires CLI 3.x with all capabilities in [`SPEC.md`](./SPEC.md), including `searchIgnoreCase`, `searchRegex`, `searchLiteral`, and `search`; `contentReplaceOnce` must be absent.
+[`../pi-hledit-diff`](../pi-hledit-diff/) bundles this CLI and exposes `read`, `read_windows`, `hledit_search_anchors`, and `edit`. It requires CLI 3.x with all capabilities in [`SPEC.md`](./SPEC.md), including `searchIgnoreCase`, `searchRegex`, `searchLiteral`, and `search`; `contentReplaceOnce` must be absent.
 
 ## Further reference
 

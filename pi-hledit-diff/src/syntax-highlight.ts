@@ -5,7 +5,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 // 升级：预算内仍出现主线程卡顿 → 可中断高亮。超限仅降级着色，不截断正文。
 const MAX_HIGHLIGHT_CODE_UNITS = 8_192;
 
-export type HighlightedText = {
+type HighlightedText = {
 	text: string;
 	width: number;
 };
@@ -58,7 +58,7 @@ function refreshHighlightCache(languageKey: string, language: string | undefined
 	sentinelOutputs.set(languageKey, sentinel);
 }
 
-export type HighlightedTextCache = {
+type HighlightedTextCache = {
 	highlight(line: { content: string }): HighlightedText;
 	clear(): void;
 };

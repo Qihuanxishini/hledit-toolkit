@@ -7,7 +7,7 @@
 | 目录 | 用途 |
 | --- | --- |
 | [`cli/`](./cli/) | Rust 编写的 `hledit` CLI：提供结构化 `read-range`、单快照 `read-windows`、`search` 与原子 `batch` 协议；使用 v2 `LN#HASH`（三位 URL-safe Base64）锚点和 raw-byte revision。 |
-| [`pi-hledit-diff/`](./pi-hledit-diff/) | Pi 插件：注册严格的 `hledit_read_anchors`、`hledit_search_anchors` 与 `hledit_apply_file_changes` 工具，并提供 evidence 管理和 diff 渲染。 |
+| [`pi-hledit-diff/`](./pi-hledit-diff/) | Pi 插件：统一 `read` / `read_windows` / `edit` 证据链，保留 `hledit_search_anchors`，并提供分支 evidence 管理和 diff 渲染。 |
 
 插件当前面向 Windows x64，仓库内附带 `pi-hledit-diff/bin/hledit.exe`。
 
@@ -26,7 +26,7 @@
 - **有界证据与恢复**：完整源行形成 proof，缺口可定向补读；越界、截断或容量不足给出明确下一步，不自动重试写入。
 - **结构化搜索**：RE2 兼容正则与字面量搜索，支持上下文、大小写选项及物理行分页。
 - **编码与写入保护**：保留 BOM、局部行尾及 Windows 权限/附加流；未知写入结果保留恢复材料，不盲目覆盖。
-- **Pi 集成**：分支证据重放、主题自适应锚点预览，以及带行内强调和增删比例色条的单栏 diff；CLI 不可用时恢复内置 `edit`。
+- **Pi 集成**：分支证据重放、主题自适应锚点预览，以及带行内强调和增删比例色条的单栏 diff；CLI 启动失败不接管，接管后故障拒绝编辑，不降级无 proof 写入。Hash 与 Snow 等 read/edit 覆盖后端互斥启用。
 
 ## 开发验证
 

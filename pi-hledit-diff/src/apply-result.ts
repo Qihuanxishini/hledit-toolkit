@@ -126,22 +126,9 @@ function appendStaleAnchorDetails(lines: string[], staleAnchors: HleditStaleAnch
 
 	lines.push(`Anchor verification for ${fileChangeReference(staleAnchors[0]!.changeNumber - 1)}:`);
 	for (const staleAnchor of staleAnchors) {
-		const fields = staleAnchor.fields.join("/");
-		lines.push(`- Field: ${fields}`, `  Submitted anchor: ${staleAnchor.requestedAnchor}`);
-		if (staleAnchor.currentAnchor) {
-			const annotatedAnchor =
-				staleAnchor.currentText === undefined
-					? staleAnchor.currentAnchor
-					: `${staleAnchor.currentAnchor}:${staleAnchor.currentText}${staleAnchor.currentTextTruncated ? " (text truncated)" : ""}`;
-			lines.push(
-				`  Current line at the same number: ${annotatedAnchor}`,
-				`  After verifying the intended target, explicitly replace ${fields} with ${staleAnchor.currentAnchor} in a new request.`,
-			);
-		} else {
-			lines.push("  The current line no longer exists; reread the affected range.");
-		}
+		lines.push(`- ${staleAnchor.fields.join("/")}: ${staleAnchor.requestedAnchor} -> ${staleAnchor.currentAnchor ?? "(line no longer exists)"}`);
 	}
-	lines.push("This information is for verification only. The tool never repairs anchors or retries a batch automatically.");
+	lines.push("Reconfirm targets from current source; mappings are diagnostic only, not automatic repairs or retries.");
 }
 
 function appendCurrentAnchorContext(lines: string[], context: BatchAnchorContext | undefined): void {
@@ -159,7 +146,7 @@ function appendCurrentAnchorContext(lines: string[], context: BatchAnchorContext
 }
 
 function staleReadInstruction(result: Record<string, unknown>, context: ApplyResultContext): string {
-	const genericInstruction = "Before retrying, call hledit_read_anchors to reread the affected range. Do not reuse anchors from before the change.";
+	const genericInstruction = "Before retrying, call read to reread the affected range. Do not reuse anchors from before the change.";
 	if (!context.path) return genericInstruction;
 	const failed = isIntegerAtLeast(result.failed, 0) ? result.failed : 0;
 	const change = context.changes?.[failed];
@@ -302,10 +289,10 @@ function appendInsufficientReadProofRecovery(
 	if (error.code !== "insufficient_read_proof") return;
 	const failedIndex = isIntegerAtLeast(result.failed, 0) ? result.failed : undefined;
 	const change = failedIndex === undefined ? undefined : context.changes?.[failedIndex];
-	const resubmitInstruction = "use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.";
+	const resubmitInstruction = "use proof_id from the latest successful read page and current anchors, then resubmit the edit batch.";
 	const genericInstruction = context.path
-		? `Call hledit_read_anchors for ${JSON.stringify(context.path)} with windows covering every source line required by the failed change, then ${resubmitInstruction}`
-		: `Call hledit_read_anchors to reread every source line required by the failed change, then ${resubmitInstruction}`;
+		? `Call read for ${JSON.stringify(context.path)} covering every source line required by the failed change, then ${resubmitInstruction}`
+		: `Call read to reread every source line required by the failed change, then ${resubmitInstruction}`;
 	if (failedIndex === undefined || !context.path || !change) {
 		lines.push(genericInstruction);
 		return;
@@ -461,7 +448,7 @@ function parseApplySuccess(
 }
 
 function invalidApplyResponseText(): string {
-	return `The bundled hledit returned an incompatible batch response. The write outcome is unknown; the file may have changed. Do not retry the original request; call hledit_read_anchors first. Expected a complete rejection response or ok:true, a valid revision, boolean contentChanged, editsApplied and editDeltas consistent with the request, line-count statistics, and updatedAnchorSpans matching the produced ranges.\n\n${HLEDIT_INSTALL_HINT}`;
+	return `The bundled hledit returned an incompatible batch response. The write outcome is unknown; the file may have changed. Do not retry the original request; call read first. Expected a complete rejection response or ok:true, a valid revision, boolean contentChanged, editsApplied and editDeltas consistent with the request, line-count statistics, and updatedAnchorSpans matching the produced ranges.\n\n${HLEDIT_INSTALL_HINT}`;
 }
 
 function outcomeUnknownText(run: HleditRun): string {
@@ -474,7 +461,7 @@ function outcomeUnknownText(run: HleditRun): string {
 		// [喵喵喵]: 保留恢复文件时目标可能已不存在，重读会失败并诱导模型凭记忆重建文件。(2026-09-24)
 		recoveryFilesRetained
 			? "The target may be missing or replaced: the original content is in the recovery file and the new content is in the replacement candidate listed below. Do not recreate or overwrite the target; report these paths to the user and let them decide how to restore it."
-			: "Call hledit_read_anchors to reread the target file first.",
+			: "Call read to reread the target file first.",
 	];
 	if (diagnostic) {
 		lines.push(`Diagnostic: ${diagnostic}${diagnostic.length < rawDiagnostic.length ? "…" : ""}`);
@@ -502,7 +489,7 @@ function formatApplyRunText(
 	return applySuccessValid ? formatApplyResult(parsed) : invalidApplyResponseText();
 }
 
-export function extractCliSummary(parsed: Record<string, unknown> | null): Record<string, unknown> {
+function extractCliSummary(parsed: Record<string, unknown> | null): Record<string, unknown> {
 	if (!parsed) {
 		return {};
 	}

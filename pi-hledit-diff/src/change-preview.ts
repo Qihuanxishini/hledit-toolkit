@@ -61,7 +61,7 @@ function* iteratePreviewLines(segments: readonly PreviewSegment[], reversed = fa
 	}
 }
 
-const BLOCK_DIFF_LINE = /^([ +\-])\s*(\d+)\s(.*)$/s;
+const BLOCK_DIFF_LINE = /^([+\-])\s*(\d+)\s(.*)$/s;
 
 // [喵喵喵]: 受控简化 — 每次 apply 的最小 diff 累计输入不超过 2000 行/256 KiB；
 // 超限块按输出预算惰性保留首尾。预算内仍出现卡顿时升级为可中断 diff。
@@ -95,16 +95,8 @@ function appendBlockSegments(
 		if (!Number.isSafeInteger(relativeLine) || relativeLine < 1) continue;
 		if (match[1] === "-") {
 			lines.push({ kind: "remove", oldLine: block.oldStart + relativeLine - 1, text: match[3] ?? "", changeIndex: block.changeIndex });
-		} else if (match[1] === "+") {
-			lines.push({ kind: "add", newLine: newStart + relativeLine - 1, text: match[3] ?? "", changeIndex: block.changeIndex });
 		} else {
-			lines.push({
-				kind: "context",
-				oldLine: block.oldStart + relativeLine - 1,
-				newLine: newStart + relativeLine - 1,
-				text: match[3] ?? "",
-				changeIndex: block.changeIndex,
-			});
+			lines.push({ kind: "add", newLine: newStart + relativeLine - 1, text: match[3] ?? "", changeIndex: block.changeIndex });
 		}
 	}
 	target.push({ lines });

@@ -227,6 +227,6 @@ test("output overflow after a started write keeps outcome unknown", async (t) =>
 	const text = result.content[0]?.text ?? "";
 	assert.match(text, /write outcome is unknown/);
 	assert.match(text, /Do not retry/);
-	assert.match(text, /hledit_read_anchors/);
+	assert.match(text, /read/);
 	assert.doesNotMatch(text, /No content was written|no write was attempted|was not started/i);
 });

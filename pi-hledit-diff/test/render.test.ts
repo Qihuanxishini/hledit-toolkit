@@ -277,7 +277,7 @@ test("renderReadAnchorsResult limits continuation to the requested range", () =>
     result.details.read!.requested.limit = 4;
     const incomplete = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "notes.txt" } }), 80);
     assert.equal(incomplete[0], "↳ 2 行锚点 • 第 8-9 行 / 共 20 行 • 下一页从第 10 行开始");
-    assert.ok(incomplete.some((line) => line.includes("继续读取请使用 windows: [{ offset: 10, limit: 2 }]")));
+    assert.ok(incomplete.some((line) => line.includes("继续读取请使用 offset: 10, limit: 2")));
 });
 
 test("renderReadAnchorsResult folds structured errors to the actionable message", () => {

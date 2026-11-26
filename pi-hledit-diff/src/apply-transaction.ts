@@ -44,7 +44,7 @@ export async function runApplyTransaction(
 	const normalizedParams = { ...params, path };
 	if (!normalizedParams.proof_id) {
 		return attachEvidencePath(
-			rejectedToolResult("The apply request is missing proof_id. Call hledit_read_anchors first and use its returned proof_id.", {
+			rejectedToolResult("The edit request is missing proof_id. Call read first and use its returned proof_id.", {
 				code: "invalid_proof_id", message: "proof_id is required for anchored edits.",
 			}), path, evidencePath,
 		);

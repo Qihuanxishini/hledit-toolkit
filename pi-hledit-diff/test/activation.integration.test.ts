@@ -42,12 +42,19 @@ function registerActivationHarness() {
 	const pi = {
 		registerTool(tool: RegisteredTool) {
 			tools.set(tool.name, tool);
+			if (!activeTools.includes(tool.name)) activeTools.push(tool.name);
 		},
 		registerCommand(name: string, command: ExtensionCommand) {
 			commands.set(name, command);
 		},
 		on(eventName: string, listener: ExtensionListener) {
 			listeners.set(eventName, listener);
+		},
+		getSettings() { return {}; },
+		getAllTools() {
+			return [...new Set(["read", "edit", ...tools.keys()])].map((name) => ({
+				name, ...tools.get(name), sourceInfo: { source: tools.has(name) ? "local" : "builtin", path: tools.has(name) ? "test-extension.ts" : name },
+			}));
 		},
 		getActiveTools() {
 			return [...activeTools];
@@ -87,7 +94,7 @@ test("anchored editing tools stay active regardless of current read evidence", a
 		sessionManager: { getBranch: () => branch },
 	};
 	const harness = registerActivationHarness();
-	const expectedActiveTools = ["read", "bash", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL];
+	const expectedActiveTools = ["read", "edit", "bash", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL];
 	await harness.listener("session_start")({}, context);
 	assert.deepEqual(harness.activeTools(), expectedActiveTools);
 
@@ -104,11 +111,11 @@ test("anchored editing tools stay active regardless of current read evidence", a
 	assert.match(prooflessApply.content[0]?.text ?? "", /missing proof_id/);
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
 
-	const readTool = harness.tools.get(HLEDIT_READ_ANCHORS_TOOL);
+	const readTool = harness.tools.get("read");
 	assert.ok(readTool);
 	const failedRead = await readTool.execute(
 		"failed-read",
-		{ path: "target.txt", windows: [{ offset: 99, limit: 1 }] } as never,
+		{ path: "target.txt", offset: 99, limit: 1 } as never,
 		undefined,
 		undefined,
 		context,
@@ -118,7 +125,7 @@ test("anchored editing tools stay active regardless of current read evidence", a
 
 	const successfulRead = await readTool.execute(
 		"read",
-		{ path: "target.txt", windows: [{ offset: 2, limit: 1 }] } as never,
+		{ path: "target.txt", offset: 2, limit: 1 } as never,
 		undefined,
 		undefined,
 		context,
@@ -150,7 +157,7 @@ test("anchored editing tools stay active regardless of current read evidence", a
 		type: "message",
 		message: {
 			role: "toolResult",
-			toolName: HLEDIT_READ_ANCHORS_TOOL,
+			toolName: "read",
 			details: successfulRead.details,
 		},
 	}];
@@ -184,7 +191,6 @@ test("status resynchronizes tools and restores branch evidence only after recove
 	};
 	const harness = registerActivationHarness();
 	await harness.listener("session_start")({}, context);
-	const expectedTools = harness.activeTools();
 	assert.equal(replays, 1);
 	const readTool = harness.tools.get(HLEDIT_READ_ANCHORS_TOOL)!;
 	const applyTool = harness.tools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
@@ -199,19 +205,19 @@ test("status resynchronizes tools and restores branch evidence only after recove
 
 	harness.setActiveTools(["read", "edit", "bash", "custom"]);
 	await status("", context);
-	assert.deepEqual(harness.activeTools(), ["read", "bash", "custom", ...expectedTools.slice(2)]);
+	assert.deepEqual(harness.activeTools(), ["read", "edit", "bash", "custom", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL]);
 	assert.equal(replays, 1);
 	assert.equal(notifications.at(-1)?.type, "info");
 
 	await status("", { ...context, cwd: join(directory, "missing") });
-	assert.deepEqual(harness.activeTools(), ["read", "bash", "custom", "edit"]);
+	assert.deepEqual(harness.activeTools(), ["read", "edit", "bash", "custom", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL]);
 	assert.equal(notifications.at(-1)?.type, "error");
 	const invalidated = await applyTool.execute("status-invalidated", params, undefined, undefined, context);
-	assert.equal(invalidated.details.error?.code, "invalid_proof_id");
+	assert.equal(invalidated.details.error?.code, "backend_unavailable");
 
 	await status("", context);
 	assert.equal(replays, 2);
-	assert.deepEqual(harness.activeTools(), ["read", "bash", "custom", ...expectedTools.slice(2)]);
+	assert.deepEqual(harness.activeTools(), ["read", "edit", "bash", "custom", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL]);
 	await status("", context);
 	assert.equal(replays, 2);
 	const restored = await applyTool.execute("status-restored", params, undefined, undefined, context);

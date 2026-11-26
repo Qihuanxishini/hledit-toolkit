@@ -20,7 +20,7 @@ export type RenderComponent = HleditRenderComponent;
 export type RenderTheme = HleditRenderTheme;
 type RenderResult = AgentToolResult<TextResult["details"]>;
 
-export type ToolRenderContextLike = {
+type ToolRenderContextLike = {
 	args?: unknown;
 	isError?: boolean;
 	cwd?: string;
@@ -28,7 +28,6 @@ export type ToolRenderContextLike = {
 
 type AnchoredSourceLine = {
 	anchor: string;
-	lineNumber: number;
 	content: string;
 };
 
@@ -145,7 +144,7 @@ function createAnchoredPreviewComponent(
 	const visible = expanded ? lines : lines.slice(0, COLLAPSED_ANCHOR_ROWS);
 	// [喵喵喵]: 多渲染一个屏幕行检测换行溢出；单窗口与多窗口共用，不能用源码行数判断长行是否隐藏。
 	const source = createAnchoredSourceRowsComponent(
-		visible.map((line) => ({ anchor: line.anchor, lineNumber: line.line, content: line.text })), path, theme,
+		visible.map((line) => ({ anchor: line.anchor, content: line.text })), path, theme,
 		expanded ? Number.POSITIVE_INFINITY : COLLAPSED_ANCHOR_ROWS + 1,
 	);
 	return component((width) => {
@@ -380,7 +379,7 @@ export function renderFileChangesResult(
 
 	const updatedAnchorSpans = parsedDetails.updatedAnchorSpans;
 	const updatedAnchors = options.expanded
-		? updatedAnchorSpans.flatMap((span) => span.lines.map((line) => ({ anchor: line.anchor, lineNumber: line.line, content: line.text })))
+		? updatedAnchorSpans.flatMap((span) => span.lines.map((line) => ({ anchor: line.anchor, content: line.text })))
 		: [];
 	if (updatedAnchors.length === 0 && !diffWarning && writeWarnings.length === 0) return changeBodyComponent;
 	const updatedAnchorRows = updatedAnchors.length > 0 ? createAnchoredSourceRowsComponent(updatedAnchors, path, theme) : undefined;

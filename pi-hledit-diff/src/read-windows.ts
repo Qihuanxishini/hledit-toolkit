@@ -8,8 +8,8 @@ import type { ReadAnchorsParams } from "./schema.ts";
 
 export type ReadWindow = { offset: number; limit: number };
 export type WindowsRequest = { path: string; windows: ReadWindow[] };
-export type WindowSegment = ReadWindow & { requestedWindows: number[] };
-export type WindowRead = WindowSegment & { lines: HleditReadLine[]; truncated: boolean; nextOffset?: number };
+type WindowSegment = ReadWindow & { requestedWindows: number[] };
+type WindowRead = WindowSegment & { lines: HleditReadLine[]; truncated: boolean; nextOffset?: number };
 export type WindowsReadMetadata = {
 	path: string;
 	revision: string;
@@ -101,7 +101,7 @@ function formatWindowsRead(read: WindowsReadMetadata, proofId?: string): string 
 	const output = proofId ? [`proof_id: ${proofId}`] : ["Incomplete windows; this call created no read proof."];
 	for (const window of read.windows) {
 		const last = window.lines.at(-1);
-		output.push(`-- windows ${window.requestedWindows.join(",")}: ${window.offset}-${window.offset + window.limit - 1}; ${window.lines.length} lines${window.truncated ? "; incomplete" : ""} --`);
+		output.push(`-- windows ${window.requestedWindows.join(",")}: ${window.offset}-${window.offset + window.limit - 1}${window.truncated ? "; incomplete" : ""} --`);
 		output.push(...window.lines.map((line) => `${line.anchor}:${line.text}`));
 		if (window.truncated) output.push(`Pending source lines: ${window.nextOffset}-${window.offset + window.limit - 1}.${last?.textTruncated ? " Source text is truncated; its anchor is not proof." : ""}`);
 	}

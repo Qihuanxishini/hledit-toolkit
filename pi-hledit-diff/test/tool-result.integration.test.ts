@@ -11,6 +11,7 @@ import { formatReadMetadata } from "../src/read-result.ts";
 import type { TextResult } from "../src/result.ts";
 import { MAX_RECOVERY_TEXT_BYTES } from "../src/read-recovery.ts";
 import { prepareFileChangeArguments } from "../src/prepare-arguments.ts";
+import { recordAnchoredFileOperations } from "../src/compaction-files.ts";
 
 type ExtensionEventListener = (event: never, context: never) => unknown;
 type RegisteredTool = {
@@ -26,10 +27,10 @@ type RegisteredTool = {
 	execute: (toolCallId: string, params: never, signal: AbortSignal | undefined, onUpdate: undefined, context: { cwd: string }) => Promise<TextResult>;
 };
 
-function registerExtensionForTest(): {
+async function registerExtensionForTest(): Promise<{
 	registeredTools: Map<string, RegisteredTool>;
 	eventListeners: Map<string, ExtensionEventListener>;
-} {
+}> {
 	const registeredTools = new Map<string, RegisteredTool>();
 	const eventListeners = new Map<string, ExtensionEventListener>();
 	let activeTools = ["read", "edit", "bash"];
@@ -41,6 +42,12 @@ function registerExtensionForTest(): {
 		on(eventName: string, listener: ExtensionEventListener) {
 			eventListeners.set(eventName, listener);
 		},
+		getSettings() { return {}; },
+		getAllTools() {
+			return [...new Set(["read", "edit", ...registeredTools.keys()])].map((name) => ({
+				name, ...registeredTools.get(name), sourceInfo: { source: registeredTools.has(name) ? "local" : "builtin", path: registeredTools.has(name) ? "test-extension.ts" : name },
+			}));
+		},
 		getActiveTools() {
 			return [...activeTools];
 		},
@@ -50,14 +57,15 @@ function registerExtensionForTest(): {
 	};
 
 	piHleditDiffExtension(pi as never);
+	await eventListeners.get("session_start")!({} as never, { cwd: process.cwd(), hasUI: false, sessionManager: { getBranch: () => [] } } as never);
 	return { registeredTools, eventListeners };
 }
 
-test("anchored tools declare model-only exposure and local read/write hints", () => {
-	const { registeredTools, eventListeners } = registerExtensionForTest();
-	assert.deepEqual([...registeredTools.keys()], [HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL]);
+test("anchored tools preserve native read exposure and declare local read/write hints", async () => {
+	const { registeredTools, eventListeners } = await registerExtensionForTest();
+	assert.deepEqual([...registeredTools.keys()], ["read", HLEDIT_READ_ANCHORS_TOOL, HLEDIT_SEARCH_ANCHORS_TOOL, HLEDIT_APPLY_FILE_CHANGES_TOOL]);
 	for (const tool of registeredTools.values()) {
-		assert.equal(tool.exposure, "model-only");
+		assert.equal(tool.exposure, tool.name === "read" ? undefined : "model-only");
 		assert.deepEqual(tool.annotations, tool.name === HLEDIT_APPLY_FILE_CHANGES_TOOL
 			? { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }
 			: { readOnlyHint: true, openWorldHint: false });
@@ -68,7 +76,7 @@ test("anchored tools declare model-only exposure and local read/write hints", ()
 test("feedback recovery diagnostics preserve safety and give actionable next steps", async (t) => {
 	const directory = await mkdtemp(join(process.cwd(), ".hledit-feedback-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const call = (name: string, params: unknown) => registeredTools.get(name)!.execute("feedback", params as never, undefined, undefined, { cwd: directory });
 	const read = (path: string, windows = [{ offset: 1, limit: 160 }]) => call(HLEDIT_READ_ANCHORS_TOOL, { path, windows });
 	const apply = (path: string, proof_id: string | undefined, changes: Array<Record<string, unknown>>) => call(HLEDIT_APPLY_FILE_CHANGES_TOOL, { path, proof_id, changes });
@@ -139,7 +147,7 @@ test("feedback recovery diagnostics preserve safety and give actionable next ste
 });
 
 test("apply returns native errors for invalid input and missing proof", async () => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const apply = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
 	for (const params of [
 		{ path: "target.txt" },
@@ -151,8 +159,8 @@ test("apply returns native errors for invalid input and missing proof", async ()
 	}
 });
 
-test("registered tool metadata explains the contract within its budget and names each flattened guideline", () => {
-	const { registeredTools } = registerExtensionForTest();
+test("registered tool metadata explains the contract within its budget and names each flattened guideline", async () => {
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const searchTool = registeredTools.get(HLEDIT_SEARCH_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
@@ -161,8 +169,8 @@ test("registered tool metadata explains the contract within its budget and names
 	assert.ok(applyTool?.description && applyTool.promptGuidelines);
 	assert.equal(applyTool.prepareArguments, prepareFileChangeArguments);
 
-	assert.equal(readTool.label, "Read for Edit");
-	assert.equal(readTool.promptGuidelines.length, 2);
+	assert.equal(readTool.label, "read_windows");
+	assert.equal(readTool.promptGuidelines.length, 1);
 	assert.equal(searchTool.promptGuidelines.length, 2);
 	assert.equal(applyTool.promptGuidelines.length, 4);
 	for (const [tool, toolName] of [
@@ -172,7 +180,7 @@ test("registered tool metadata explains the contract within its budget and names
 	] as const) {
 		assert.ok(tool.description);
 		assert.ok(tool.promptGuidelines);
-		assert.equal(tool.promptSnippet, undefined);
+		assert.equal(tool.promptSnippet, tool === applyTool ? "Edit files using read proof and line anchors" : undefined);
 		assert.doesNotMatch(tool.description, /[\u4E00-\u9FFF]/u);
 		assert.ok(tool.promptGuidelines.every((guideline) => !/[\u4E00-\u9FFF]/u.test(guideline)));
 		assert.ok(tool.promptGuidelines.every((guideline) => guideline.includes(toolName)), `${toolName} guideline must name its tool`);
@@ -181,22 +189,22 @@ test("registered tool metadata explains the contract within its budget and names
 	const readGuidelines = readTool.promptGuidelines.join(" ");
 	const searchGuidelines = searchTool.promptGuidelines.join(" ");
 	const applyGuidelines = applyTool.promptGuidelines.join(" ");
-	assert.match(readTool.description, /text windows[\s\S]*LN#HASH anchors/);
-	assert.match(readGuidelines, /complete hledit_search_anchors output[\s\S]*verified updated anchors/);
-	assert.match(readGuidelines, /cover every consumed source line[\s\S]*sparse endpoints and truncated text are not proof/);
+	assert.match(readTool.description, /text ranges[\s\S]*shared proof_id/);
+	assert.match(readGuidelines, /not to fetch anchors after read/);
+	assert.match(readGuidelines, /Only a complete multi-window result provides proof/);
 	assert.match(searchTool.description, /literal text[\s\S]*RE2 matches/);
-	assert.match(searchGuidelines, /matching lines, not broad source inspection[\s\S]*hledit_read_anchors/);
-	assert.match(searchGuidelines, /hledit_read_anchors for gaps[\s\S]*Only complete returned lines provide proof/);
+	assert.match(searchGuidelines, /Complete returned lines can be edited directly/);
+	assert.match(searchGuidelines, /use read only for unseen gaps/);
 	const applySchema = JSON.stringify(applyTool.parameters);
-	assert.match(`${applyTool.description} ${applySchema}`, /atomic batch[\s\S]*complete read proof[\s\S]*Ordered array of 1-200 file changes in pre-edit coordinates/);
-	assert.match(applyGuidelines, /proof_id and anchors from the same evidence generation[\s\S]*Old pairs work only for verified surviving targets/);
-	assert.match(applyGuidelines, /Failed reads create no proof/);
-	assert.match(applyGuidelines, /replace with lines: "" deletes the target/);
-	assert.match(applyGuidelines, /Use write only for new\/empty files[\s\S]*full rewrites permitted by recovery guidance/);
+	assert.match(`${applyTool.description} ${applySchema}`, /atomically[\s\S]*complete read proof[\s\S]*Ordered array of 1-200 file changes in pre-edit coordinates/);
+	assert.match(applyGuidelines, /proof_id and anchors from the same file and evidence generation/);
+	assert.match(applyGuidelines, /Never pair old anchors with an unrelated proof/);
+	assert.match(applyGuidelines, /replace with lines: "" deletes the range/);
+	assert.match(applyGuidelines, /Use write only for new\/empty files[\s\S]*full rewrites allowed by recovery guidance/);
 	assert.match(applySchema, /anchors' file and generation/);
 	assert.ok(applySchema.includes(JSON.stringify("Raw text (\\n separated). Use \"\" for deletion, \"\\n\" for one blank line. Inserts require non-empty text.")));
 
-	assert.match(searchTool.description, /one text file[\s\S]*not a directory/i);
+	assert.match(searchTool.description, /one text file/i);
 	assert.match(searchGuidelines, /one file[\s\S]*enumerate files first[\s\S]*project-wide search/);
 	assert.match(JSON.stringify(searchTool.parameters), /One text file path[\s\S]*not a directory/);
 	const protocolCharacters = [readTool, searchTool, applyTool].reduce(
@@ -212,7 +220,7 @@ test("registered tool metadata explains the contract within its budget and names
 
 
 test("read and search tools return structured ranges and actionable EOF errors", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const searchTool = registeredTools.get(HLEDIT_SEARCH_ANCHORS_TOOL);
 	assert.ok(readTool && searchTool);
@@ -227,7 +235,7 @@ test("read and search tools return structured ranges and actionable EOF errors",
 	assert.equal(readResult.isError, false);
 	assert.deepEqual(readResult.details.read?.actual, { firstLine: 2, lastLine: 2, lineCount: 1, totalLines: 3 });
 	assert.equal(readResult.details.read?.nextOffset, 3);
-	assert.match(readResult.content[0]?.text ?? "", /Showing lines 2-2 of 3; requested range complete/);
+	assert.match(readResult.content[0]?.text ?? "", /lines 2-2\/3; complete/);
 
 	const searchResult = await searchTool.execute(
 		"search",
@@ -263,7 +271,7 @@ test("read and search tools return structured ranges and actionable EOF errors",
 });
 
 test("read and search continue after an oversized source line", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-long-line-page-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
 	await writeFile(join(directory, "target.txt"), `${"x".repeat(70_000)}\nother\nlater\n`);
@@ -277,7 +285,7 @@ test("read and search continue after an oversized source line", async (t) => {
 		assert.equal(first.details.read?.textTruncated, true);
 		assert.equal(first.details.read?.nextOffset, 2);
 		assert.match(first.content[0]!.text, name === HLEDIT_READ_ANCHORS_TOOL
-			? /continue with windows: \[\{ offset: 2, limit: 2 \}\]/ : /continue with offset 2/);
+			? /continue with offset: 2, limit: 2/ : /continue with offset 2/);
 		const next = await tool.execute("next", params(first.details.read!.nextOffset!) as never, undefined, undefined, { cwd: directory });
 		assert.equal(next.details.disposition, "succeeded");
 		assert.equal(next.details.read?.textTruncated, false);
@@ -287,7 +295,7 @@ test("read and search continue after an oversized source line", async (t) => {
 });
 
 test("search tool accepts a near-limit result at EOF", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const searchTool = registeredTools.get(HLEDIT_SEARCH_ANCHORS_TOOL);
 	assert.ok(searchTool);
 
@@ -311,7 +319,7 @@ test("search tool accepts a near-limit result at EOF", async (t) => {
 });
 
 test("search tool explains RE2 rejections instead of echoing a bare error code", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const searchTool = registeredTools.get(HLEDIT_SEARCH_ANCHORS_TOOL);
 	assert.ok(searchTool);
 
@@ -347,11 +355,11 @@ test("search tool explains RE2 rejections instead of echoing a bare error code",
 	assert.equal(broad.details.disposition, "rejected");
 	assert.equal(broad.details.error?.code, "broad_pattern");
 	assert.match(broad.details.error?.message ?? "", /unconstrained wildcard/);
-	assert.match(broad.details.error?.hint ?? "", /hledit_read_anchors/);
+	assert.match(broad.details.error?.hint ?? "", /Use read/);
 });
 
 test("apply tool returns inline updated anchors from bundled batch", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -388,7 +396,7 @@ test("apply tool returns inline updated anchors from bundled batch", async (t) =
 });
 
 test("apply tool reports a no-op without touching the target", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -423,7 +431,7 @@ test("apply tool reports a no-op without touching the target", async (t) => {
 });
 
 test("apply tool returns a complete produced span for a long-line file", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -459,7 +467,7 @@ test("apply tool returns a complete produced span for a long-line file", async (
 });
 
 test("apply tool lists only produced lines for a wide multi-change batch", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -505,7 +513,7 @@ test("apply tool lists only produced lines for a wide multi-change batch", async
 	assert.equal(written[179], "LAST");
 });
 test("apply tool deleting the only line leaves an empty file", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -540,7 +548,7 @@ test("apply tool deleting the only line leaves an empty file", async (t) => {
 });
 
 test("apply tool accepts batched single-line expansions with replacement semantics", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -587,7 +595,7 @@ test("apply tool accepts batched single-line expansions with replacement semanti
 });
 
 test("apply tool rejects an anchor token pasted into lines instead of writing it to disk", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -625,7 +633,7 @@ test("apply tool rejects an anchor token pasted into lines instead of writing it
 });
 
 test("apply tool rejects read output pasted into an insert even when the tokens were not submitted as anchors", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -657,7 +665,7 @@ test("apply tool rejects read output pasted into an insert even when the tokens 
 });
 
 test("zero-match search keeps same-revision proof and echoes the current proof_id", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const searchTool = registeredTools.get(HLEDIT_SEARCH_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
@@ -696,7 +704,7 @@ test("zero-match search keeps same-revision proof and echoes the current proof_i
 });
 
 test("same-epoch read proofs stay valid while externally invalidated proofs require new target evidence", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -740,7 +748,7 @@ test("same-epoch read proofs stay valid while externally invalidated proofs requ
 test("revision snapshots support explicit continuation both live and after branch replay", async (t) => {
 	for (const replay of [false, true]) {
 		await t.test(replay ? "branch replay" : "live evidence", async (t) => {
-			let extension = registerExtensionForTest();
+			let extension = await registerExtensionForTest();
 			const readTool = extension.registeredTools.get(HLEDIT_READ_ANCHORS_TOOL)!;
 			let applyTool = extension.registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
 			const directory = await mkdtemp(join(tmpdir(), "pi-hledit-revision-"));
@@ -758,7 +766,7 @@ test("revision snapshots support explicit continuation both live and after branc
 			const stale = await applyTool.execute("stale", { path: "target.txt", proof_id: read.details.proofId, changes } as never, undefined, undefined, context);
 			assert.equal(stale.details.error?.code, "stale");
 			assert.match(stale.content[0]!.text, /file revision changed/);
-			assert.doesNotMatch(stale.content[0]!.text, /Change 1 uses a stale anchor|Before retrying, call hledit_read_anchors/);
+			assert.doesNotMatch(stale.content[0]!.text, /Change 1 uses a stale anchor|Before retrying, call read/);
 			assert.ok(stale.details.error!.currentAnchors!.offset >= 10998);
 			assert.equal(stale.details.error!.currentAnchors!.truncated, false);
 			assert.equal(stale.details.error?.totalLines, 11002);
@@ -768,7 +776,7 @@ test("revision snapshots support explicit continuation both live and after branc
 			assert.match(stale.content[0]!.text, new RegExp(`proof_id: ${stale.details.proofId}$`));
 			assert.equal(await readFile(target, "utf8"), changed);
 			if (replay) {
-				extension = registerExtensionForTest();
+				extension = await registerExtensionForTest();
 				applyTool = extension.registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
 				const branch = JSON.parse(JSON.stringify([{ type: "message", message: { role: "toolResult", toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL, details: stale.details } }]));
 				await extension.eventListeners.get("session_start")!({ reason: "startup" } as never, { ...context, hasUI: false, sessionManager: { getBranch: () => branch } } as never);
@@ -782,7 +790,7 @@ test("revision snapshots support explicit continuation both live and after branc
 });
 
 test("apply tool rejects a reversed anchor range with a swap instruction instead of a reread loop", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -810,8 +818,8 @@ test("apply tool rejects a reversed anchor range with a swap instruction instead
 	const text = applyResult.content[0]?.text ?? "";
 	assert.ok(text.includes(`Swap them: set anchors to ["${first}", "${third}"].`));
 	// 旧行为会返回 insufficient_read_proof 并要求重读，而重读后重发会复现同一错误。
-	assert.doesNotMatch(text, /Call hledit_read_anchors/);
-	assert.doesNotMatch(text, /resubmit the original hledit_apply_file_changes call/);
+	assert.doesNotMatch(text, /Call read/);
+	assert.doesNotMatch(text, /resubmit the original edit call/);
 	assert.equal(await readFile(target, "utf8"), "one\ntwo\nthree\n");
 
 	// 交换后无需重读即可成功，证明拒绝未损失已有证据。
@@ -826,7 +834,7 @@ test("apply tool rejects a reversed anchor range with a swap instruction instead
 	assert.equal(await readFile(target, "utf8"), "merged\n");
 });
 test("apply tool rejects an anchor that does not match its read proof before starting batch", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -864,7 +872,7 @@ test("apply tool rejects an anchor that does not match its read proof before sta
 });
 
 test("proof recovery stops on source-line truncation", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -889,13 +897,13 @@ test("proof recovery stops on source-line truncation", async (t) => {
 	assert.equal(apply.details.disposition, "rejected");
 	assert.equal(apply.details.error?.code, "source_line_truncated");
 	assert.equal(apply.details.recoveredReads, undefined);
-	assert.match(apply.content[0]?.text ?? "", /Do not resubmit this hledit_apply_file_changes call/);
+	assert.match(apply.content[0]?.text ?? "", /Do not resubmit this edit call/);
 	assert.doesNotMatch(apply.content[0]?.text ?? "", /Review the displayed source.*resubmit the batch/);
 	assert.equal(await readFile(target, "utf8"), original);
 });
 
 test("truncated recovery preserves its source budget and proof across session replay", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL)!;
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
 	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-truncated-budget-"));
@@ -922,11 +930,11 @@ test("truncated recovery preserves its source budget and proof across session re
 	assert.ok(sourceStart >= 0);
 	assert.ok(Buffer.byteLength(text.slice(sourceStart), "utf8") <= MAX_RECOVERY_TEXT_BYTES);
 	assert.equal(Buffer.from(text, "utf8").toString("utf8"), text);
-	assert.match(text, /Do not resubmit this hledit_apply_file_changes call/);
+	assert.match(text, /Do not resubmit this edit call/);
 	assert.equal(await readFile(target, "utf8"), original);
 
 	// [喵喵喵]: 新实例先初始化空分支，再通过 session_tree 恢复，确保续编只能依赖重放的证据。
-	const restored = registerExtensionForTest();
+	const restored = await registerExtensionForTest();
 	const restoredApply = restored.registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
 	const emptyContext = { ...context, hasUI: false, sessionManager: { getBranch: () => [] } };
 	await restored.eventListeners.get("session_start")!({ reason: "startup" } as never, emptyContext as never);
@@ -951,7 +959,7 @@ test("truncated recovery preserves its source budget and proof across session re
 });
 
 test("successive single-line edits use published proof generations and preserve lone carriage returns", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL)!;
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
 	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-proof-continuation-"));
@@ -975,7 +983,7 @@ test("successive single-line edits use published proof generations and preserve 
 	}
 });
 test("apply without proof_id rejects before trying to recover a missing target", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(applyTool);
 
@@ -994,7 +1002,7 @@ test("apply without proof_id rejects before trying to recover a missing target",
 });
 
 test("multi-page proof recovery completes internally before apply is retried", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -1033,7 +1041,7 @@ test("multi-page proof recovery completes internally before apply is retried", a
 });
 
 test("an oversized proof gap is refused without reading anything back", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -1063,7 +1071,7 @@ test("an oversized proof gap is refused without reading anything back", async (t
 	const text = apply.content[0]?.text ?? "";
 	assert.match(text, /spans 2998 lines, above the 1200-line automatic recovery budget/);
 	assert.match(text, /No recovery read was started/);
-	assert.match(text, /Call hledit_read_anchors\(\{ path: "target\.txt", windows: \[\{ offset: \d+, limit: \d+ \}\] \}\)/);
+	assert.match(text, /Call read\(\{ path: "target\.txt", offset: \d+, limit: \d+ \}\)/);
 	assert.match(text, /current anchors and the latest proof_id/);
 	assert.match(text, /narrow the replace range in anchors/);
 	// 关键：拒绝的正文里不得夹带任何源码行，否则预算就白设了。
@@ -1072,7 +1080,7 @@ test("an oversized proof gap is refused without reading anything back", async (t
 });
 
 test("proof recovery stops at its byte budget and keeps the pages it already read", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(applyTool && readTool);
@@ -1117,7 +1125,7 @@ test("proof recovery stops at its byte budget and keeps the pages it already rea
 });
 
 test("a failed recovery read surfaces the read error instead of a proof gap", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -1148,7 +1156,7 @@ test("a failed recovery read surfaces the read error instead of a proof gap", as
 });
 
 test("multi-page proof continuation completes without rereading the payload", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -1175,7 +1183,7 @@ test("multi-page proof continuation completes without rereading the payload", as
 });
 
 test("apply tool preserves unselected lines between an expansion and a separate delete", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -1220,7 +1228,7 @@ test("apply tool preserves unselected lines between an expansion and a separate 
 // [喵喵喵]: Phase 3 起 CLI 逐行保留 terminator：混合行尾文件只改目标行，
 // 未触及行的行尾字节保持原样，不再整文件归一化，也不再返回 mixed warning (2026-07-25)
 test("apply tool preserves untouched terminators in a mixed line ending file", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -1252,7 +1260,7 @@ test("apply tool preserves untouched terminators in a mixed line ending file", a
 // [喵喵喵]: Phase 2.1/2.2 回归——evidence 更新在 mutation queue 内完成且只应用一次；
 // 排队的同文件后续调用必须立即看到前一项的重映射结果 (2026-07-25)
 test("queued same-file apply sees the previous apply's remapped evidence", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -1302,7 +1310,7 @@ test("queued same-file apply sees the previous apply's remapped evidence", async
 
 
 test("path aliases share the canonical apply queue", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -1361,7 +1369,7 @@ test("path aliases share the canonical apply queue", async (t) => {
 });
 
 test("identical inserted and surviving lines remain distinct under their original proof generations", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -1407,7 +1415,7 @@ test("identical inserted and surviving lines remain distinct under their origina
 
 
 test("consumed historical targets stay rejected even after rereading a shifted duplicate", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -1460,18 +1468,19 @@ test("consumed historical targets stay rejected even after rereading a shifted d
 
 // [喵喵喵]: Phase 2.3 回归——session_before_compact 从结构化 tool result 补充
 // readFiles/modifiedFiles；零写入拒绝不得记为已修改 (2026-07-25)
-test("session_before_compact records anchored file operations from structured results", () => {
-	const { eventListeners } = registerExtensionForTest();
+test("session_before_compact records anchored file operations from structured results", async () => {
+	const { eventListeners } = await registerExtensionForTest();
 	const compactListener = eventListeners.get("session_before_compact");
 	assert.ok(compactListener, "extension must register a session_before_compact listener");
 
 	const fileOps = { read: new Set<string>(), written: new Set<string>(), edited: new Set<string>() };
+	let callId = 0;
 	const toolResult = (toolName: string, details: Record<string, unknown>) => ({
 		role: "toolResult",
-		toolCallId: "call",
+		toolCallId: `call-${++callId}`,
 		toolName,
 		content: [],
-		details,
+		details: { ...details, evidenceVersion: 2 },
 		isError: false,
 		timestamp: 0,
 	});
@@ -1515,7 +1524,7 @@ test("session_before_compact records anchored file operations from structured re
 				fileOps,
 			},
 		} as never,
-		{ cwd: process.cwd() } as never,
+		{ cwd: process.cwd(), sessionManager: { getBranch: () => [] } } as never,
 	);
 
 	assert.deepEqual([...fileOps.read].sort(), ["src/noop.ts", "src/read-only.ts", "src/recovered-read.ts"]);
@@ -1524,10 +1533,38 @@ test("session_before_compact records anchored file operations from structured re
 	assert.deepEqual([...fileOps.written], []);
 });
 
+test("compaction corrects only matched hash calls and preserves independent file history", () => {
+	const call = (id: string, name: string, path: string) => ({ type: "toolCall", id, name, arguments: { path } });
+	const result = (id: string, path: string, disposition: string, contentChanged?: boolean) => ({
+		role: "toolResult", toolCallId: id, toolName: "edit",
+		details: { evidenceVersion: 2, path, disposition, contentChanged },
+	});
+	const files = { read: new Set(["@@target.txt"]), written: new Set(["written.txt"]), edited: new Set([
+		"rejected.txt", "noop.txt", "shared.txt", "previous.txt", "native.txt", "nested.txt", "pending.txt", "written.txt", "unknown.txt",
+	]) };
+	const messages = [
+		{ role: "assistant", content: [
+			call("read", "read", "@@target.txt"),
+			...Array.from(files.edited, (path) => call(path, "edit", path)),
+			call("native", "edit", "native.txt"), call("success", "edit", "shared.txt"),
+		] },
+		{ role: "toolResult", toolCallId: "read", toolName: "read", details: { evidenceVersion: 2, disposition: "succeeded", path: "@target.txt" } },
+		...Array.from(files.edited).filter((path) => path !== "pending.txt").map((path) =>
+			result(path, path, path === "noop.txt" ? "succeeded" : path === "unknown.txt" ? "outcome_unknown" : "rejected", path === "noop.txt" ? false : undefined)),
+		{ role: "toolResult", toolCallId: "native", toolName: "edit", details: { diff: "native" } },
+		{ role: "toolResult", toolName: "codemode", nestedCalls: { calls: [{ name: "edit", arguments: { path: "nested.txt" } }] } },
+		result("success", "shared.txt", "succeeded", true),
+	];
+	recordAnchoredFileOperations(messages, files, { modifiedFiles: ["previous.txt"] });
+	assert.deepEqual([...files.read].sort(), ["@target.txt", "noop.txt"]);
+	assert.deepEqual([...files.edited].sort(), ["native.txt", "nested.txt", "pending.txt", "previous.txt", "shared.txt", "unknown.txt"]);
+	assert.deepEqual([...files.written], ["written.txt"]);
+});
+
 // [喵喵喵]: Phase 4 回归——成功结果携带提交绑定的结构化 changePreview，
 // 不再保存等价的全文件 diff/patch，也不再前后读取完整文件 (2026-07-25)
 test("apply tool attaches a commit-bound change preview instead of a full-file diff", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -1580,7 +1617,7 @@ test("apply tool attaches a commit-bound change preview instead of a full-file d
 });
 
 test("no-op apply carries an empty commit-bound preview", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL);
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL);
 	assert.ok(readTool && applyTool);
@@ -1616,7 +1653,7 @@ test("text boundary edits return anchors usable without an intervening read", as
 		{ name: "BOM and literal FEFF", source: "\uFEFFold", text: "\uFEFFnew", insert: false, expected: "\uFEFF\uFEFFnew" },
 	]) {
 		await t.test(fixture.name, async (t) => {
-			const { registeredTools } = registerExtensionForTest();
+			const { registeredTools } = await registerExtensionForTest();
 			const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL)!;
 			const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
 			const directory = await mkdtemp(join(tmpdir(), "pi-hledit-text-boundary-"));
@@ -1650,7 +1687,7 @@ test("text boundary edits return anchors usable without an intervening read", as
 });
 
 test("text boundary rejections preserve the file and provide input-specific guidance", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL)!;
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
 	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-text-rejection-"));
@@ -1681,7 +1718,7 @@ test("text boundary rejections preserve the file and provide input-specific guid
 
 // [喵喵喵]: 真实多窗口读取的端到端证据链；确定超行数时 CLI 提前拒绝，不再输出必须重读的正文。
 test("read tool merges multi-window reads into one proof and rejects oversized merges without dumping source text", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL)!;
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
 	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-multiwindow-"));
@@ -1693,8 +1730,8 @@ test("read tool merges multi-window reads into one proof and rejects oversized m
 	const merged = await readTool.execute("read", { path: "target.txt", windows: [{ offset: 10, limit: 5 }, { offset: 100, limit: 3 }] } as never, undefined, undefined, context);
 	assert.equal(merged.details.disposition, "succeeded");
 	const mergedText = merged.content[0]?.text ?? "";
-	assert.match(mergedText, /-- windows 1: 10-14; 5 lines --/);
-	assert.match(mergedText, /-- windows 2: 100-102; 3 lines --/);
+	assert.match(mergedText, /-- windows 1: 10-14 --/);
+	assert.match(mergedText, /-- windows 2: 100-102 --/);
 	const lineTwelve = /^(12#[A-Za-z0-9_-]{3}):line 12$/m.exec(mergedText)?.[1];
 	const lineHundredOne = /^(101#[A-Za-z0-9_-]{3}):line 101$/m.exec(mergedText)?.[1];
 	assert.ok(lineTwelve && lineHundredOne);
@@ -1721,7 +1758,7 @@ test("read tool merges multi-window reads into one proof and rejects oversized m
 
 // [喵喵喵]: 混合回执的授权边界——完整且逐行核对的 span 保持紧凑可续编，截断 span 只登记已显示行。
 test("apply keeps verified spans compact while a truncated span falls back to a bounded body", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const readTool = registeredTools.get(HLEDIT_READ_ANCHORS_TOOL)!;
 	const applyTool = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
 	const directory = await mkdtemp(join(tmpdir(), "pi-hledit-mixed-span-"));
@@ -1770,7 +1807,7 @@ test("apply keeps verified spans compact while a truncated span falls back to a 
 
 // [喵喵喵]: 两个远端 change 同时缺行；验证一次恢复后整批可重提，而非逐块拒绝。
 test("disjoint changes recover all missing ranges before an explicit batch retry", async (t) => {
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const search = registeredTools.get(HLEDIT_SEARCH_ANCHORS_TOOL)!;
 	const apply = registeredTools.get(HLEDIT_APPLY_FILE_CHANGES_TOOL)!;
 	const directory = await mkdtemp(join(process.cwd(), ".batch-recovery-"));
@@ -1799,7 +1836,7 @@ test("disjoint changes recover all missing ranges before an explicit batch retry
 test("historical ranges never consume inserted or replaced interior lines, but surviving targets still work", async (t) => {
 	const directory = await mkdtemp(join(process.cwd(), ".hledit-epoch-ranges-"));
 	t.after(() => rm(directory, { recursive: true, force: true }));
-	const { registeredTools } = registerExtensionForTest();
+	const { registeredTools } = await registerExtensionForTest();
 	const call = (name: string, params: unknown) => registeredTools.get(name)!.execute("epoch", params as never, undefined, undefined, { cwd: directory });
 	for (const operation of ["insert_after", "replace", "replace_without_lines"]) {
 		await t.test(operation, async () => {

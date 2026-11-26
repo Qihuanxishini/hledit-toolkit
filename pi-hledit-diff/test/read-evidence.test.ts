@@ -247,7 +247,7 @@ test("oversized ranges fail without enumerating every requested line", () => {
 	const guidance = formatReadProofFailure("target.txt", selection.failure);
 	assert.match(guidance, /Reading more cannot make it fit/);
 	assert.match(guidance, /splitting forfeits whole-batch atomicity/);
-	assert.doesNotMatch(guidance, /hledit_read_anchors|offset:|nextOffset/);
+	assert.doesNotMatch(guidance, /Call read|offset:|nextOffset/);
 });
 
 
@@ -425,8 +425,8 @@ test("model body snapshot: plugin-side proof failure with targeted reread", () =
 		formatReadProofFailure("target.txt", selection.failure),
 		"Valid read proof does not cover every source line required by this change. Batch was not started and no content was written.\n" +
 		"Reason: changes[0] (replace 3-5) requires complete read proof for every source line in the inclusive range; missing lines 4-5. Endpoint anchors alone are insufficient.\n" +
-		'Call hledit_read_anchors({ path: "target.txt", windows: [{ offset: 2, limit: 12 }] }) first and confirm all required source lines for changes[0] through line 5.\n' +
-		"After the read succeeds, use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.",
+		'Call read({ path: "target.txt", offset: 2, limit: 12 }) first and confirm all required source lines for changes[0] through line 5.\n' +
+		"After the read succeeds, use proof_id from the latest successful read page and current anchors, then resubmit the edit batch.",
 	);
 });
 
@@ -623,7 +623,7 @@ test("branch restoration replays only tool results present on the current branch
 		type: "message",
 		message: {
 			role: "toolResult",
-			toolName: HLEDIT_READ_ANCHORS_TOOL,
+			toolName: "hledit_read_anchors",
 			details: { disposition: "succeeded", evidencePath: PATH, read },
 		},
 	};
@@ -651,7 +651,7 @@ test("branch restoration replays only tool results present on the current branch
 					type: "message",
 					message: {
 						role: "toolResult",
-						toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL,
+						toolName: "hledit_apply_file_changes",
 						details: applyDetails("outcome_unknown"),
 					},
 				},
@@ -688,7 +688,7 @@ test("branch restoration replays targeted proof recovered by a rejected apply", 
 				type: "message",
 				message: {
 					role: "toolResult",
-					toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL,
+					toolName: "hledit_apply_file_changes",
 					details: applyDetails("rejected", {
 						path: "target.txt",
 						error: { code: "insufficient_read_proof", message: "read recovered" },
@@ -1160,8 +1160,8 @@ test("legacy apply history expires ambiguous proof instead of inventing new gene
 		cwd: "/workspace",
 		sessionManager: {
 			getBranch: () => [
-				{ type: "message", message: { role: "toolResult", toolName: HLEDIT_READ_ANCHORS_TOOL, details: { disposition: "succeeded", evidencePath: PATH, read } } },
-				{ type: "message", message: { role: "toolResult", toolName: HLEDIT_APPLY_FILE_CHANGES_TOOL, details: apply } },
+				{ type: "message", message: { role: "toolResult", toolName: "hledit_read_anchors", details: { disposition: "succeeded", evidencePath: PATH, read } } },
+				{ type: "message", message: { role: "toolResult", toolName: "hledit_apply_file_changes", details: apply } },
 			],
 		},
 	} as never);

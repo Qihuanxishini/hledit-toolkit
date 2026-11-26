@@ -3,6 +3,8 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $utf8 = [Text.UTF8Encoding]::new($false)
 $root = $PSScriptRoot
+$target = 'x86_64-pc-windows-msvc'
+$targetDir = Join-Path $root 'target'
 $bundle = Join-Path $root '../pi-hledit-diff/bin'
 $binary = Join-Path $bundle 'hledit.exe'
 $stampPath = Join-Path $bundle 'hledit.build.json'
@@ -42,9 +44,9 @@ Push-Location $root
 try {
     # [喵喵喵]: 静态 CRT 保持单 exe 部署；链接器随 Rust 固定，平台库差异不伪装成跨主机可复现构建。
     $env:RUSTFLAGS = '-C target-feature=+crt-static -C linker=rust-lld -C link-arg=/Brepro'
-    & cargo build --release --locked --target x86_64-pc-windows-msvc
+    & cargo build --release --locked --target $target --target-dir $targetDir
     if ($LASTEXITCODE -ne 0) { throw 'Rust release build failed' }
-    $metadataText = & cargo metadata --locked --format-version 1 --filter-platform x86_64-pc-windows-msvc
+    $metadataText = & cargo metadata --locked --format-version 1 --filter-platform $target
     if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed' }
     $metadata = ($metadataText -join "`n") | ConvertFrom-Json
     $notices = [Collections.Generic.List[string]]::new()
@@ -59,7 +61,7 @@ try {
         }
     }
     # [喵喵喵]: 只覆盖本脚本负责的制品，不清理 bin 中其他文件。
-    Copy-Item -LiteralPath (Join-Path $root 'target/x86_64-pc-windows-msvc/release/hledit.exe') -Destination $binary -Force
+    Copy-Item -LiteralPath (Join-Path $targetDir "$target/release/hledit.exe") -Destination $binary -Force
     [IO.File]::WriteAllText($licensePath, ($notices -join "`n`n").TrimEnd("`r", "`n") + "`n", $utf8)
     Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination (Join-Path $bundle 'LICENSE.hledit.txt') -Force
     $rustVersion = & rustc --version
@@ -70,7 +72,7 @@ try {
         binarySha256 = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
         licensesSha256 = (Get-FileHash -LiteralPath $licensePath -Algorithm SHA256).Hash.ToLowerInvariant()
         rustc = $rustVersion
-        target = 'x86_64-pc-windows-msvc'
+        target = $target
     }
     [IO.File]::WriteAllText($stampPath, ($stamp | ConvertTo-Json) + "`n", $utf8)
 } finally {

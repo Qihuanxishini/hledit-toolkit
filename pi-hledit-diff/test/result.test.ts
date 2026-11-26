@@ -30,7 +30,7 @@ test("readAnchorsResult distinguishes a complete requested range from EOF", () =
         { path: "src/a.ts", offset: 2, limit: 2 },
     );
 
-	assert.match(result.content[0]?.text ?? "", /^proof_id: [A-Za-z0-9_-]{16}\.\d+\n2#BHJ:two\n3#BJL:three\n-- Showing lines 2-3 of 5; requested range complete --$/);
+	assert.match(result.content[0]?.text ?? "", /^proof_id: [A-Za-z0-9_-]{16}\.\d+\n2#BHJ:two\n3#BJL:three\n-- lines 2-3\/5; complete; more at offset: 4 --$/);
 	assert.equal(result.details.disposition, "succeeded");
 	assert.match(result.details.proofId ?? "", /^[A-Za-z0-9_-]{16}\.\d+$/);
 	assert.deepEqual(result.details.read?.requested, { offset: 2, limit: 2 });
@@ -49,7 +49,7 @@ test("readAnchorsResult marks a completed range as EOF", () => {
         { path: "src/a.ts", offset: 4, limit: 20 },
     );
 
-    assert.match(result.content[0]?.text ?? "", /Showing lines 4-5 of 5; requested range complete; end of file/);
+    assert.match(result.content[0]?.text ?? "", /lines 4-5\/5; complete; EOF/);
     assert.equal(result.details.read?.eof, true);
     assert.equal(result.details.read?.nextOffset, undefined);
 });
@@ -64,7 +64,7 @@ test("readAnchorsResult returns actionable structured range errors", () => {
         { path: "src/a.ts", offset: 600, limit: 40 },
     );
 
-    assert.equal(result.content[0]?.text, "Starting line 600 is outside the file range (599 total lines).\nSuggestion: Set windows[].offset to an integer from 1 through 599.\nError code: range");
+    assert.equal(result.content[0]?.text, "Starting line 600 is outside the file range (599 total lines).\nSuggestion: Set offset (or windows[].offset in read_windows) to an integer from 1 through 599.\nError code: range");
     assert.deepEqual(result.details, {
         disposition: "rejected",
         path: "src/a.ts",
@@ -72,7 +72,7 @@ test("readAnchorsResult returns actionable structured range errors", () => {
             code: "range",
             message: "Starting line 600 is outside the file range (599 total lines).",
 			rawMessage: "offset 600 exceeds file length 599",
-            hint: "Set windows[].offset to an integer from 1 through 599.",
+            hint: "Set offset (or windows[].offset in read_windows) to an integer from 1 through 599.",
             requestedOffset: 600,
             totalLines: 599,
         },
@@ -144,7 +144,7 @@ for (const pattern of [undefined, "prefix|later"]) {
 		assert.match(result.content[0]!.text, /Truncated lines cannot establish edit proof/);
 		assert.match(result.content[0]!.text, pattern
 			? /To read later lines, continue with offset 2/
-			: /To read later lines, continue with windows: \[\{ offset: 2, limit: 2 \}\]/);
+			: /To read later lines, continue with offset: 2, limit: 2/);
 	});
 }
 
@@ -249,7 +249,7 @@ test("applyFileChangesResult warns that an unverified response may have changed 
 
 	assert.match(text, /incompatible batch response/);
 	assert.match(text, /file may have changed/);
-	assert.match(text, /call hledit_read_anchors/);
+	assert.match(text, /call read/);
 	assert.doesNotMatch(text, /^No write was attempted/);
     assert.deepEqual(result.details, { disposition: "outcome_unknown" });
 	assert.equal(isFailedHleditResult(result.details), true);
@@ -429,7 +429,7 @@ test("applyFileChangesResult identifies both conflicting changes without request
 	assert.equal(result.details.error?.rawMessage, rawMessage);
 	assert.match(result.details.error?.message ?? "", /^changes\[1\] and changes\[0\] conflict/);
 	assert.match(result.content[0]?.text ?? "", /Merge them or make them non-overlapping; rereading cannot resolve this conflict/);
-	assert.doesNotMatch(result.content[0]?.text ?? "", /call hledit_read_anchors/i);
+	assert.doesNotMatch(result.content[0]?.text ?? "", /call read/i);
 });
 
 test("applyFileChangesResult localizes proof and pre-commit revision rejections", () => {
@@ -441,7 +441,7 @@ test("applyFileChangesResult localizes proof and pre-commit revision rejections"
 	assert.equal(insufficient.details.disposition, "rejected");
 	assert.equal(insufficient.details.error?.code, "insufficient_read_proof");
 	assert.match(insufficient.content[0]?.text ?? "", /Read proof does not cover/);
-	assert.match(insufficient.content[0]?.text ?? "", /Call hledit_read_anchors[\s\S]*use proof_id from the latest successful read page and current anchors[\s\S]*resubmit the hledit_apply_file_changes batch/);
+	assert.match(insufficient.content[0]?.text ?? "", /Call read[\s\S]*use proof_id from the latest successful read page and current anchors[\s\S]*resubmit the edit batch/);
 
 	const changed = applyFileChangesResult({
 		stdout: JSON.stringify({ ok: false, error: "source_changed_before_commit", message: "source changed before commit", currentRevision: REVISION }),
@@ -463,7 +463,7 @@ test("applyFileChangesResult falls back to rereading when a stale snapshot is un
 
     assert.match(result.content[0]?.text ?? "", /^The atomic batch was rejected; no content was written\.\nReason: changes\[0\] uses a stale anchor\.\nError code: stale/m);
     assert.match(result.content[0]?.text ?? "", /2#BHJ -> 2#BBK/);
-    assert.match(result.content[0]?.text ?? "", /Before retrying, call hledit_read_anchors\(\{ path: "src\/a\.ts", windows: \[\{ offset: 1, limit: 12 \}\] \}\)/);
+    assert.match(result.content[0]?.text ?? "", /Before retrying, call read\(\{ path: "src\/a\.ts", offset: 1, limit: 12 \}\)/);
     assert.deepEqual(result.details, {
 		disposition: "rejected",
 		path: "src/a.ts",
@@ -525,13 +525,11 @@ test("applyFileChangesResult exposes validated stale snapshot context", () => {
 
 	assert.match(text, /2#BBK:modified/);
 	assert.match(text, /Review this current snapshot before submitting/);
-	assert.match(text, /explicitly replace anchors\[0\] with 2#BBK/);
-	assert.doesNotMatch(text, /Before retrying, call hledit_read_anchors/);
-	assert.match(text, /Field: anchors\[0\]/);
-	assert.match(text, /Submitted anchor: 2#BHJ/);
-	assert.match(text, /Current line at the same number: 2#BBK:modified/);
-	assert.match(text, /never repairs anchors or retries a batch/);
-	assert.equal(text.match(/2#BHJ -> 2#BBK/g)?.length ?? 0, 0);
+	assert.match(text, /anchors\[0\]: 2#BHJ -> 2#BBK/);
+	assert.doesNotMatch(text, /Before retrying, call read/);
+	assert.match(text, /mappings are diagnostic only, not automatic repairs or retries/);
+	assert.equal(text.match(/2#BBK:modified/g)?.length, 1);
+	assert.equal(text.match(/2#BHJ -> 2#BBK/g)?.length, 1);
 	assert.deepEqual(result.details.error?.staleAnchors, [
 		{
 			changeNumber: 1,
@@ -565,7 +563,7 @@ test("model body snapshot: CLI insufficient_read_proof rejection", () => {
 		"Reason: Read proof does not cover every original source line required by this change.\n" +
 		"Error code: insufficient_read_proof\n" +
 		"Failed item: changes[0]\n" +
-		'Call hledit_read_anchors({ path: "src/a.ts", windows: [{ offset: 1, limit: 12 }] }) to reread every source line required by changes[0], then use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.',
+		'Call read({ path: "src/a.ts", offset: 1, limit: 12 }) to reread every source line required by changes[0], then use proof_id from the latest successful read page and current anchors, then resubmit the edit batch.',
 	);
 	assert.equal(result.details.disposition, "rejected");
 });
@@ -612,11 +610,8 @@ test("model body snapshot: stale rejection with snapshot context and field-level
 		"Error code: stale\n" +
 		"Failed item: changes[0]\n" +
 		"Anchor verification for changes[0]:\n" +
-		"- Field: anchors[0]\n" +
-		"  Submitted anchor: 2#BHJ\n" +
-		"  Current line at the same number: 2#BBK:modified\n" +
-		"  After verifying the intended target, explicitly replace anchors[0] with 2#BBK in a new request.\n" +
-		"This information is for verification only. The tool never repairs anchors or retries a batch automatically.\n" +
+		"- anchors[0]: 2#BHJ -> 2#BBK\n" +
+		"Reconfirm targets from current source; mappings are diagnostic only, not automatic repairs or retries.\n" +
 		"Current anchor snapshot at submission time (local span: lines 1-3):\n" +
 		"1#BHJ:one\n" +
 		"2#BBK:modified\n" +
@@ -635,7 +630,7 @@ test("model body snapshot: output overflow keeps the outcome-unknown recovery bo
 	assert.equal(
 		result.content[0]?.text,
 		"The hledit write outcome is unknown; the file may already have changed. Do not retry the original request.\n" +
-		"Call hledit_read_anchors to reread the target file first.\n" +
+		"Call read to reread the target file first.\n" +
 		"Diagnostic: hledit output exceeded 1048576 bytes, so the process was terminated.",
 	);
 	assert.equal(result.details.disposition, "outcome_unknown");
@@ -747,7 +742,7 @@ test("applyFileChangesResult preserves recovery paths for unknown Windows outcom
 	assert.equal(result.details.disposition, "outcome_unknown");
 	assert.match(result.content[0]?.text ?? "", /Do not retry the original request/);
 	assert.match(result.content[0]?.text ?? "", /Do not recreate or overwrite the target/);
-	assert.doesNotMatch(result.content[0]?.text ?? "", /call hledit_read_anchors/i);
+	assert.doesNotMatch(result.content[0]?.text ?? "", /call read/i);
 	assert.ok(result.content[0]?.text.includes(diagnostic));
 	assert.ok(result.content[0]?.text.includes(stdout.trimEnd()));
 });
@@ -790,6 +785,6 @@ test("applyFileChangesResult explains rejected text rather than requesting a fre
 		});
 		assert.equal(result.details.disposition, "rejected");
 		assert.match(result.content[0]?.text ?? "", expected);
-		assert.doesNotMatch(result.content[0]?.text ?? "", /call hledit_read_anchors/i);
+		assert.doesNotMatch(result.content[0]?.text ?? "", /call read/i);
 	}
 });

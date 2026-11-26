@@ -5,7 +5,7 @@ import type { HleditRun } from "./cli.ts";
 import { ReadEvidenceStore, resolveReadEvidencePath } from "./read-evidence.ts";
 import { buildReadArgs, buildSearchArgs, DEFAULT_READ_LIMIT, formatReadWindow, MAX_READ_LIMIT, MAX_READ_WINDOWS, normalizeSearchRequest } from "./read-args.ts";
 import { readAnchorsResult } from "./read-result.ts";
-import { normalizeWindowsRequest, readWindowsResult } from "./read-windows.ts";
+import { normalizeWindowsRequest, readWindowsResult, type WindowsRequest } from "./read-windows.ts";
 import { rejectedToolResult, type TextResult } from "./result.ts";
 import type { ReadAnchorsParams, SearchAnchorsParams } from "./schema.ts";
 
@@ -23,13 +23,27 @@ export async function runReadAnchorsTransaction(
 	signal: AbortSignal | undefined,
 	evidence: ReadEvidenceStore,
 	run: HleditReadRunner,
+	toolName: string = HLEDIT_READ_ANCHORS_TOOL,
 ): Promise<TextResult> {
 	const request = normalizeWindowsRequest(params);
 	if (!request) return rejectedToolResult(
-		`Use ${formatReadWindow({ offset: 1, limit: DEFAULT_READ_LIMIT })} with 1-${MAX_READ_WINDOWS} ranges; offsets and limits must be positive safe integers, with limit at most ${MAX_READ_LIMIT}.`,
+		`Use windows: [{ ${formatReadWindow({ offset: 1, limit: DEFAULT_READ_LIMIT })} }] with 1-${MAX_READ_WINDOWS} ranges; offsets and limits must be positive safe integers, with limit at most ${MAX_READ_LIMIT}.`,
 		{ code: "invalid", message: "Invalid read windows." },
 	);
 	const evidencePath = await resolveReadEvidencePath(cwd, request.path);
+	return runResolvedReadTransaction({ ...request, evidencePath }, cwd, signal, evidence, run, toolName);
+}
+
+// [喵喵喵]: 此边界只接收已解析目标，禁止再次解释 @、file URL 或 Unicode 空白。
+export async function runResolvedReadTransaction(
+	request: WindowsRequest & { evidencePath: string },
+	cwd: string,
+	signal: AbortSignal | undefined,
+	evidence: ReadEvidenceStore,
+	run: HleditReadRunner,
+	toolName: string,
+): Promise<TextResult> {
+	const { evidencePath } = request;
 	return withFileMutationQueue(evidencePath, async () => {
 		// [喵喵喵]: 单窗口保留分页证据；多窗口必须在同一 Snapshot 内完整取证，不能循环读取。
 		const single = request.windows.length === 1 ? { path: request.path, ...request.windows[0]! } : undefined;
@@ -37,7 +51,7 @@ export async function runReadAnchorsTransaction(
 			? readAnchorsResult(await run(buildReadArgs(single), undefined, cwd, signal), single)
 			: readWindowsResult(await run(["read-windows", "--", request.path], JSON.stringify({ windows: request.windows }), cwd, signal), request);
 		const queuedResult = { ...result, details: { ...result.details, path: request.path, evidencePath } };
-		evidence.updateFromToolResult(HLEDIT_READ_ANCHORS_TOOL, queuedResult.details, cwd);
+		evidence.updateFromToolResult(toolName, queuedResult.details, cwd);
 		return queuedResult;
 	});
 }

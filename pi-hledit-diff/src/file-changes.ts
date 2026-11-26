@@ -144,7 +144,7 @@ export function formatChangeShapeIssue(issue: ChangeShapeIssue): string {
 	}
 	return [
 		`${reference} was rejected.`,
-		`Line ${issue.replacementLineNumber} of lines begins with ${issue.anchorToken}:, which is hledit_read_anchors display syntax, not file content.`,
+		`Line ${issue.replacementLineNumber} of lines begins with ${issue.anchorToken}:, which is anchored read display syntax, not file content.`,
 		`Writing it would put the literal text ${issue.anchorToken}: into the file.`,
 		`Remove the leading ${issue.anchorToken}: from that line; lines carries file content only, and anchor tokens belong in anchors.`,
 		"Rereading the file cannot resolve this; fix lines and resubmit.",

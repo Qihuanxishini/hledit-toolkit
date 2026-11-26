@@ -8,7 +8,7 @@ import { HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA, HLEDIT_READ_ANCHORS_PARAMS_SCH
 
 test("read and search use host coercion before schema bounds validation", () => {
 	for (const [name, schema, wrap] of [
-		["hledit_read_anchors", HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
+		["read_windows", HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
 			(window: Record<string, number | string>) => ({ path: "src/a.ts", windows: [window] })],
 		["hledit_search_anchors", HLEDIT_SEARCH_ANCHORS_PARAMS_SCHEMA,
 			(fields: Record<string, number | string>) => ({ path: "src/a.ts", pattern: "token", ...fields })],
@@ -87,7 +87,7 @@ test("decodeFileChangeInput enforces aggregate UTF-8 and produced-line limits", 
 // [喵喵喵]: 宿主先运行 prepareArguments；单数组校验且不为旧四数组做兼容。
 test("prepareFileChangeArguments validates changes and rejects invalid fields", () => {
 	const base = { path: "src/a.ts", proof_id: "p.1" };
-	const tool = { name: "hledit_apply_file_changes", description: "Apply file changes", parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA };
+	const tool = { name: "edit", description: "Apply file changes", parameters: HLEDIT_APPLY_FILE_CHANGES_PARAMS_SCHEMA };
 	const validate = (args: unknown) => {
 		const original = structuredClone(args);
 		const prepared = prepareFileChangeArguments(args);

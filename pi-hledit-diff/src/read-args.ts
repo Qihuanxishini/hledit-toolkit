@@ -1,16 +1,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-export const DEFAULT_READ_LIMIT = 160;
+import { fileURLToPath, pathToFileURL } from "node:url";
+export const DEFAULT_READ_LIMIT = 2000;
 export const DEFAULT_SEARCH_LIMIT = 100;
 export const MAX_READ_LIMIT = 2000;
 export const MAX_SEARCH_LIMIT = MAX_READ_LIMIT;
 export const MAX_READ_WINDOWS = 8;
 export const MAX_WINDOWS_BYTES = 96 * 1024;
-export type ReadArgsParams = {
-	path: string;
-	offset?: number;
-	limit?: number;
-};
 
 export type SearchArgsParams = {
 	path: string;
@@ -40,14 +36,15 @@ export type NormalizedSearchRequest = {
 };
 
 export function normalizeToolPath(path: string): string {
-	const cleaned = path.replace(/^@/, "");
+	const cleaned = path.replace(/[\u00a0\u2000-\u200a\u202f\u205f\u3000]/g, " ").replace(/^@/, "");
+	if (cleaned.startsWith("file://")) return fileURLToPath(cleaned);
 	if (cleaned === "~") return homedir();
 	if (cleaned.startsWith("~/") || (process.platform === "win32" && cleaned.startsWith("~\\"))) {
 		return join(homedir(), cleaned.slice(2));
 	}
-	const msysDrive = cleaned.match(/^\/([A-Za-z])\/(.*)$/);
-	if (process.platform === "win32" && msysDrive) {
-		return `${msysDrive[1]}:/${msysDrive[2]}`;
+	const msysDrive = cleaned.match(/^\/(?:mnt\/|cygdrive\/)?([A-Za-z])(?:\/(.*))?$/);
+	if (process.platform === "win32" && !cleaned.includes("\\") && msysDrive) {
+		return `${msysDrive[1]}:/${msysDrive[2] ?? ""}`;
 	}
 	return cleaned;
 }
@@ -63,14 +60,6 @@ function toNonNegativeInteger(v: number | undefined): number | undefined {
 function toBoundedLimit(v: number | undefined, fallback: number, maximum: number): number {
 	const limit = toPositiveInteger(v);
 	return limit === undefined ? fallback : Math.min(limit, maximum);
-}
-
-export function normalizeReadRequest(params: ReadArgsParams): NormalizedReadRequest {
-	return {
-		path: normalizeToolPath(params.path),
-		offset: toPositiveInteger(params.offset) ?? 1,
-		limit: toBoundedLimit(params.limit, DEFAULT_READ_LIMIT, MAX_READ_LIMIT),
-	};
 }
 
 export function normalizeSearchRequest(params: SearchArgsParams): NormalizedSearchRequest {
@@ -113,13 +102,17 @@ export function buildSearchArgs(request: NormalizedSearchRequest): string[] {
 	return args;
 }
 
-// [喵喵喵]: 只统一 read 的参数语法；分页与恢复动作由调用方决定，search 仍使用顶层 offset。
+// 分页与恢复使用普通 read；多窗口请求由 read_windows 独立表达。
 export function formatReadWindow(window: Pick<NormalizedReadRequest, "offset" | "limit">): string {
-	return `windows: [{ offset: ${window.offset}, limit: ${window.limit} }]`;
+	return `offset: ${window.offset}, limit: ${window.limit}`;
 }
 
 export function formatReadCall(path: string, window: Pick<NormalizedReadRequest, "offset" | "limit">): string {
-	return `hledit_read_anchors({ path: ${JSON.stringify(path)}, ${formatReadWindow(window)} })`;
+	// [喵喵喵]: 回包路径已归一化；重新作为工具输入时必须保护字面 @ 和 URL 解码后的空白。
+	const inputPath = /[\u00a0\u2000-\u200a\u202f\u205f\u3000]/.test(path)
+		? pathToFileURL(path).href
+		: path.startsWith("@") ? `@${path}` : path;
+	return `read({ path: ${JSON.stringify(inputPath)}, ${formatReadWindow(window)} })`;
 }
 
 export type SuggestedReadWindow = {

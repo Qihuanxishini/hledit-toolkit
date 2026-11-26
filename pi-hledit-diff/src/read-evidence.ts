@@ -1,11 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
-import {
-	HLEDIT_APPLY_FILE_CHANGES_TOOL,
-	HLEDIT_READ_ANCHORS_TOOL,
-	HLEDIT_SEARCH_ANCHORS_TOOL,
-} from "./active-tools.ts";
+import { isAnchoredEditTool, isAnchoredReadTool } from "./active-tools.ts";
 import { lineFromAnchor } from "./anchor.ts";
 import { fileChangeReference, isInsertChange, type HleditBatchReadProof } from "./file-changes.ts";
 import { parseAnchorContext, parseUpdatedAnchorSpans } from "./post-edit-context.ts";
@@ -231,11 +227,10 @@ function unresolvedReadSpanForChange(gap: ReadProofGap, evidenceLines: Map<numbe
 }
 
 // [喵喵喵]: 只在失败路径规划整批实际缺口；消费行总数已由 selectProof 的容量预检约束。
-// 已知但不匹配或有歧义的端点保留确认上下文，普通缺行仅合并近邻窗口。
+// 已知但不匹配的端点保留确认上下文，普通缺行仅合并近邻窗口。
 function recoveryRangesFor(
 	requested: RequestedChangeEvidence,
 	evidenceLines: Map<number, EvidenceLine>,
-	ambiguousTokens: ReadonlySet<string> = new Set(),
 ): ReadProofLineRange[] {
 	const windows: ReadProofLineRange[] = [];
 	for (const range of requested.ranges) {
@@ -251,7 +246,7 @@ function recoveryRangesFor(
 	}
 	for (const endpoint of requested.endpointAnchors) {
 		const known = evidenceLines.get(endpoint.line);
-		if (ambiguousTokens.has(endpoint.anchor) || (known && known.anchor !== endpoint.anchor)) {
+		if (known && known.anchor !== endpoint.anchor) {
 			const window = suggestedReadWindow(endpoint.line, endpoint.line);
 			windows.push({ start: window.offset, end: window.lastLine });
 		}
@@ -424,7 +419,7 @@ export function formatReadProofFailure(path: string, failure: ReadProofFailure):
 	}
 	if (!failure.suggestedReadRange && failure.reportedMissingLines.length === 0) {
 		lines.push(failure.code === "invalid_proof_id"
-			? `Call hledit_read_anchors for ${JSON.stringify(path)} to obtain a proof for this target, then review its anchors before submitting a new batch.`
+			? `Call read for ${JSON.stringify(path)} to obtain a proof for this target, then review its anchors before submitting a new batch.`
 			: "Correct the request anchors and range before retrying; a targeted read cannot be determined from this request.");
 		return lines.join("\n");
 	}
@@ -439,7 +434,7 @@ export function formatReadProofFailure(path: string, failure: ReadProofFailure):
 	const readInstruction = lastSuggestedLine < lastLine
 		? `Call ${readCall} first, then continue with nextOffset until line ${lastLine} is covered.`
 		: `Call ${readCall} first and confirm ${completionTarget}.`;
-	const resubmitInstruction = "After the read succeeds, use proof_id from the latest successful read page and current anchors, then resubmit the hledit_apply_file_changes batch.";
+	const resubmitInstruction = "After the read succeeds, use proof_id from the latest successful read page and current anchors, then resubmit the edit batch.";
 	if (failure.code === "read_evidence_evicted") {
 		lines.push("Use the targeted read below rather than paging the whole file again. If it evicts another required range, stop: narrow the batch or ask whether separate, non-atomic batches are acceptable.");
 	}
@@ -570,7 +565,7 @@ export class ReadEvidenceStore {
 		const path = evidencePathFromDetails(details, cwd);
 		if (!path) return;
 		if (details.evidenceDropped) { this.invalidate(path); return; }
-		if (toolName === HLEDIT_READ_ANCHORS_TOOL || toolName === HLEDIT_SEARCH_ANCHORS_TOOL) {
+		if (isAnchoredReadTool(toolName)) {
 			if (details.windowsRead !== undefined) {
 				const read = parseWindowsReadMetadata(details.windowsRead);
 				if (read && !read.truncated && details.disposition === "succeeded" && typeof details.proofId === "string") {
@@ -584,7 +579,7 @@ export class ReadEvidenceStore {
 			else this.state.touch(path);
 			return;
 		}
-		if (toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) return;
+		if (!isAnchoredEditTool(toolName)) return;
 		const priority = priorityLines(details.recoveryRequiredRanges);
 		for (const read of parseRecoveredReads(details)) this.state.read(path, read.revision, read.lines, details.proofId, read.actual.totalLines, priority);
 		if (details.disposition === "succeeded") {
@@ -629,8 +624,9 @@ export class ReadEvidenceStore {
 			if (entry.message.role !== "toolResult") { flush(); continue; }
 			if (!isRecord(entry.message.details)) continue;
 			const toolName = entry.message.toolName;
-			if (toolName !== HLEDIT_READ_ANCHORS_TOOL && toolName !== HLEDIT_SEARCH_ANCHORS_TOOL && toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) continue;
+			if (!isAnchoredReadTool(toolName) && !isAnchoredEditTool(toolName)) continue;
 			const details = entry.message.details as HleditDetails;
+			if ((toolName === "read" || toolName === "edit") && details.evidenceVersion !== 2) continue;
 			const order = details.evidenceOrder;
 			if (!isRecord(order) || typeof order.timeline !== "string" || typeof order.sequence !== "number"
 				|| !Number.isSafeInteger(order.sequence) || order.sequence < 1) {
@@ -653,7 +649,7 @@ export class ReadEvidenceStore {
 		details.evidenceVersion = 2;
 		if (!Number.isSafeInteger(++this.sequence)) { this.timeline = nextProofId(); this.sequence = 1; }
 		details.evidenceOrder = { timeline: this.timeline, sequence: this.sequence };
-		if (toolName === HLEDIT_APPLY_FILE_CHANGES_TOOL) {
+		if (isAnchoredEditTool(toolName)) {
 			if (details.disposition === "succeeded") {
 				details.baseProofId = this.getProofId(path);
 				details.proofId = details.contentChanged === false ? this.getProofId(path) : nextProofId();

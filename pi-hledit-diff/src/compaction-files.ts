@@ -1,8 +1,4 @@
-import {
-	HLEDIT_APPLY_FILE_CHANGES_TOOL,
-	HLEDIT_READ_ANCHORS_TOOL,
-	HLEDIT_SEARCH_ANCHORS_TOOL,
-} from "./active-tools.ts";
+import { isAnchoredEditTool, isAnchoredReadTool } from "./active-tools.ts";
 import { parseRecoveredReads } from "./read-result.ts";
 import { parseWindowsReadMetadata } from "./read-windows.ts";
 
@@ -12,45 +8,79 @@ type AnchoredCompactionFileOps = {
 	edited: Set<string>;
 };
 
-// Pi 内置 compaction 文件提取只识别名为 read/write/edit 的工具调用参数；两个
-// hledit 工具的文件操作必须在 session_before_compact 中补充，否则压缩摘要会
-// 丢失 readFiles/modifiedFiles。只信任结构化 tool result 的 disposition 与
-// normalized path，不从聊天正文猜测文件状态：
-// - 读取成功 → read；
-// - apply 成功且内容变更 → edited；
-// - 成功 no-op（contentChanged === false，字节未变）→ read；
-// - apply 拒绝但携带已验证的 recoveredReads → read；
-// - outcome_unknown → edited（保守：可能已写入，压缩后必须按已修改重读）；
-// - 其余 rejected/unavailable 零写入 → 不记录。
-export function recordAnchoredFileOperations(messages: unknown[], fileOps: AnchoredCompactionFileOps): void {
-	for (const message of messages) {
-		if (typeof message !== "object" || message === null) continue;
-		const candidate = message as Record<string, unknown>;
-		if (candidate.role !== "toolResult" || typeof candidate.toolName !== "string") continue;
-		const details = candidate.details;
-		if (typeof details !== "object" || details === null) continue;
-		const record = details as Record<string, unknown>;
-		const { disposition, path, contentChanged } = record;
-		if (typeof path !== "string" || path.length === 0) continue;
+type RecordValue = Record<string, unknown>;
+const asRecord = (value: unknown): RecordValue | undefined =>
+	typeof value === "object" && value !== null ? value as RecordValue : undefined;
 
-		if (candidate.toolName === HLEDIT_READ_ANCHORS_TOOL || candidate.toolName === HLEDIT_SEARCH_ANCHORS_TOOL) {
-			// [喵喵喵]: 成功读取按状态登记；只有非成功的窗口预览需要重验实际返回的源码。
-			if (disposition === "succeeded") {
-				fileOps.read.add(path);
-				continue;
-			}
-			const windowsRead = parseWindowsReadMetadata(record.windowsRead);
-			// [喵喵喵]: 不完整多窗口虽不授权 proof，实际显示过的源码仍应进入 compaction 的读文件记录。
+function anchoredResult(message: RecordValue): RecordValue | undefined {
+	const name = message.toolName;
+	if (message.role !== "toolResult" || typeof name !== "string"
+		|| (!isAnchoredReadTool(name) && !isAnchoredEditTool(name))) return undefined;
+	const details = asRecord(message.details);
+	if (!details || ((name === "read" || name === "edit") && details.evidenceVersion !== 2)) return undefined;
+	return details;
+}
+
+function recordResult(name: string, details: RecordValue, fileOps: AnchoredCompactionFileOps): void {
+	const { disposition, path, contentChanged } = details;
+	if (typeof path !== "string" || path.length === 0) return;
+	if (isAnchoredReadTool(name)) {
+		if (disposition === "succeeded") fileOps.read.add(path);
+		else {
+			const windowsRead = parseWindowsReadMetadata(details.windowsRead);
 			if (windowsRead?.path === path && windowsRead.windows.some((window) => window.lines.length > 0)) fileOps.read.add(path);
-			continue;
 		}
-		if (candidate.toolName !== HLEDIT_APPLY_FILE_CHANGES_TOOL) continue;
-		if (parseRecoveredReads(record).length > 0) fileOps.read.add(path);
-		if (disposition === "succeeded") {
-			if (contentChanged === false) fileOps.read.add(path);
-			else fileOps.edited.add(path);
-			continue;
+		return;
+	}
+	if (parseRecoveredReads(details).length > 0) fileOps.read.add(path);
+	if (disposition === "succeeded") {
+		if (contentChanged === true) fileOps.edited.add(path);
+		else if (contentChanged === false) fileOps.read.add(path);
+	} else if (disposition === "outcome_unknown") fileOps.edited.add(path);
+}
+
+// [喵喵喵]: 宿主先按调用名预登记；只撤销能与本插件结果配对的贡献，再合并实际结果。
+// 同路径的原生/嵌套调用和上一轮压缩记录必须保留，不能对 rejected 简单 delete(path)。
+export function recordAnchoredFileOperations(messages: unknown[], fileOps: AnchoredCompactionFileOps, previousDetails?: unknown): void {
+	const results = new Map<string, { name: string; details: RecordValue }>();
+	const records = messages.map(asRecord).filter((message): message is RecordValue => message !== undefined);
+	for (const message of records) {
+		const details = anchoredResult(message);
+		if (details && typeof message.toolCallId === "string") results.set(message.toolCallId, { name: message.toolName as string, details });
+	}
+
+	const removed: AnchoredCompactionFileOps = { read: new Set(), edited: new Set() };
+	const retained: AnchoredCompactionFileOps = { read: new Set(), edited: new Set() };
+	const previous = asRecord(previousDetails);
+	for (const path of Array.isArray(previous?.readFiles) ? previous.readFiles : []) if (typeof path === "string") retained.read.add(path);
+	for (const path of Array.isArray(previous?.modifiedFiles) ? previous.modifiedFiles : []) if (typeof path === "string") retained.edited.add(path);
+
+	const recordCall = (call: RecordValue, nested: boolean) => {
+		const args = asRecord(call.arguments);
+		if (typeof args?.path !== "string" || !args.path || (call.name !== "read" && call.name !== "edit")) return;
+		const result = typeof call.id === "string" ? results.get(call.id) : undefined;
+		const target = !nested && result?.name === call.name ? removed : retained;
+		(call.name === "read" ? target.read : target.edited).add(args.path);
+	};
+	for (const message of records) {
+		if (message.role === "assistant" && Array.isArray(message.content)) {
+			for (const block of message.content) {
+				const call = asRecord(block);
+				if (call?.type === "toolCall") recordCall(call, false);
+			}
+		} else if (message.role === "toolResult") {
+			const nestedCalls = asRecord(message.nestedCalls)?.calls;
+			if (Array.isArray(nestedCalls)) for (const call of nestedCalls) {
+				const record = asRecord(call);
+				if (record) recordCall(record, true);
+			}
 		}
-		if (disposition === "outcome_unknown") fileOps.edited.add(path);
+	}
+	for (const key of ["read", "edited"] as const) {
+		for (const path of removed[key]) if (!retained[key].has(path)) fileOps[key].delete(path);
+	}
+	for (const message of records) {
+		const details = anchoredResult(message);
+		if (details) recordResult(message.toolName as string, details, fileOps);
 	}
 }

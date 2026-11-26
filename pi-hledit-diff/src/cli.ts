@@ -20,7 +20,7 @@ export type HleditRun = {
 
 // 校验通过的 CLI 只有 version 会被消费：能力字段全部是必须为 true 的常量，
 // 回显它们不携带任何调用方需要的信息。
-export type HleditCapabilities = {
+type HleditCapabilities = {
 	version: string;
 };
 
@@ -81,7 +81,7 @@ type ForceTerminateProcess = (
 	reportDiagnostic: (message: string) => void,
 ) => void;
 
-export type HleditProcessWaitOptions = {
+type HleditProcessWaitOptions = {
 	executablePath: string;
 	signal: AbortSignal | undefined;
 	maxOutputBytes: number;

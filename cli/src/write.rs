@@ -107,6 +107,9 @@ mod platform {
     fn wide(path: &Path) -> Vec<u16> {
         path.as_os_str().encode_wide().chain(Some(0)).collect()
     }
+    fn api_error(api: &str, error: io::Error) -> io::Error {
+        io::Error::new(error.kind(), format!("{api}: {error}"))
+    }
     pub fn links(path: &Path, _: &fs::Metadata) -> io::Result<u64> {
         let file = File::open(path)?;
         let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
@@ -129,22 +132,42 @@ mod platform {
         let mut defaulted = 0;
         let mut control = 0;
         let mut revision = 0;
-        if unsafe {
-            GetSecurityDescriptorDacl(source.0, &mut present, &mut dacl, &mut defaulted) == 0
-                || GetSecurityDescriptorControl(source.0, &mut control, &mut revision) == 0
-        } {
-            return Err(io::Error::last_os_error());
+        if unsafe { GetSecurityDescriptorDacl(source.0, &mut present, &mut dacl, &mut defaulted) }
+            == 0
+        {
+            return Err(api_error(
+                "GetSecurityDescriptorDacl",
+                io::Error::last_os_error(),
+            ));
+        }
+        if unsafe { GetSecurityDescriptorControl(source.0, &mut control, &mut revision) } == 0 {
+            return Err(api_error(
+                "GetSecurityDescriptorControl",
+                io::Error::last_os_error(),
+            ));
         }
         // [喵喵喵]: DACL-only 查询仍可能附带 Owner/Group；不能把它们用于创建，否则普通令牌可能触发 1307。
         let mut descriptor = SECURITY_DESCRIPTOR::default();
         let pointer = (&mut descriptor as *mut SECURITY_DESCRIPTOR).cast();
         let inheritance = SE_DACL_PROTECTED | SE_DACL_AUTO_INHERITED | SE_DACL_AUTO_INHERIT_REQ;
-        if unsafe {
-            InitializeSecurityDescriptor(pointer, revision) == 0
-                || SetSecurityDescriptorDacl(pointer, present, dacl, defaulted) == 0
-                || SetSecurityDescriptorControl(pointer, inheritance, control & inheritance) == 0
-        } {
-            return Err(io::Error::last_os_error());
+        if unsafe { InitializeSecurityDescriptor(pointer, revision) } == 0 {
+            return Err(api_error(
+                "InitializeSecurityDescriptor",
+                io::Error::last_os_error(),
+            ));
+        }
+        if unsafe { SetSecurityDescriptorDacl(pointer, present, dacl, defaulted) } == 0 {
+            return Err(api_error(
+                "SetSecurityDescriptorDacl",
+                io::Error::last_os_error(),
+            ));
+        }
+        if unsafe { SetSecurityDescriptorControl(pointer, inheritance, control & inheritance) } == 0
+        {
+            return Err(api_error(
+                "SetSecurityDescriptorControl",
+                io::Error::last_os_error(),
+            ));
         }
         Ok(descriptor)
     }
@@ -172,7 +195,10 @@ mod platform {
             )
         };
         if code != ERROR_SUCCESS {
-            return Err(io::Error::from_raw_os_error(code as i32));
+            return Err(api_error(
+                "GetNamedSecurityInfoW",
+                io::Error::from_raw_os_error(code as i32),
+            ));
         }
         let descriptor = Descriptor(descriptor);
         // [喵喵喵]: creation 只借用 descriptor 中的 DACL 内存，两者均须存续至 CreateFileW 完成。
@@ -198,7 +224,7 @@ mod platform {
                     )
                 };
                 if handle == INVALID_HANDLE_VALUE {
-                    Err(io::Error::last_os_error())
+                    Err(api_error("CreateFileW", io::Error::last_os_error()))
                 } else {
                     Ok(unsafe { File::from_raw_handle(handle) })
                 }

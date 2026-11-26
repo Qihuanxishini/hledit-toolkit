@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "sourceSha256": "b46eaa1cc850c8649c5493944221d9e4aa5bdd66cbf6474413db82dc1d5eba06",
-  "binarySha256": "e2bfe61ee3646d857be364752c0648d4cae06afe0f871f9a839422d849b2920d",
+  "sourceSha256": "8d3c0448b8c590c7b05b279959fe34bf086859ffa056a51b45cc679ab7d1eedf",
+  "binarySha256": "d4c54e219ee4e294b23d7bb9d72738abadec97e05ff4cca577d0f3cbfd5e30a3",
   "licensesSha256": "b5ba2e832339ada7c5f4220555f317b5ec97d5509aba84b45e849134b60b818f",
   "rustc": "rustc 1.98.0 (88d9e12ae 2026-08-18)",
   "target": "x86_64-pc-windows-msvc"

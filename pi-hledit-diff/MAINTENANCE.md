@@ -305,6 +305,8 @@ npm run check
 
 `test:bundled` 必须覆盖 CLI contract、anchor hash 对拍、工具激活与 tool-result 集成。Rust 工具链和依赖分别固定在 `rust-toolchain.toml` 与 `Cargo.lock`，Windows release 使用 Rust 随附 linker 与静态 CRT。构建脚本以同一份显式 target / target-dir 供 Cargo 构建与产物复制使用，固定为 `x86_64-pc-windows-msvc` / `cli/target`，不受 Cargo 外部目标和输出目录配置影响；同步生成 binary、第三方许可和 `hledit.build.json`，后者记录规范化源码指纹、binary SHA-256、许可摘要与工具链。CI 在覆盖 tracked binary 前核对指纹并运行 bundled tests，再从源码构建并运行同一契约与 full check。平台运行库可能随构建机不同，不能把源码指纹检查描述成跨主机逐字节可复现或真实性签名；源码、锁文件、构建脚本或产物变化后必须重新构建与核对。
 
+Windows 构建与 `-VerifyOnly` 还检查仓库根目录、bundle 目录及实际 exe 的完整性标签，拒绝低于 Medium 的制品；构建时也核对 Cargo 实际产物。此检查只读安全元数据，不修改 ACL，不申请提升权限。完整性标签不属于 Git 内容或 SHA-256 指纹，不能用制品哈希匹配代替部署目录检查。写入验收必须用真实非管理员令牌，并包含普通 Medium 用户目录；管理员进程或 Low 测试目录中的成功结果不足以证明该链路可用。
+
 ## 真实 Pi 验收
 
 不复制到正式扩展目录时，可从仓库根目录隔离启动：

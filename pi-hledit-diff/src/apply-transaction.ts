@@ -52,7 +52,7 @@ export async function runApplyTransaction(
 	const applyWithinQueue = async (): Promise<TextResult> => {
 		// [喵喵喵]: 请求自身的矛盾必须先拒绝，重读无法修复参数，不能落入 proof 恢复循环。
 		const shapeIssue = findChangeShapeIssue(normalizedParams, {
-			has: (anchor) => evidence.anchorsRequiringRead(evidencePath, [anchor]).length === 0,
+			has: (anchor) => evidence.hasAnchor(evidencePath, anchor),
 		});
 		if (shapeIssue) return attachEvidencePath(changeShapeIssueResult(shapeIssue), path, evidencePath);
 		const selection = evidence.selectProof(evidencePath, normalizedParams.changes, normalizedParams.proof_id);

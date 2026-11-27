@@ -14,8 +14,9 @@ const READ_DESCRIPTION = "Read text or images. Text returns LN#HASH anchors and 
 
 export function createAnchoredReadTool(cwd: string, evidence: ReadEvidenceStore, nestedCalls: ReadonlySet<string>, ready: () => boolean, autoResizeImages: () => boolean) {
 	const native = createReadToolDefinition(cwd);
+	let nativeNoResize: typeof native | undefined;
 	const executeNative: typeof native.execute = (...args) =>
-		createReadToolDefinition(cwd, { autoResizeImages: autoResizeImages() }).execute(...args);
+		(autoResizeImages() ? native : (nativeNoResize ??= createReadToolDefinition(cwd, { autoResizeImages: false }))).execute(...args);
 	type ReadDetails = Awaited<ReturnType<typeof native.execute>>["details"] | HleditDetails;
 	return defineTool({
 		...native,

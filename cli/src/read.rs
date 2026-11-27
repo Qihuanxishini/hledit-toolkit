@@ -60,30 +60,28 @@ impl Page {
     pub fn append(&mut self, number: usize, text: &str) -> bool {
         let separator = usize::from(!self.rows.is_empty());
         let available = self.budget.saturating_sub(self.used + separator);
-        let mut row = Row {
-            line: number,
-            anchor: String::new(),
-            text: String::new(),
-            text_truncated: false,
-        };
-        // [喵喵喵]: LN#HHH 无 JSON 转义；先为行号和固定 hash 长度计费，确定入页后才计算原文锚点。
-        let anchor_bytes = number.checked_ilog10().unwrap_or(0) as usize + 1 + "#HHH".len();
-        let base = serde_json::to_vec(&row).expect("row serialization").len() + anchor_bytes;
+        let line_digits = number.checked_ilog10().unwrap_or(0) as usize + 1;
+        let anchor_bytes = line_digits + "#HHH".len();
+        // [喵喵喵]: 与 Row 的 JSON 布局 {"line":<n>,"anchor":"<a >","text":"<t>"} 严格对应，省去逐行空串序列化。
+        let base = 31 + line_digits + anchor_bytes;
         if let Some(size) = available
             .checked_sub(base)
             .and_then(|budget| escaped_size_within(text, budget))
         {
-            row.anchor = tag(number, text);
-            row.text.push_str(text);
             self.used += separator + base + size;
-            self.rows.push(row);
+            self.rows.push(Row {
+                line: number,
+                anchor: tag(number, text),
+                text: text.to_string(),
+                text_truncated: false,
+            });
             return true;
         }
         if !self.rows.is_empty() {
             return false;
         }
-        row.text_truncated = true;
-        let base = serde_json::to_vec(&row).expect("row serialization").len() + anchor_bytes;
+        // [喵喵喵]: text_truncated: true 时追加 ,"textTruncated":true（21 字节）。
+        let base = base + 21;
         if base > available {
             return false;
         }
@@ -104,11 +102,16 @@ impl Page {
             remaining -= size;
             end = index + ch.len_utf8();
         }
-        row.text.push_str(&text[..end]);
-        row.text.push_str(suffix);
-        self.used += separator + base + escaped_size(&row.text);
-        row.anchor = tag(number, text);
-        self.rows.push(row);
+        let mut truncated = String::with_capacity(end + suffix.len());
+        truncated.push_str(&text[..end]);
+        truncated.push_str(suffix);
+        self.used += separator + base + escaped_size(&truncated);
+        self.rows.push(Row {
+            line: number,
+            anchor: tag(number, text),
+            text: truncated,
+            text_truncated: true,
+        });
         true
     }
 }

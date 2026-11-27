@@ -129,10 +129,10 @@ function requestedChangeEvidence(changes: FileChangeParams["changes"]): Requeste
 		const end = lineFromAnchor(change.end_anchor);
 		if (start === undefined || end === undefined || start > end) return undefined;
 		sourceRanges.push({ start, end, changeNumber, reference, operation: change.operation });
-		endpointAnchors.push(
-			{ line: start, anchor: change.start_anchor, anchorIndex: 0, changeNumber, reference, operation: change.operation },
-			{ line: end, anchor: change.end_anchor, anchorIndex: change.end_anchor === change.start_anchor ? 0 : 1, changeNumber, reference, operation: change.operation },
-		);
+		endpointAnchors.push({ line: start, anchor: change.start_anchor, anchorIndex: 0, changeNumber, reference, operation: change.operation });
+		if (change.end_anchor !== change.start_anchor) {
+			endpointAnchors.push({ line: end, anchor: change.end_anchor, anchorIndex: 1, changeNumber, reference, operation: change.operation });
+		}
 	}
 
 	// [喵喵喵]: 仅合并真正重叠的范围；相邻 change 保持独立，避免首个缺口的
@@ -487,6 +487,10 @@ export class ReadEvidenceStore {
 	anchorsRequiringRead(path: string, anchors: readonly string[]): string[] {
 		const lines = this.state.get(path)?.current.lines;
 		return anchors.filter((anchor) => lines?.get(lineFromAnchor(anchor) ?? 0)?.anchor !== anchor);
+	}
+	hasAnchor(path: string, anchor: string): boolean {
+		const line = lineFromAnchor(anchor);
+		return line !== undefined && this.state.get(path)?.current.lines.get(line)?.anchor === anchor;
 	}
 	anchorTokens(path: string): ReadonlySet<string> {
 		return new Set([...(this.state.get(path)?.current.lines.values() ?? [])].map((line) => line.anchor));

@@ -934,3 +934,70 @@ test("diff line limits only show continuation when a row is actually hidden", ()
 		}
 	}
 });
+
+test("renderers reuse lastComponent when inputs match and rebuild when inputs change", () => {
+	const args = { path: "src/a.ts", windows: [{ offset: 1, limit: 10 }] };
+	const call1 = renderHleditCall("read_anchors", args, theme, { cwd: process.cwd() });
+	const call2 = renderHleditCall("read_anchors", args, theme, { cwd: process.cwd(), lastComponent: call1 });
+	assert.equal(call2, call1);
+	const callChanged = renderHleditCall("read_anchors", { ...args }, theme, { cwd: process.cwd(), lastComponent: call1 });
+	assert.notEqual(callChanged, call1);
+
+	const readResult: TextResult = {
+		content: [{ type: "text", text: "1#AAB:alpha" }],
+		details: {
+			disposition: "succeeded",
+			read: {
+				path: "src/a.ts",
+				revision: `sha256:${"0".repeat(64)}`,
+				requested: { offset: 1, limit: 1 },
+				actual: { firstLine: 1, lastLine: 1, lineCount: 1, totalLines: 1 },
+				lines: [{ line: 1, anchor: "1#AAB", text: "alpha", textTruncated: false }],
+				truncated: false,
+				textTruncated: false,
+				eof: true,
+			},
+		},
+	};
+	const read1 = renderReadAnchorsResult(readResult, options(true), theme, { args: { path: "src/a.ts" } });
+	const read2 = renderReadAnchorsResult(
+		{ content: readResult.content, details: readResult.details },
+		options(true),
+		theme,
+		{ args: { path: "src/a.ts" }, lastComponent: read1 },
+	);
+	assert.equal(read2, read1);
+	const readCollapsed = renderReadAnchorsResult(readResult, options(false), theme, { args: { path: "src/a.ts" }, lastComponent: read1 });
+	assert.notEqual(readCollapsed, read1);
+
+	const applyResult: TextResult = {
+		content: [{ type: "text", text: "ok" }],
+		details: {
+			disposition: "succeeded",
+			changePreview: { truncated: false, lines: [{ kind: "add", newLine: 1, text: "alpha", changeIndex: 0 }] },
+		},
+	};
+	const apply1 = renderFileChangesResult(applyResult, options(true), theme, { args: { path: "src/a.ts" } });
+	const apply2 = renderFileChangesResult(
+		{ content: applyResult.content, details: applyResult.details },
+		options(true),
+		theme,
+		{ args: { path: "src/a.ts" }, lastComponent: apply1 },
+	);
+	assert.equal(apply2, apply1);
+	const applyError = renderFileChangesResult(applyResult, options(true), theme, { args: { path: "src/a.ts" }, isError: true, lastComponent: apply1 });
+	assert.notEqual(applyError, apply1);
+
+	let activeFg = "A";
+	const proxyTheme: RenderTheme = {
+		...theme,
+		fg: (_color, text) => `[${activeFg}]${text}`,
+	};
+	const themedCall = renderHleditCall("read_anchors", args, proxyTheme, { cwd: process.cwd() });
+	assert.match(themedCall.render(80)[0] ?? "", /\[A\]/);
+	activeFg = "B";
+	const reusedThemedCall = renderHleditCall("read_anchors", args, proxyTheme, { cwd: process.cwd(), lastComponent: themedCall });
+	assert.equal(reusedThemedCall, themedCall);
+	reusedThemedCall.invalidate();
+	assert.match(reusedThemedCall.render(80)[0] ?? "", /\[B\]/);
+});

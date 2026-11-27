@@ -24,7 +24,26 @@ type ToolRenderContextLike = {
 	args?: unknown;
 	isError?: boolean;
 	cwd?: string;
+	lastComponent?: unknown;
 };
+
+const renderComponentKeys = new WeakMap<object, readonly unknown[]>();
+
+function reuseComponent(
+	lastComponent: unknown,
+	key: readonly unknown[],
+	create: () => RenderComponent,
+): RenderComponent {
+	if (isRecord(lastComponent)) {
+		const cached = renderComponentKeys.get(lastComponent);
+		if (cached && cached.length === key.length && cached.every((value, index) => Object.is(value, key[index]))) {
+			return lastComponent as RenderComponent;
+		}
+	}
+	const created = create();
+	renderComponentKeys.set(created, key);
+	return created;
+}
 
 type AnchoredSourceLine = {
 	anchor: string;
@@ -191,7 +210,8 @@ export function renderHleditCall(
 	theme: RenderTheme,
 	context: ToolRenderContextLike = {},
 ): RenderComponent {
-	const input = isRecord(args) ? args : {};
+	return reuseComponent(context.lastComponent, ["call", kind, args, theme, context.cwd, Boolean(context.isError)], () => {
+		const input = isRecord(args) ? args : {};
 	const path = typeof input.path === "string" ? normalizeToolPath(input.path) : undefined;
 	const offset = typeof input.offset === "number" && input.offset > 0 ? input.offset : undefined;
 	const limit = typeof input.limit === "number" && input.limit > 0 ? input.limit : undefined;
@@ -210,23 +230,29 @@ export function renderHleditCall(
 	const operationCount = changes?.length;
 	const searchContext = kind === "search_anchors" && typeof input.context === "number" && Number.isInteger(input.context) && input.context > 0 ? input.context : undefined;
 	const titleText = kind === "read_anchors" ? "read" : kind === "search_anchors" ? "search anchors" : "apply changes";
-	const title = theme.fg("toolTitle", theme.bold(titleText));
-	const styledPath = path ? linkedToolPath(theme.fg("accent", escapeTerminalControls(path)), path, context) : undefined;
-	const target = styledPath ? styledPath + (range ? theme.fg("warning", `:${range}`) : "") : theme.fg("dim", "…");
-	let suffix = "";
-	if (operationCount !== undefined) {
-		suffix = theme.fg("muted", `（${operationCount} 项操作）`);
-	} else if (pattern !== undefined) {
-		const options = [
-			patternLiteral ? "字面匹配" : "正则匹配",
-			patternIgnoreCase ? "忽略大小写" : "",
-			searchContext === undefined ? "" : `上下文 ±${searchContext} 行`,
-			offset === undefined || offset === 1 ? "" : `从第 ${offset} 行开始`,
-			limit === undefined ? "" : `最多 ${limit} 行`,
-		].filter(Boolean);
-		suffix = theme.fg("muted", ` ${patternLiteral ? "包含" : "匹配"} ${escapeTerminalControls(JSON.stringify(pattern))}${options.length === 0 ? "" : `（${options.join("；")}）`}`);
-	}
-	return component((width) => [truncateToWidth(`${title} ${target}${suffix}`, width, "")]);
+	const escapedPath = path ? escapeTerminalControls(path) : undefined;
+	const suffixText = operationCount !== undefined
+		? `（${operationCount} 项操作）`
+		: pattern !== undefined
+			? (() => {
+				const options = [
+					patternLiteral ? "字面匹配" : "正则匹配",
+					patternIgnoreCase ? "忽略大小写" : "",
+					searchContext === undefined ? "" : `上下文 ±${searchContext} 行`,
+					offset === undefined || offset === 1 ? "" : `从第 ${offset} 行开始`,
+					limit === undefined ? "" : `最多 ${limit} 行`,
+				].filter(Boolean);
+				return ` ${patternLiteral ? "包含" : "匹配"} ${escapeTerminalControls(JSON.stringify(pattern))}${options.length === 0 ? "" : `（${options.join("；")}）`}`;
+			})()
+			: undefined;
+		return component((width) => {
+			const title = theme.fg("toolTitle", theme.bold(titleText));
+			const styledPath = path && escapedPath ? linkedToolPath(theme.fg("accent", escapedPath), path, context) : undefined;
+			const target = styledPath ? styledPath + (range ? theme.fg("warning", `:${range}`) : "") : theme.fg("dim", "…");
+			const suffix = suffixText === undefined ? "" : theme.fg("muted", suffixText);
+			return [truncateToWidth(`${title} ${target}${suffix}`, width, "")];
+		});
+	});
 }
 
 export function renderReadAnchorsResult(
@@ -235,7 +261,11 @@ export function renderReadAnchorsResult(
 	theme: RenderTheme,
 	context: ToolRenderContextLike,
 ): RenderComponent {
-	if (options.isPartial) {
+	return reuseComponent(
+		context.lastComponent,
+		["read", result.content, result.details, options.expanded, Boolean(options.isPartial), Boolean(context.isError), pathFromContext(context), theme],
+		() => {
+			if (options.isPartial) {
 		return component((width) => [truncateToWidth(theme.fg("warning", "正在读取锚点…"), width, "")]);
 	}
 	if (result.details.disposition !== "succeeded" || context.isError) {
@@ -246,16 +276,16 @@ export function renderReadAnchorsResult(
 	if (windowsRead) {
 		const lines = windowsRead.windows.flatMap((window) => window.lines);
 		const ranges = windowsRead.windows.map((window) => formatLineRange(window.offset, window.offset + window.limit - 1)).join(", ");
-		const header = [
+		const headerText = () => [
 			theme.fg("toolOutput", `↳ ${lines.length} 行锚点 • ${windowsRead.requested.length} 个窗口 • ${ranges} / 共 ${windowsRead.totalLines} 行`),
 			!options.expanded && lines.length > 0 ? theme.fg("muted", `• ${expandHint()}`) : "",
 		].filter(Boolean).join(" ");
 		if (!options.expanded || lines.length === 0) {
-			return component((width) => width <= 0 ? [] : [truncateToWidth(header, width, "")]);
+			return component((width) => width <= 0 ? [] : [truncateToWidth(headerText(), width, "")]);
 		}
 		const source = createAnchoredRowsComponent(lines, pathFromContext(context), theme);
 		return component((width) => width <= 0 ? [] : [
-			truncateToWidth(header, width, ""),
+			truncateToWidth(headerText(), width, ""),
 			...source.render(width),
 		], () => source.invalidate());
 	}
@@ -314,7 +344,9 @@ export function renderReadAnchorsResult(
 			output.push(truncateToWidth(theme.fg("warning", "源文件行内容已截断；调整读取范围无法恢复该行被省略的文本"), width, ""));
 		}
 		return output;
-	}, () => sourceRowsComponent.invalidate());
+			}, () => sourceRowsComponent.invalidate());
+		},
+	);
 }
 
 function successfulChangeSummary(result: RenderResult, theme: RenderTheme): string {
@@ -362,7 +394,11 @@ export function renderFileChangesResult(
 	theme: RenderTheme,
 	context: ToolRenderContextLike,
 ): RenderComponent {
-	if (options.isPartial) {
+	return reuseComponent(
+		context.lastComponent,
+		["apply", result.content, result.details, options.expanded, Boolean(options.isPartial), Boolean(context.isError), pathFromContext(context), theme],
+		() => {
+			if (options.isPartial) {
 		return component((width) => [truncateToWidth(theme.fg("warning", "正在应用锚点修改…"), width, "")]);
 	}
 	if (result.details.disposition !== "succeeded" || context.isError) {
@@ -429,5 +465,7 @@ export function renderFileChangesResult(
 	}, () => {
 		changeBodyComponent.invalidate();
 		updatedAnchorRows?.invalidate();
-	});
+			});
+		},
+	);
 }

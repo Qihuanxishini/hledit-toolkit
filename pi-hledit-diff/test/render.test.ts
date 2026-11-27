@@ -167,7 +167,7 @@ test("renderHleditCall preserves separate ranges for multiple operations", () =>
 	);
 });
 
-test("renderReadAnchorsResult shows actual range, total lines, and EOF", () => {
+test("renderReadAnchorsResult folds to a single summary line when collapsed and shows anchors when expanded", () => {
     const lines = Array.from({ length: 14 }, (_, index) => ({
         line: index + 1,
         anchor: `${index + 1}#AAB`,
@@ -190,17 +190,65 @@ test("renderReadAnchorsResult shows actual range, total lines, and EOF", () => {
             },
         },
     };
-    const output = render(renderReadAnchorsResult(result, options(), theme, { args: { path: "notes.txt" } }), 80);
+    const collapsed = render(renderReadAnchorsResult(result, options(), theme, { args: { path: "notes.txt" } }), 120);
+    assert.equal(collapsed.length, 1);
+    assert.match(collapsed[0]!, /^↳ 14 行锚点 • 第 1-14 行 \/ 共 14 行 • 已到文件末尾 • .*展开/);
+    assert.ok(collapsed.every((line) => visibleWidth(line) <= 120));
 
-    assert.equal(output[0], "↳ 14 行锚点 • 第 1-14 行 / 共 14 行 • 已到文件末尾");
-    assert.equal(output[2], " 1#AAB │ line 1");
-    assert.ok(output.some((line) => line.includes("还有 2 行锚点")));
-    assert.ok(output.every((line) => visibleWidth(line) <= 80));
+    const expanded = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "notes.txt" } }), 80);
+    assert.equal(expanded[0], "↳ 14 行锚点 • 第 1-14 行 / 共 14 行 • 已到文件末尾");
+    assert.equal(expanded[2], " 1#AAB │ line 1");
+    assert.ok(expanded.some((line) => line.includes("14#AAB │ line 14")));
+    assert.ok(expanded.every((line) => visibleWidth(line) <= 80));
+});
+
+test("renderReadAnchorsResult keeps the 12-row preview for search results", () => {
+	const lines = Array.from({ length: 14 }, (_, index) => ({
+		line: 3 + index * 2,
+		anchor: `${3 + index * 2}#AAB`,
+		text: `match ${index + 1} with enough text to wrap at narrower widths`,
+		textTruncated: false,
+	}));
+	const result: TextResult = {
+		content: [{ type: "text", text: lines.map((line) => `${line.anchor}:${line.text}`).join("\n") }],
+		details: {
+			disposition: "succeeded",
+			read: {
+				path: "notes.txt",
+				revision: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+				requested: { offset: 1, limit: 20, pattern: "match" },
+				actual: { firstLine: 3, lastLine: 29, lineCount: 14, totalLines: 30 },
+				lines,
+				truncated: false,
+				textTruncated: false,
+				eof: false,
+				totalMatches: 14,
+			},
+		},
+	};
+	const context = { args: { path: "notes.txt", pattern: "match" } };
+	const collapsed = renderReadAnchorsResult(result, options(), theme, context);
+	const wide = render(collapsed, 120);
+	assert.equal(wide[0], "↳ 14 行锚点 • 第 3-29 行 / 共 30 行");
+	const wideRows = wide.filter((line) => line.includes(" │ "));
+	assert.equal(wideRows.length, 12);
+	assert.match(wideRows[0]!, /^ 3#AAB │ match 1 /);
+	assert.match(wideRows[11]!, /^25#AAB │ match 12 /);
+	assert.match(wide.at(-1)!, /还有 2 行锚点.*展开/);
+
+	const narrow = render(collapsed, 40);
+	assert.equal(narrow.filter((line) => line.includes(" │ ")).length, 12);
+	assert.match(narrow.at(-1)!, /预览已折叠.*展开/);
+	assert.ok(narrow.every((line) => visibleWidth(line) <= 40));
+
+	const expanded = render(renderReadAnchorsResult(result, options(true), theme, context), 120);
+	assert.equal(expanded.filter((line) => line.includes(" │ ")).length, lines.length);
+	assert.match(expanded.at(-1)!, /^29#AAB │ match 14 /);
 });
 
 for (const text of ["x".repeat(30_000), "字🙂e\u0301".repeat(2_000)]) {
 	for (const multiWindow of [false, true]) {
-		test(`collapsed ${multiWindow ? "multi-window" : "single-window"} anchor preview bounds wrapped rows (${text.length} characters)`, () => {
+		test(`collapsed ${multiWindow ? "multi-window" : "single-window"} anchor preview stays single-line and expands cleanly (${text.length} characters)`, () => {
 			const result: TextResult = {
 				content: [{ type: "text", text: `proof_id: test1\n1#AAB:${text}` }],
 				details: {
@@ -233,8 +281,7 @@ for (const text of ["x".repeat(30_000), "字🙂e\u0301".repeat(2_000)]) {
 			const collapsed = renderReadAnchorsResult(result, options(), theme, { args: { path: "sample.txt" } });
 			for (const width of [18, 40, 100]) {
 				const output = collapsed.render(width);
-				assert.ok(output.some((line) => line.includes("预览已折叠")));
-				assert.equal(output.filter((line) => line.includes(" │ ")).length, 12);
+				assert.equal(output.length, 1);
 				assert.ok(output.every((line) => visibleWidth(line) <= width));
 				assert.strictEqual(collapsed.render(width), output);
 			}
@@ -321,7 +368,7 @@ test("renderReadAnchorsResult caches its final width and invalidates highlighted
             },
         },
     };
-    const component = renderReadAnchorsResult(result, options(), theme, { args: { path: "sample.ts" } });
+    const component = renderReadAnchorsResult(result, options(true), theme, { args: { path: "sample.ts" } });
     const first = component.render(80);
 
     assert.strictEqual(component.render(80), first);

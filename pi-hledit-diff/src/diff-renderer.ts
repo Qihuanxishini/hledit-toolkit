@@ -275,7 +275,8 @@ function renderLine(slice: LineSlice, width: number, numberWidth: number, theme:
 		chunk += visibleWidth(segment) > codeWidth ? "…" : segment;
 	}
 	flush();
-	return prefix + content + theme.style(" ".repeat(codeWidth - slice.columns), { bg });
+	// [喵喵喵]: theme.style 会重置背景；恢复工具框底色，供外层 Box 绘制右侧留白。
+	return prefix + content + theme.style(" ".repeat(codeWidth - slice.columns), { bg }) + theme.getBgAnsi("toolSuccessBg");
 }
 
 function renderDiffStatBar(added: number, removed: number, width: number, theme: HleditRenderTheme): string | undefined {

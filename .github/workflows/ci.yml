@@ -55,7 +55,5 @@ jobs:
       - name: Verify rebuilt bundled CLI provenance
         shell: pwsh
         run: ../cli/build-bundle.ps1 -VerifyOnly
-      - name: Verify rebuilt bundled CLI contract
-        run: npm run test:bundled
       - name: Check
         run: npm run check

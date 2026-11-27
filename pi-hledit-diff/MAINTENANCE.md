@@ -248,7 +248,7 @@ wrapper 输出上限为 1 MiB，保护异常或不兼容 CLI 输出；单窗口 
 - diff 始终单栏，使用 `+/- 行号 │ 代码` 和紧凑摘要；长行按字素硬折行，保留原有空白，不拆开 Unicode 字素，续行保留增删标记但不重复源行号。窄屏隐藏行号，极窄时只显示摘要；
 - 布局沿用 `changePreview.lines` 的文件位置顺序，连续变更段先删后增；只将同一 `changeIndex` 连续片段中的旧／新行配对用于行内强调，不跨操作同文匹配，也不把 `oldLine` / `newLine` 混为一套坐标排序。缺少操作关联的旧预览保持原始顺序，不猜测配对；
 - 差异行底色从 `theme.colors.toolSuccessBg` 与 `toolDiffAdded` / `toolDiffRemoved` 混合，配对行的不同片段使用更深的红绿底色；保留语法前景与文字属性，由宿主量化为 truecolor 或 256 色。摘要使用 `↳ diff`、增删计数、hunk 数和增删比例色条；局部预览不显示完整 hunk 数。色条按比例分配红绿格，两类变更都有时各至少一格；空间不足时优先保留计数和局部预览状态；
-- 折叠态最多 24 个屏幕行，优先露出增删；展开态最多 2,000 个屏幕行。只布局展示片段预算加一行哨兵，高亮和 ANSI 着色仅处理可见行，不为隐藏尾部生成完整折行数组或统计精确隐藏行数。布局与颜色缓存在 `invalidate()` 清理；高亮缓存按“语言 + 行文本”跨组件复用，失效时重验哨兵，主题或语言可用性变化才整体丢弃；
+- 差异预览折叠态最多 24 个屏幕行，优先露出增删；展开态最多 2,000 个屏幕行。只布局展示片段预算加一行哨兵，高亮和 ANSI 着色仅处理可见行，不为隐藏尾部生成完整折行数组或统计精确隐藏行数。布局与颜色缓存在 `invalidate()` 清理；高亮缓存按“语言 + 行文本”跨组件复用，失效时重验哨兵，主题或语言可用性变化才整体丢弃；
 - 语法高亮只处理规范化显示行不超过 8,192 UTF-16 code units 的内容；超长行保留完整纯文本、控制字符转义与宽度计算，只跳过同步语法着色。预算不影响源码、proof 或模型正文；
 - `session_before_compact` 按 `toolCallId` 配对调用和本插件结构化结果，撤销宿主按 `read/edit` 名称对原始路径的预登记，再合并实际结果；通用 read/edit 必须有本插件 `evidenceVersion`，不能处理其他实现的结果。保留同路径的其他调用、嵌套调用、`write` 及宿主上一轮压缩记录，结果缺失时不猜测为零写入。read/search 成功或已返回源码的不完整多窗口预览 → read（预览不授予 proof）；带严格验证 `recoveredReads` 的零写入 apply → read；成功且 `contentChanged:true` → modified；成功且 `contentChanged:false` → read；`outcome_unknown` → modified；其余确认零写入结果不新增文件操作。
 
@@ -275,7 +275,7 @@ wrapper 输出上限为 1 MiB，保护异常或不兼容 CLI 输出；单窗口 
 | `src/read-args.ts` | 工具路径归一化、读取/搜索参数、补读窗口及 read 提示的统一参数格式。 |
 | `src/change-preview.ts` | 提交绑定 preview、UTF-8 cap、结构重验和 diff 文本桥。 |
 | `src/post-edit-context.ts` | `updatedAnchorSpans` 验证与模型正文格式化。 |
-| `src/render.ts` / `src/diff-renderer.ts` | 结构化锚点与单栏 diff TUI；读取预览共用 12 个源码屏幕行的折叠预算，按实际换行溢出显示展开提示，展开保留完整页面，模型正文与 proof 不受展示裁剪影响。 |
+| `src/render.ts` / `src/diff-renderer.ts` | 结构化锚点与单栏 diff TUI；`read` / `read_windows` 标题统一为 `read`，折叠仅单行摘要；搜索折叠保留最多 12 个源码屏幕行，按实际换行溢出显示展开提示。展开保留本次返回页面的源码，模型正文与 proof 不受展示裁剪影响。 |
 | `src/syntax-highlight.ts` | 两套 TUI 共用的语言解析与按行高亮缓存。 |
 | `src/compaction-files.ts` | 当前及历史锚点工具结构化结果的 compaction fileOps。 |
 
@@ -299,11 +299,10 @@ cargo test --locked
 pwsh -NoProfile -File build-bundle.ps1
 pwsh -NoProfile -File build-bundle.ps1 -VerifyOnly
 cd ../pi-hledit-diff
-npm run test:bundled
 npm run check
 ```
 
-`test:bundled` 必须覆盖 CLI contract、anchor hash 对拍、工具激活与 tool-result 集成。Rust 工具链和依赖分别固定在 `rust-toolchain.toml` 与 `Cargo.lock`，Windows release 使用 Rust 随附 linker 与静态 CRT。构建脚本以同一份显式 target / target-dir 供 Cargo 构建与产物复制使用，固定为 `x86_64-pc-windows-msvc` / `cli/target`，不受 Cargo 外部目标和输出目录配置影响；同步生成 binary、第三方许可和 `hledit.build.json`，后者记录规范化源码指纹、binary SHA-256、许可摘要与工具链。CI 在覆盖 tracked binary 前核对指纹并运行 bundled tests，再从源码构建并运行同一契约与 full check。平台运行库可能随构建机不同，不能把源码指纹检查描述成跨主机逐字节可复现或真实性签名；源码、锁文件、构建脚本或产物变化后必须重新构建与核对。
+`test:bundled` 必须覆盖 CLI contract、anchor hash 对拍、工具激活与 tool-result 集成；`check` 包含类型检查与全部测试，已覆盖这些契约用例。Rust 工具链和依赖分别固定在 `rust-toolchain.toml` 与 `Cargo.lock`，Windows release 使用 Rust 随附 linker 与静态 CRT。构建脚本以同一份显式 target / target-dir 供 Cargo 构建与产物复制使用，固定为 `x86_64-pc-windows-msvc` / `cli/target`，不受 Cargo 外部目标和输出目录配置影响；同步生成 binary、第三方许可和 `hledit.build.json`，后者记录规范化源码指纹、binary SHA-256、许可摘要与工具链。CI 在覆盖 tracked binary 前核对指纹并运行 `test:bundled`，再从源码构建、核对重建产物指纹并运行 `check`。平台运行库可能随构建机不同，不能把源码指纹检查描述成跨主机逐字节可复现或真实性签名；源码、锁文件、构建脚本或产物变化后必须重新构建与核对。
 
 Windows 构建与 `-VerifyOnly` 还检查仓库根目录、bundle 目录及实际 exe 的完整性标签，拒绝低于 Medium 的制品；构建时也核对 Cargo 实际产物。此检查只读安全元数据，不修改 ACL，不申请提升权限。完整性标签不属于 Git 内容或 SHA-256 指纹，不能用制品哈希匹配代替部署目录检查。写入验收必须用真实非管理员令牌，并包含普通 Medium 用户目录；管理员进程或 Low 测试目录中的成功结果不足以证明该链路可用。
 

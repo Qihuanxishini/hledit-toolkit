@@ -128,10 +128,10 @@ test("renderHleditCall labels literal and case-insensitive search", () => {
 
 test("renderHleditCall shows only explicit read windows without guessing a default range", () => {
 	assert.deepEqual(render(renderHleditCall("read_anchors", { path: "src/a.ts" }, theme)), [
-		"read for edit src/a.ts",
+		"read src/a.ts",
 	]);
 	assert.deepEqual(render(renderHleditCall("read_anchors", { path: "src/a.ts", windows: [{ offset: 41, limit: 160 }] }, theme)), [
-		"read for edit src/a.ts:41-200",
+		"read src/a.ts:41-200",
 	]);
 });
 

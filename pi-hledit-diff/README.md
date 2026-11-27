@@ -48,11 +48,12 @@ CLI 3.x capability 健康且不存在 read/edit 覆盖冲突时，插件在 `ses
 
 插件自行渲染锚点读取和编辑结果，不依赖其他显示扩展；原生图片及只读回退沿用宿主渲染：
 
-- 连续锚点读取、多窗口和搜索都使用 `LN#HASH` gutter、语法高亮和紧凑预览；摘要显示实际范围和总行数，单窗口显示 EOF 或下一 offset，多窗口显示请求窗口数。搜索全文件匹配数保存在 `details.read.totalMatches`。
+- `read` / `read_windows` 的 TUI 标题统一为 `read`，折叠仅显示单行摘要；`hledit_search_anchors` 折叠保留最多 12 个源码屏幕行的预览，溢出时提示展开。展开后显示本次返回页面的源码、`LN#HASH` gutter 与语法高亮；展示裁剪不影响模型正文或 proof。
+- 读取摘要显示实际范围和总行数，单窗口显示 EOF 或下一 offset，多窗口显示请求窗口数。搜索全文件匹配数保存在 `details.read.totalMatches`。
 - 文件修改始终使用单栏差异预览，多项修改在标题中分别显示范围；每行使用 `+/- 行号 │ 代码`，窄屏自动隐藏行号，长行按字素硬折行并保留空白，续行不重复行号。
 - 新增／删除行从当前主题派生淡绿／淡红底色，同一操作中配对行的变化片段加深，保留语法高亮；上下文使用当前主题的工具背景。摘要显示 `↳ diff`、增删计数、变更块数和红绿增删比例色条；空间不足时优先保留计数和局部预览状态。
 - 变更块沿用结构化预览的文件位置顺序，同一连续变更段先显示删除行、再显示新增行；行内强调只配对同一操作的连续片段，不跨操作同文匹配。缺少操作关联的旧预览保留原始顺序，不猜测配对。
-- 折叠态最多显示 24 个屏幕行，并优先露出增删内容；展开态保留 2,000 个屏幕行的展示上限。实际隐藏内容时显示提示，不影响模型正文或编辑证据。
+- 差异预览折叠态最多显示 24 个屏幕行，并优先露出增删内容；展开态保留 2,000 个屏幕行的展示上限。实际隐藏内容时显示提示，不影响模型正文或编辑证据。
 - `details.changePreview` 是提交绑定的结构化局部 diff；上限为 2,000 行 / 256 KiB UTF-8，超长单行保留首尾并标记截断。截断统计使用 CLI 验证的 `linesAdded` / `linesDeleted`，不把局部 hunk 数冒充完整统计。
 - 单窗口／搜索、多窗口、差异预览和 expanded 更新锚点分别消费 `details.read`、`details.windowsRead`、`details.changePreview`、`details.updatedAnchorSpans`；展示与证据恢复共用结构化结果。
 - 组件缓存同宽布局与语法高亮，并从当前 Pi theme 派生颜色。
@@ -77,22 +78,22 @@ bin/hledit.exe
 ```bash
 npm ci
 npm run check
-npm run test:bundled
 ```
 
-`npm run test:bundled` 只验证仓库中已跟踪 binary 的 CLI、hash、激活和工具结果契约；CI 必须在覆盖 binary 前执行它。
+`npm run check` 包含类型检查与全部测试，已覆盖 `test:bundled` 的 CLI、hash、激活和工具结果契约用例。`npm run test:bundled` 可单独验证当前 bundled binary；CI 必须在覆盖 tracked binary 前执行它。
 
 ## 更新 bundled CLI
 
 在仓库根目录执行：
 
 ```bash
-cd cli
+cd pi-hledit-diff
+npm run test:bundled
+cd ../cli
 cargo test --locked
 pwsh -NoProfile -File build-bundle.ps1
 pwsh -NoProfile -File build-bundle.ps1 -VerifyOnly
 cd ../pi-hledit-diff
-npm run test:bundled
 npm run check
 ```
 

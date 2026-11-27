@@ -209,7 +209,7 @@ export function renderHleditCall(
 		: kind === "apply_file_changes" ? fileChangeLineRanges(changes) : undefined;
 	const operationCount = changes?.length;
 	const searchContext = kind === "search_anchors" && typeof input.context === "number" && Number.isInteger(input.context) && input.context > 0 ? input.context : undefined;
-	const titleText = kind === "read_anchors" ? "read for edit" : kind === "search_anchors" ? "search anchors" : "apply changes";
+	const titleText = kind === "read_anchors" ? "read" : kind === "search_anchors" ? "search anchors" : "apply changes";
 	const title = theme.fg("toolTitle", theme.bold(titleText));
 	const styledPath = path ? linkedToolPath(theme.fg("accent", escapeTerminalControls(path)), path, context) : undefined;
 	const target = styledPath ? styledPath + (range ? theme.fg("warning", `:${range}`) : "") : theme.fg("dim", "…");

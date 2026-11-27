@@ -192,11 +192,11 @@ test("renderReadAnchorsResult folds to a single summary line when collapsed and 
     };
     const collapsed = render(renderReadAnchorsResult(result, options(), theme, { args: { path: "notes.txt" } }), 120);
     assert.equal(collapsed.length, 1);
-    assert.match(collapsed[0]!, /^↳ 14 行锚点 • 第 1-14 行 \/ 共 14 行 • 已到文件末尾 • .*展开/);
+    assert.match(collapsed[0]!, /^read notes\.txt:1-14 · 14 行 · .*展开/);
     assert.ok(collapsed.every((line) => visibleWidth(line) <= 120));
 
     const expanded = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "notes.txt" } }), 80);
-    assert.equal(expanded[0], "↳ 14 行锚点 • 第 1-14 行 / 共 14 行 • 已到文件末尾");
+    assert.equal(expanded[0], "read notes.txt:1-14 · 14 行");
     assert.equal(expanded[2], " 1#AAB │ line 1");
     assert.ok(expanded.some((line) => line.includes("14#AAB │ line 14")));
     assert.ok(expanded.every((line) => visibleWidth(line) <= 80));
@@ -317,13 +317,13 @@ test("renderReadAnchorsResult limits continuation to the requested range", () =>
     };
     const output = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "notes.txt" } }), 80);
 
-    assert.equal(output[0], "↳ 2 行锚点 • 第 8-9 行 / 共 20 行");
+    assert.equal(output[0], "read notes.txt:8-9 · 2 行");
     assert.ok(output.includes("8#AAB │ first"));
     assert.doesNotMatch(output.join("\n"), /下一页|继续读取/);
 
     result.details.read!.requested.limit = 4;
     const incomplete = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "notes.txt" } }), 80);
-    assert.equal(incomplete[0], "↳ 2 行锚点 • 第 8-9 行 / 共 20 行 • 下一页从第 10 行开始");
+    assert.equal(incomplete[0], "read notes.txt:8-9 · 2 行 · 未读完 · 续读 10");
     assert.ok(incomplete.some((line) => line.includes("继续读取请使用 offset: 10, limit: 2")));
 });
 
@@ -343,7 +343,7 @@ test("renderReadAnchorsResult folds structured errors to the actionable message"
         },
     };
 
-    assert.deepEqual(render(renderReadAnchorsResult(result, options(), theme, { isError: true })), ["× 读取失败 · 起始行 600 超出文件范围（文件共 599 行）。"]);
+    assert.deepEqual(render(renderReadAnchorsResult(result, options(), theme, { isError: true })), ["read …", "× 读取失败 · 起始行 600 超出文件范围（文件共 599 行）。"]);
     assert.ok(render(renderReadAnchorsResult(result, options(true), theme, { isError: true })).some((line) => line.includes("请将 offset 设为 1 到 599")));
 });
 
@@ -692,7 +692,7 @@ test("failure rendering distinguishes read errors, write outcomes and conflictin
 		for (const expanded of [false, true]) {
 			assert.ok(render(renderFileChangesResult(result, options(expanded), theme, { isError: true }))[0]!.startsWith(label));
 			const readLabel = details.disposition === "succeeded" ? "! 状态不一致" : "× 读取失败";
-			assert.ok(render(renderReadAnchorsResult(result, options(expanded), theme, { isError: true }))[0]!.startsWith(readLabel));
+			assert.ok(render(renderReadAnchorsResult(result, options(expanded), theme, { isError: true }))[1]!.startsWith(readLabel));
 		}
 	}
 });
@@ -718,7 +718,7 @@ for (const [operation, rawMessage] of [
 		const renderer = operation === "read" ? renderReadAnchorsResult : renderFileChangesResult;
 		const component = renderer(result, options(), theme, {});
 		const prefix = operation === "read" ? "× 读取失败 · " : operation === "apply" ? "× 未写入 · " : "× 未写入 · 补读失败：";
-		assert.deepEqual(component.render(180), [prefix + rawMessage]);
+		assert.deepEqual(component.render(180).slice(operation === "read" ? 1 : 0), [prefix + rawMessage]);
 		for (const width of [0, 16, 40, 80]) {
 			assert.ok(component.render(width).every((line) => visibleWidth(line) <= width));
 		}

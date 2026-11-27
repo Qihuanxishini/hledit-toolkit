@@ -1,6 +1,7 @@
 import { keyHint, type AgentToolResult, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { getCapabilities, hyperlink, sliceByColumn, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { resolve } from "node:path";
+import { getCapabilities, hyperlink, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { homedir } from "node:os";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseChangePreview, type VerifiedChangePreview } from "./change-preview.ts";
 import {
@@ -25,6 +26,9 @@ type ToolRenderContextLike = {
 	isError?: boolean;
 	cwd?: string;
 	lastComponent?: unknown;
+	isPartial?: boolean;
+	outputPad?: number;
+	keyText?: (keybinding: Parameters<typeof keyHint>[0]) => string;
 };
 
 const renderComponentKeys = new WeakMap<object, readonly unknown[]>();
@@ -99,7 +103,13 @@ function getText(result: RenderResult): string {
 
 function pathFromContext(context: ToolRenderContextLike): string | undefined {
 	const args = isRecord(context.args) ? context.args : {};
-	return typeof args.path === "string" ? normalizeToolPath(args.path) : undefined;
+	if (typeof args.path !== "string") return undefined;
+	try {
+		return normalizeToolPath(args.path);
+	} catch {
+		// [喵喵喵]: 执行失败的路径仍须可展示，不能在渲染错误时再次抛出解析异常。
+		return args.path;
+	}
 }
 
 function linkedToolPath(styledPath: string, path: string, context: ToolRenderContextLike): string {
@@ -110,6 +120,151 @@ function linkedToolPath(styledPath: string, path: string, context: ToolRenderCon
 	} catch {
 		return styledPath;
 	}
+}
+
+function readRequestRange(args: unknown): string | undefined {
+	const input = isRecord(args) ? args : {};
+	if (Array.isArray(input.windows)) {
+		return input.windows.flatMap((window) => isRecord(window) && typeof window.offset === "number" && typeof window.limit === "number"
+			? [formatLineRange(window.offset, window.offset + window.limit - 1)] : []).join(",");
+	}
+	const offset = typeof input.offset === "number" ? input.offset : undefined;
+	const limit = typeof input.limit === "number" ? input.limit : undefined;
+	return offset === undefined && limit === undefined ? undefined
+		: formatLineRange(offset ?? 1, limit === undefined ? undefined : (offset ?? 1) + limit - 1);
+}
+
+function displayReadPath(path: string, cwd: string | undefined): string {
+	let display = path;
+	if (isAbsolute(path)) {
+		for (const [base, prefix] of [[cwd, ""], [homedir(), "~/"]] as const) {
+			if (!base) continue;
+			const local = relative(base, path);
+			if (local && local !== ".." && !local.startsWith(`..${sep}`) && !isAbsolute(local) && prefix.length + local.length < display.length) {
+				display = prefix + local;
+			}
+		}
+	}
+	return escapeTerminalControls(display.split(sep).join("/"));
+}
+
+function fitReadPath(path: string, width: number): string {
+	if (visibleWidth(path) <= width) return path;
+	const parts = path.split("/");
+	for (let index = 1; index < parts.length; index++) {
+		const tail = `…/${parts.slice(index).join("/")}`;
+		if (visibleWidth(tail) <= width) return tail;
+	}
+	return truncateToWidth(parts.at(-1) || path, width, "…");
+}
+
+function readShell(body: RenderComponent, context: ToolRenderContextLike): RenderComponent {
+	return component((width) => {
+		const padding = Math.min(context.outputPad ?? 0, Math.floor(width / 2));
+		const innerWidth = width - padding * 2;
+		return innerWidth <= 0 ? [] : body.render(innerWidth).map((line) => " ".repeat(padding) + line);
+	}, () => body.invalidate());
+}
+
+export function renderReadHeading(
+	path: string | undefined,
+	range: string | undefined,
+	metadata: string[],
+	warnings: string[],
+	theme: RenderTheme,
+	context: ToolRenderContextLike,
+): RenderComponent {
+	const display = path ? displayReadPath(path, context.cwd) : "…";
+	const filenameWidth = visibleWidth(display.split("/").at(-1) || display);
+	return component((width) => {
+		if (width === 0) return [];
+		const title = `${theme.fg("toolTitle", theme.bold("read"))} `;
+		const titleWidth = visibleWidth(title);
+		const pathMinimum = Math.min(filenameWidth, Math.max(1, width - titleWidth));
+		const rangeText = range ? truncateToWidth(`:${range}`, Math.max(0, width - titleWidth - pathMinimum), "…") : "";
+		const minimum = titleWidth + pathMinimum + visibleWidth(rangeText);
+		const warningText = warnings.join(" · ");
+		const inlineWarning = warningText && minimum + visibleWidth(` · ${warningText}`) <= width ? ` · ${warningText}` : "";
+		const optional = [...metadata];
+		while (optional.length && minimum + visibleWidth(inlineWarning + ` · ${optional.join(" · ")}`) > width) optional.pop();
+		const suffix = optional.length ? ` · ${optional.join(" · ")}` : "";
+		const pathWidth = Math.max(0, width - titleWidth - visibleWidth(rangeText + inlineWarning + suffix));
+		const pathText = theme.fg("accent", fitReadPath(display, pathWidth));
+		const target = path ? linkedToolPath(pathText, path, context) : pathText;
+		const line = title + target + theme.fg("muted", rangeText + suffix) + theme.fg("warning", inlineWarning);
+		return [
+			truncateToWidth(line, width, "…"),
+			...(!inlineWarning && warningText ? wrapTextWithAnsi(theme.fg("warning", warningText), width) : []),
+		];
+	});
+}
+
+export function renderReadCall(args: unknown, theme: RenderTheme, context: ToolRenderContextLike = {}): RenderComponent {
+	return reuseComponent(context.lastComponent, ["read-call", args, theme, context.cwd, context.isPartial, context.outputPad], () => {
+		// [喵喵喵]: 完成后的标题由结果槽合并输出；返回空组件不占行，也不触发宿主 fallback。
+		if (context.isPartial === false) return component(() => []);
+		return readShell(renderReadHeading(pathFromContext({ args }), readRequestRange(args), [], context.isPartial ? ["读取中…"] : [], theme, context), context);
+	});
+}
+
+function renderCompactReadResult(
+	result: RenderResult,
+	options: ToolRenderResultOptions,
+	theme: RenderTheme,
+	context: ToolRenderContextLike,
+): RenderComponent {
+	if (options.isPartial) return component(() => []);
+	const { read, windowsRead } = result.details;
+	const path = pathFromContext(context) ?? result.details.path ?? read?.path ?? windowsRead?.path;
+	if (result.details.disposition !== "succeeded" || context.isError) {
+		const heading = renderReadHeading(path, readRequestRange(context.args), [], [], theme, context);
+		const failure = renderFailure("read", result, options.expanded, theme, true);
+		return readShell(component((width) => [...heading.render(width), ...failure.render(width)], () => {
+			heading.invalidate();
+			failure.invalidate();
+		}), context);
+	}
+	if (!read && !windowsRead) {
+		return readShell(renderReadHeading(path, undefined, [], ["缺少结构化读取结果；请重新读取目标文件"], theme, context), context);
+	}
+	const lines = windowsRead ? windowsRead.windows.flatMap((window) => window.lines) : read!.lines;
+	const range = windowsRead
+		? windowsRead.windows.flatMap((window) => window.lines.length ? [formatLineRange(window.lines[0]!.line, window.lines.at(-1)!.line)] : []).join(",")
+		: formatLineRange(read!.actual.firstLine, read!.actual.lastLine);
+	const totalLines = windowsRead?.totalLines ?? read!.actual.totalLines;
+	const continuation = read ? formatReadContinuation(read) : undefined;
+	const textTruncated = read?.textTruncated ?? lines.some((line) => line.textTruncated);
+	const warnings = [
+		continuation !== undefined ? `未读完 · 续读 ${read!.nextOffset}` : "",
+		textTruncated ? "内容截断" : "",
+	].filter(Boolean);
+	const hint = `${context.keyText?.("app.tools.expand") ?? ""} 展开`.trim();
+	const heading = renderReadHeading(path, range, [
+		totalLines === 0 ? "空文件" : `${lines.length} 行`,
+		!options.expanded && lines.length ? hint : "",
+	].filter(Boolean), warnings, theme, context);
+	if (!options.expanded) return readShell(heading, context);
+
+	const requestedRange = windowsRead
+		? windowsRead.requested.map((window) => formatLineRange(window.offset, window.offset + window.limit - 1)).join(",")
+		: formatLineRange(read!.requested.offset, read!.requested.offset + read!.requested.limit - 1);
+	const detail = [
+		`共 ${totalLines} 行`,
+		windowsRead ? `${windowsRead.requested.length} 个窗口` : "",
+		requestedRange !== range ? `请求 ${requestedRange}` : "",
+		read?.eof ? "已到文件末尾" : "",
+	].filter(Boolean).join(" · ");
+	const source = createAnchoredRowsComponent(lines, path, theme);
+	return readShell(component((width) => width === 0 ? [] : [
+		...heading.render(width),
+		...wrapTextWithAnsi(theme.fg("muted", detail), width),
+		...source.render(width),
+		...(continuation !== undefined ? wrapTextWithAnsi(theme.fg("warning", `继续读取请使用 ${continuation}`), width) : []),
+		...(textTruncated ? wrapTextWithAnsi(theme.fg("warning", "源文件行内容已截断；调整读取范围无法恢复该行被省略的文本"), width) : []),
+	], () => {
+		heading.invalidate();
+		source.invalidate();
+	}), context);
 }
 
 function createAnchoredSourceRowsComponent(
@@ -172,7 +327,7 @@ function failureReason(error: HleditErrorMetadata | undefined): string | undefin
 	return (error?.code === "io" ? error.rawMessage?.trim() : undefined) || error?.message?.trim() || undefined;
 }
 
-function renderFailure(kind: "read" | "apply", result: RenderResult, expanded: boolean, theme: RenderTheme): RenderComponent {
+function renderFailure(kind: "read" | "apply", result: RenderResult, expanded: boolean, theme: RenderTheme, wrapSummary = false): RenderComponent {
 	const rawLines = getText(result).split(/\r?\n/).filter(Boolean);
 	const first = rawLines[0] ?? "Tool execution failed.";
 	const { disposition, error, recoveredReads, recoveryReadError, proofId } = result.details;
@@ -197,7 +352,10 @@ function renderFailure(kind: "read" | "apply", result: RenderResult, expanded: b
 	const color = statusConflict || writeOutcomeUnknown || reviewReady ? "warning" : "error";
 	return component((width) => {
 		if (width <= 0) return [];
-		if (!expanded) return [truncateToWidth(theme.fg(color, `${label} · ${summary}`), width, "…")];
+		if (!expanded) {
+			const text = theme.fg(color, `${label} · ${summary}`);
+			return wrapSummary ? wrapTextWithAnsi(text, width) : [truncateToWidth(text, width, "…")];
+		}
 		return rawLines.flatMap((line, index) => wrapTextWithAnsi(
 			theme.fg(index === 0 ? color : "muted", `${index === 0 ? label + " ·" : " "} ${escapeTerminalControls(line)}`), width,
 		));
@@ -210,6 +368,7 @@ export function renderHleditCall(
 	theme: RenderTheme,
 	context: ToolRenderContextLike = {},
 ): RenderComponent {
+	if (kind === "read_anchors") return renderReadCall(args, theme, context);
 	return reuseComponent(context.lastComponent, ["call", kind, args, theme, context.cwd, Boolean(context.isError)], () => {
 		const input = isRecord(args) ? args : {};
 	const path = typeof input.path === "string" ? normalizeToolPath(input.path) : undefined;
@@ -218,18 +377,12 @@ export function renderHleditCall(
 	const pattern = kind === "search_anchors" && typeof input.pattern === "string" ? input.pattern : undefined;
 	const patternLiteral = kind === "search_anchors" && input.literal === true;
 	const patternIgnoreCase = kind === "search_anchors" && input.ignore_case === true;
-	const windowRanges = kind === "read_anchors" && Array.isArray(input.windows)
-		? input.windows.flatMap((window) => isRecord(window) && typeof window.offset === "number" && typeof window.limit === "number"
-			? [formatLineRange(window.offset, window.offset + window.limit - 1)] : []).filter(Boolean).join(", ")
-		: undefined;
 	// [喵喵喵]: 调用摘要只读当前公开 anchors；不把旧参数形状作为可继续使用的接口展示。
 	const changes = kind === "apply_file_changes" && Array.isArray(input.changes) ? input.changes : undefined;
-	const range = kind === "read_anchors"
-		? windowRanges
-		: kind === "apply_file_changes" ? fileChangeLineRanges(changes) : undefined;
+	const range = kind === "apply_file_changes" ? fileChangeLineRanges(changes) : undefined;
 	const operationCount = changes?.length;
 	const searchContext = kind === "search_anchors" && typeof input.context === "number" && Number.isInteger(input.context) && input.context > 0 ? input.context : undefined;
-	const titleText = kind === "read_anchors" ? "read" : kind === "search_anchors" ? "search anchors" : "apply changes";
+	const titleText = kind === "search_anchors" ? "search anchors" : "apply changes";
 	const escapedPath = path ? escapeTerminalControls(path) : undefined;
 	const suffixText = operationCount !== undefined
 		? `（${operationCount} 项操作）`
@@ -263,8 +416,10 @@ export function renderReadAnchorsResult(
 ): RenderComponent {
 	return reuseComponent(
 		context.lastComponent,
-		["read", result.content, result.details, options.expanded, Boolean(options.isPartial), Boolean(context.isError), pathFromContext(context), theme],
+		["read", result.content, result.details, options.expanded, Boolean(options.isPartial), Boolean(context.isError), pathFromContext(context), readRequestRange(context.args), isRecord(context.args) && typeof context.args.pattern === "string", context.cwd, context.outputPad, context.keyText, theme],
 		() => {
+			const search = result.details.read?.requested.pattern !== undefined || (isRecord(context.args) && typeof context.args.pattern === "string");
+			if (!search) return renderCompactReadResult(result, options, theme, context);
 			if (options.isPartial) {
 		return component((width) => [truncateToWidth(theme.fg("warning", "正在读取锚点…"), width, "")]);
 	}
@@ -272,30 +427,12 @@ export function renderReadAnchorsResult(
 		return renderFailure("read", result, options.expanded, theme);
 	}
 
-	const windowsRead = result.details.windowsRead;
-	if (windowsRead) {
-		const lines = windowsRead.windows.flatMap((window) => window.lines);
-		const ranges = windowsRead.windows.map((window) => formatLineRange(window.offset, window.offset + window.limit - 1)).join(", ");
-		const headerText = () => [
-			theme.fg("toolOutput", `↳ ${lines.length} 行锚点 • ${windowsRead.requested.length} 个窗口 • ${ranges} / 共 ${windowsRead.totalLines} 行`),
-			!options.expanded && lines.length > 0 ? theme.fg("muted", `• ${expandHint()}`) : "",
-		].filter(Boolean).join(" ");
-		if (!options.expanded || lines.length === 0) {
-			return component((width) => width <= 0 ? [] : [truncateToWidth(headerText(), width, "")]);
-		}
-		const source = createAnchoredRowsComponent(lines, pathFromContext(context), theme);
-		return component((width) => width <= 0 ? [] : [
-			truncateToWidth(headerText(), width, ""),
-			...source.render(width),
-		], () => source.invalidate());
-	}
 	const read = result.details.read;
 	if (!read) {
 		return component((width) => [truncateToWidth(theme.fg("warning", "缺少结构化读取结果；请重新读取目标文件"), width, "")]);
 	}
 	const continuation = formatReadContinuation(read);
-	const preview = !options.expanded && read.requested.pattern !== undefined;
-	const summaryOnly = !options.expanded && !preview;
+	const preview = !options.expanded;
 	const headerText = () => {
 		const { firstLine, lastLine, totalLines } = read.actual;
 		const range = formatLineRange(firstLine, lastLine);
@@ -308,10 +445,9 @@ export function renderReadAnchorsResult(
 			continuation !== undefined ? theme.fg("warning", `• 下一页从第 ${read.nextOffset} 行开始`) : "",
 			read.textTruncated ? theme.fg("warning", "• 行内容已截断") : "",
 			read.eof ? theme.fg("muted", "• 已到文件末尾") : "",
-			summaryOnly && read.lines.length > 0 ? theme.fg("muted", `• ${expandHint()}`) : "",
 		].filter(Boolean).join(" ");
 	};
-	if (summaryOnly || read.lines.length === 0) {
+	if (read.lines.length === 0) {
 		return component((width) => width <= 0 ? [] : [truncateToWidth(headerText(), width, "")]);
 	}
 	const visibleLines = preview ? read.lines.slice(0, COLLAPSED_SEARCH_ROWS) : read.lines;

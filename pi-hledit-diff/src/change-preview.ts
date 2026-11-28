@@ -13,6 +13,7 @@ export type ChangePreviewLine = {
 	newLine?: number;
 	text: string;
 	textTruncated?: true;
+	gapBefore?: true;
 	// [喵喵喵]: 仅用于渲染阶段保留一次 apply 中的操作边界，不改变编辑语义。
 	changeIndex?: number;
 };
@@ -182,7 +183,11 @@ function capPreviewLines(segments: readonly PreviewSegment[]): VerifiedChangePre
 		tailBytes += previewLineBytes(fitted);
 		if (fitted.textTruncated) break;
 	}
-	return { lines: [...head, ...tail.reverse()], truncated: true };
+	tail.reverse();
+	if (tail.length > 0 && head.length + tail.length < totalLines) {
+		tail[0] = { ...tail[0]!, gapBefore: true };
+	}
+	return { lines: [...head, ...tail], truncated: true };
 }
 
 function previewFromBlocks(blocks: PreviewBlock[]): VerifiedChangePreview {
@@ -267,6 +272,7 @@ export function parseChangePreview(value: unknown): VerifiedChangePreview | unde
 		if (line.kind === "remove" && (oldLine === undefined || newLine !== undefined)) return undefined;
 		if (line.kind === "context" && (oldLine === undefined || newLine === undefined)) return undefined;
 		if (line.textTruncated !== undefined && line.textTruncated !== true) return undefined;
+		if (line.gapBefore !== undefined && line.gapBefore !== true) return undefined;
 		bytes += Buffer.byteLength(line.text, "utf8") + 1;
 		if (bytes > MAX_PREVIEW_BYTES) return undefined;
 		lines.push({
@@ -275,9 +281,10 @@ export function parseChangePreview(value: unknown): VerifiedChangePreview | unde
 			...(newLine !== undefined ? { newLine } : {}),
 			text: line.text,
 			...(line.textTruncated === true ? { textTruncated: true as const } : {}),
+			...(line.gapBefore === true ? { gapBefore: true as const } : {}),
 			...(changeIndex !== undefined ? { changeIndex } : {}),
 		});
 	}
-	if (!record.truncated && lines.some((line) => line.textTruncated)) return undefined;
+	if (!record.truncated && lines.some((line) => line.textTruncated || line.gapBefore)) return undefined;
 	return { lines, truncated: record.truncated };
 }

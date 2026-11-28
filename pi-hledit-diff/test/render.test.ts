@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { Theme, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { backgroundAnsi, Box, getCapabilities, mixColors, setCapabilities, visibleWidth, type TerminalColorMode } from "@earendil-works/pi-tui";
+import { backgroundAnsi, Box, getCapabilities, mixColors, setCapabilities, sliceByColumn, visibleWidth, type TerminalColorMode } from "@earendil-works/pi-tui";
+import { buildAnchoredChangePreview, parseChangePreview } from "../src/change-preview.ts";
 import { renderStandaloneDiff, type StructuredDiffLine } from "../src/diff-renderer.ts";
 import { renderFileChangesResult, renderHleditCall, renderReadAnchorsResult, type RenderTheme } from "../src/render.ts";
 import { applyFileChangesResult } from "../src/apply-result.ts";
@@ -429,8 +430,10 @@ test("renderFileChangesResult keeps old and new line numbers visible when change
 
 	const wideRows = render(component, 160).filter((line) => line.includes(text));
 	assert.equal(wideRows.length, 2);
-	assert.match(wideRows[0]!, /^-\s+30\s+│ const value = 1;\s*$/);
-	assert.match(wideRows[1]!, /^\+\s+50\s+│ const value = 1;\s*$/);
+	assert.deepEqual(wideRows.map((line) => [sliceByColumn(line, 0, 78).trimEnd(), sliceByColumn(line, 81, 79).trimEnd()]), [
+		["-  30 │ const value = 1;", "      │"],
+		["      │", "+  50 │ const value = 1;"],
+	]);
 
 	const coloredRows = render(
 		renderFileChangesResult(result, options(), coloredTheme, { args: { path: "sample.ts" } }),
@@ -470,10 +473,12 @@ test("renderFileChangesResult keeps separate operations in source order even whe
 
 	const wideRows = render(component, 160).filter((line) => line.includes(text) || line.includes("delete only") || line.includes("add only"));
 	assert.equal(wideRows.length, 4);
-	assert.match(wideRows[0]!, /^-\s+2\s+│ same text\s*$/);
-	assert.match(wideRows[1]!, /^-\s+3\s+│ delete only\s*$/);
-	assert.match(wideRows[2]!, /^\+\s+3\s+│ same text\s*$/);
-	assert.match(wideRows[3]!, /^\+\s+4\s+│ add only\s*$/);
+	assert.deepEqual(wideRows.map((line) => [sliceByColumn(line, 0, 78).trimEnd(), sliceByColumn(line, 81, 79).trimEnd()]), [
+		["-   2 │ same text", "      │"],
+		["-   3 │ delete only", "      │"],
+		["      │", "+   3 │ same text"],
+		["      │", "+   4 │ add only"],
+	]);
 });
 
 test("unified diff keeps removal and addition blocks in source order", () => {
@@ -499,7 +504,7 @@ test("unified diff keeps removal and addition blocks in source order", () => {
 		]);
 	}
 });
-test("renderFileChangesResult keeps a unified layout at every width", () => {
+test("renderFileChangesResult switches between unified and split at the content-width threshold", () => {
 	const result: TextResult = {
 		content: [{ type: "text", text: "Changes applied." }],
 		details: { disposition: "succeeded", changePreview: replacementPreview, editsApplied: 1 },
@@ -508,23 +513,31 @@ test("renderFileChangesResult keeps a unified layout at every width", () => {
 	for (const width of [40, 80, 119, 120, 121, 200, 80]) {
 		const output = render(component, width);
 		assert.match(output[0]!.trimEnd(), /^↳ diff \+1 -1 · 1 hunk \[━+\]$/);
-		assert.match(output[2]!, /^-\s+2\s+│ beta/);
-		assert.match(output[3]!, /^\+\s+2\s+│ BETA/);
+		if (width >= 120) {
+			assert.match(output[2]!, /old │.*new │/);
+			assert.match(output[3]!, /^-\s+2\s+│ beta\s+│ \+\s+2\s+│ BETA\s*$/);
+		} else {
+			assert.match(output[2]!, /^-\s+2\s+│ beta/);
+			assert.match(output[3]!, /^\+\s+2\s+│ BETA/);
+		}
 		assert.ok(output.every((line) => visibleWidth(line) <= width));
 	}
 });
 
-test("unified diff uses full width and preserves wrapped Unicode source", () => {
+test("adaptive diff preserves wrapped Unicode source within its column", () => {
 	const text = "const value = " + "字🙂e\u0301".repeat(12) + ";";
 	const component = renderStandaloneDiff({ truncated: false, lines: [{ kind: "add", newLine: 100, text }] }, "notes.txt", true, theme)!;
 	for (const width of [40, 80, 119, 120, 200, 40]) {
 		const output = component.render(width);
-		const rows = output.slice(2);
+		const split = width >= 120;
+		const leftWidth = Math.floor((width - 3) / 2);
+		const columnWidth = split ? width - leftWidth - 3 : width;
+		const rows = output.slice(split ? 3 : 2).map((line) => split ? sliceByColumn(line, leftWidth + 3, columnWidth) : line);
 		assert.ok(output.every((line) => visibleWidth(line) <= width));
 		assert.match(rows[0]!, /^\+ 100 │ /);
 		assert.ok(rows.slice(1).every((line) => line.startsWith("+     │ ")));
 		assert.equal(rows.map((line) => line.slice(8).trimEnd()).join(""), text);
-		if (width >= 119) assert.equal(rows.length, 1);
+		if (visibleWidth(text) <= columnWidth - 8) assert.equal(rows.length, 1);
 		else assert.ok(rows.length > 1);
 	}
 });
@@ -553,7 +566,7 @@ test("default Pi tool box preserves responsive reflow", () => {
 		const output = box.render(width);
 		assert.ok(output.some((line) => line.includes("↳ diff +1 -1")));
 		assert.ok(output.every((line) => visibleWidth(line) <= width));
-		assert.equal(output.some((line) => line.includes("  old │") && line.includes("  new │")), false);
+		assert.equal(output.some((line) => line.includes("  old │") && line.includes("  new │")), width - 2 >= 120);
 	}
 });
 
@@ -662,6 +675,29 @@ test("renderFileChangesResult uses CLI counts for a truncated structured preview
 
 	assert.equal(output[0]!.trimEnd(), "↳ diff +12 -7 · 局部预览 [━━━━━━━━]");
 	assert.doesNotMatch(output[0] ?? "", /hunks?/);
+});
+
+test("truncated replacement previews do not pair across omitted source", () => {
+	const size = 10_000;
+	const preview = buildAnchoredChangePreview(
+		[{ operation: "replace", start_anchor: "1#AAA", end_anchor: `${size}#AAA`,
+			lines: Array.from({ length: size }, (_, index) => `new-${index + 1}`) }],
+		new Map(Array.from({ length: size }, (_, index) => [index + 1, { text: `old-${index + 1}` }])),
+	)!;
+	const restored = parseChangePreview(JSON.parse(JSON.stringify(preview)))!;
+	assert.ok(restored.truncated);
+	assert.equal(restored.lines[1000]?.gapBefore, true);
+	for (const input of [restored, { ...restored, lines: restored.lines.map(({ gapBefore, ...line }) => line) }]) {
+		const output = renderStandaloneDiff(input, "notes.txt", false, theme)!.render(160);
+		assert.ok(output.some((line) => /old-1\s/.test(line)));
+		assert.ok(output.some((line) => /new-9001\s/.test(line)));
+		assert.ok(output.every((line) => !(line.includes("old-") && line.includes("new-"))), "omitted source must separate the old head from the new tail");
+		const colored = renderStandaloneDiff(input, "notes.txt", false, coloredTheme)!.render(160).join("\n");
+		for (const color of ["toolDiffAdded", "toolDiffRemoved"] as const) {
+			const emphasis = backgroundAnsi(mixColors(coloredTheme.colors.toolSuccessBg, coloredTheme.colors[color], 0.26, "srgb"), "truecolor");
+			assert.ok(!colored.includes(emphasis), "unrelated fragments must not receive paired emphasis");
+		}
+	}
 });
 
 test("renderFileChangesResult folds failures unless expanded", () => {
@@ -853,7 +889,7 @@ test("long highlighted diff rows keep wrapping bounded by the visible row budget
 	for (const width of [80, 160]) {
 		const rows = component.render(width);
 		assert.ok(rows.some((line) => line.includes("展开")));
-		assert.ok(rows.length <= 27);
+		assert.ok(rows.length <= (width >= 120 ? 28 : 27));
 		assert.ok(rows.every((line) => visibleWidth(line) <= width));
 	}
 });
@@ -926,10 +962,10 @@ test("diff line limits only show continuation when a row is actually hidden", ()
 			const sourceLines = limit;
 			const exact = Array.from({ length: sourceLines }, (_, index) => ({ kind: "add" as const, newLine: index + 1, text: "value" }));
 			const exactRows = renderStandaloneDiff({ truncated: false, lines: exact }, "notes.txt", expanded, theme)!.render(width);
-			assert.equal(exactRows.length, limit + 2);
+			assert.equal(exactRows.length, limit + (width >= 120 ? 3 : 2));
 			assert.ok(exactRows.every((line) => !/更多差异|预览已折叠/.test(line)));
 			const overflowing = renderStandaloneDiff({ truncated: false, lines: [...exact, { kind: "add", newLine: sourceLines + 1, text: "extra" }] }, "notes.txt", expanded, theme)!.render(width);
-			assert.equal(overflowing.length, limit + 3);
+			assert.equal(overflowing.length, limit + (width >= 120 ? 4 : 3));
 			assert.ok(overflowing.some((line) => line.includes(expanded ? "更多差异" : "预览已折叠")));
 		}
 	}

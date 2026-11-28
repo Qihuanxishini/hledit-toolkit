@@ -13,6 +13,8 @@ export type HleditRenderTheme = Pick<Theme, "fg" | "bold" | "appearance" | "colo
 type DiffLine = {
 	kind: "add" | "remove" | "context";
 	lineNumber: number;
+	oldLineNumber?: number;
+	newLineNumber?: number;
 	content: string;
 	text: string;
 	changeIndex?: number;
@@ -24,7 +26,9 @@ export type StructuredDiffLine = ChangePreviewLine;
 
 type DiffMetaLine = { kind: "meta"; text: string };
 type DiffEntry = DiffLine | DiffMetaLine;
-type ParsedDiff = { entries: DiffEntry[]; added: number; removed: number; hunks: number; truncated: boolean };
+type SplitEntry = DiffMetaLine | { kind: "split"; left?: DiffLine; right?: DiffLine };
+type DisplayEntry = DiffEntry | SplitEntry;
+type ParsedDiff = { entries: DiffEntry[]; splitEntries: SplitEntry[]; added: number; removed: number; hunks: number; truncated: boolean };
 
 export type DiffSummaryStats = {
 	added: number;
@@ -39,12 +43,16 @@ type RowPalette = {
 	remove: { row: Color; emphasis: Color };
 };
 type LineSlice = { line: DiffLine; start: number; end: number; columns: number };
-type LayoutRow = DiffMetaLine | { kind: DiffLine["kind"]; slice: LineSlice };
+type LayoutRow = DiffMetaLine | { kind: DiffLine["kind"]; slice: LineSlice }
+	| { kind: "split"; left?: LineSlice; right?: LineSlice };
+type DiffLayout = { leftWidth: number; rightWidth: number; numberWidth: number };
 type PreparedDiff = { parsed: ParsedDiff; numberWidth: number };
 
 // [喵喵喵]: 已验证 preview 的纯结构跨组件复用；主题 ANSI、宽度布局和高亮失效仍留在各组件内。
 const preparedDiffCache = new WeakMap<VerifiedChangePreview, PreparedDiff>();
 const COLLAPSED_DIFF_LINES = 24;
+const SPLIT_MIN_WIDTH = 120;
+const SPLIT_SEPARATOR = " │ ";
 const MAX_EXPANDED_DIFF_LINES = 2000;
 const GAP_ROW: DiffMetaLine = { kind: "meta", text: "…" };
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -84,10 +92,10 @@ function buildPreviewDiff(preview: VerifiedChangePreview): ParsedDiff {
 		const continuesNew = newLine !== undefined && previousNew !== undefined && newLine <= previousNew + 1;
 		const sameChange = line.changeIndex === previousChangeIndex;
 		const continuous = sameChange && (continuesOld || continuesNew || (previousKind === "remove" && line.kind === "add"));
-		if (entries.length > 0 && !continuous) {
+		if (line.gapBefore || (entries.length > 0 && !continuous)) {
 			const skipsOld = oldLine !== undefined && previousOld !== undefined && oldLine > previousOld + 1;
 			const skipsNew = newLine !== undefined && previousNew !== undefined && newLine > previousNew + 1;
-			entries.push({ kind: "meta", text: skipsOld || skipsNew ? "…" : "" });
+			entries.push({ kind: "meta", text: line.gapBefore || skipsOld || skipsNew ? "…" : "" });
 			insideChangeGroup = false;
 		}
 		if (line.kind !== "context" && !insideChangeGroup) {
@@ -97,6 +105,7 @@ function buildPreviewDiff(preview: VerifiedChangePreview): ParsedDiff {
 		if (line.kind === "add") added++;
 		if (line.kind === "remove") removed++;
 		entries.push({ kind: line.kind, lineNumber: (line.kind === "remove" ? oldLine : newLine)!,
+			oldLineNumber: oldLine, newLineNumber: newLine,
 			changeIndex: line.changeIndex, content: line.text, text: escapeTerminalControls(line.text.replace(/\t/g, "    ")) });
 		if (oldLine !== undefined) previousOld = oldLine;
 		if (newLine !== undefined) previousNew = newLine;
@@ -104,27 +113,44 @@ function buildPreviewDiff(preview: VerifiedChangePreview): ParsedDiff {
 		previousChangeIndex = line.changeIndex;
 	}
 	if (preview.truncated) entries.push({ kind: "meta", text: "… preview truncated …" });
+	// [喵喵喵]: 截断却没有边界证据时只分栏展示，不能依据操作 ID 猜测对应行。
+	const allowPairing = !preview.truncated || preview.lines.some((line) => line.gapBefore);
+	return { entries, splitEntries: buildSplitEntries(entries, allowPairing), added, removed, hunks, truncated: preview.truncated };
+}
+
+function buildSplitEntries(entries: DiffEntry[], allowPairing: boolean): SplitEntry[] {
+	const rows: SplitEntry[] = [];
 	for (let index = 0; index < entries.length;) {
-		const entry = entries[index]!;
-		if (entry.kind === "meta" || entry.kind === "context" || entry.changeIndex === undefined) {
-			index++;
-			continue;
-		}
-		const before: DiffLine[] = [];
-		const after: DiffLine[] = [];
-		while (index < entries.length) {
-			const line = entries[index]!;
-			if (line.kind === "meta" || line.kind === "context" || line.changeIndex !== entry.changeIndex) break;
-			(line.kind === "remove" ? before : after).push(line);
-			index++;
-		}
-		// [喵喵喵]: 配对仅用于行内强调，不重排行；缺少操作关联时不猜测对应关系。
-		for (let pair = 0; pair < Math.min(before.length, after.length); pair++) {
-			before[pair]!.counterpart = after[pair];
-			after[pair]!.counterpart = before[pair];
+		const entry = entries[index++]!;
+		if (entry.kind === "meta") rows.push(entry);
+		else if (entry.kind === "context") rows.push({ kind: "split", left: entry, right: entry });
+		else if (entry.kind === "add") rows.push({ kind: "split", right: entry });
+		else {
+			const before = [entry];
+			const after: DiffLine[] = [];
+			// [喵喵喵]: 仅同一操作内相邻的删/增块配对；元数据、上下文和未知操作边界不可跨越。
+			if (allowPairing && entry.changeIndex !== undefined) {
+				for (const kind of ["remove", "add"] as const) {
+					while (index < entries.length) {
+						const line = entries[index]!;
+						if (line.kind !== kind || line.changeIndex !== entry.changeIndex) break;
+						(kind === "remove" ? before : after).push(line);
+						index++;
+					}
+				}
+			}
+			for (let pair = 0; pair < Math.max(before.length, after.length); pair++) {
+				const left = before[pair];
+				const right = after[pair];
+				if (left && right) {
+					left.counterpart = right;
+					right.counterpart = left;
+				}
+				rows.push({ kind: "split", left, right });
+			}
 		}
 	}
-	return { entries, added, removed, hunks, truncated: preview.truncated };
+	return rows;
 }
 
 function emphasizePair(before: DiffLine, after: DiffLine): void {
@@ -189,7 +215,7 @@ function contentWidth(width: number, numberWidth: number): number {
 	return Math.max(1, width - (numberWidth ? numberWidth + 5 : 2));
 }
 
-function* wrapLine(line: DiffLine, width: number): Generator<LineSlice> {
+function* wrapLine(line: DiffLine, width: number): Generator<LineSlice, void> {
 	let start = 0;
 	let columns = 0;
 	for (const { segment, index } of segmenter.segment(line.text)) {
@@ -204,12 +230,22 @@ function* wrapLine(line: DiffLine, width: number): Generator<LineSlice> {
 	yield { line, start, end: line.text.length, columns };
 }
 
-function collectRows(entries: DiffEntry[], codeWidth: number, maxRows: number, start = 0, end = entries.length): LayoutRow[] {
+function collectRows(entries: DisplayEntry[], layout: DiffLayout, maxRows: number, start = 0, end = entries.length): LayoutRow[] {
 	const rows: LayoutRow[] = [];
+	const codeWidth = contentWidth(layout.leftWidth, layout.numberWidth);
 	for (let index = start; index < end; index++) {
 		const line = entries[index]!;
 		if (line.kind === "meta") {
 			if (line.text) rows.push(line);
+		} else if (line.kind === "split") {
+			const left = line.left && wrapLine(line.left, codeWidth);
+			const right = line.right && wrapLine(line.right, contentWidth(layout.rightWidth, layout.numberWidth));
+			while (rows.length < maxRows) {
+				const leftSlice = left?.next().value;
+				const rightSlice = right?.next().value;
+				if (!leftSlice && !rightSlice) break;
+				rows.push({ kind: "split", left: leftSlice || undefined, right: rightSlice || undefined });
+			}
 		} else {
 			for (const slice of wrapLine(line, codeWidth)) {
 				rows.push({ kind: line.kind, slice });
@@ -221,32 +257,40 @@ function collectRows(entries: DiffEntry[], codeWidth: number, maxRows: number, s
 	return rows;
 }
 
-function previewRows(entries: DiffEntry[], rows: LayoutRow[], codeWidth: number): LayoutRow[] {
+function entryHasChange(entry: DisplayEntry, kind: "add" | "remove"): boolean {
+	return entry.kind === "split" ? entry.left?.kind === kind || entry.right?.kind === kind : entry.kind === kind;
+}
+
+function rowHasChange(row: LayoutRow, kind: "add" | "remove"): boolean {
+	return row.kind === "split" ? row.left?.line.kind === kind || row.right?.line.kind === kind : row.kind === kind;
+}
+
+function previewRows(entries: DisplayEntry[], rows: LayoutRow[], layout: DiffLayout): LayoutRow[] {
 	let shown = rows.slice(0, COLLAPSED_DIFF_LINES);
 	if (rows.length <= COLLAPSED_DIFF_LINES) return shown;
-	const firstAdded = entries.findIndex((line) => line.kind === "add");
-	const firstRemoved = entries.findIndex((line) => line.kind === "remove");
-	const firstChanged = entries.findIndex((line) => line.kind === "add" || line.kind === "remove");
+	const firstAdded = entries.findIndex((line) => entryHasChange(line, "add"));
+	const firstRemoved = entries.findIndex((line) => entryHasChange(line, "remove"));
+	const firstChanged = entries.findIndex((line) => entryHasChange(line, "add") || entryHasChange(line, "remove"));
 	if (firstChanged < 0) return shown;
 	const leading = firstChanged > 0 ? [GAP_ROW] : [];
 	const slots = COLLAPSED_DIFF_LINES - leading.length;
-	if (!shown.some((row) => row.kind === "add" || row.kind === "remove")) {
-		shown = [...leading, ...collectRows(entries, codeWidth, slots, firstChanged)];
+	if (!shown.some((row) => rowHasChange(row, "add") || rowHasChange(row, "remove"))) {
+		shown = [...leading, ...collectRows(entries, layout, slots, firstChanged)];
 	}
 	// [喵喵喵]: 折叠态同时露出增删；只布局各片段预算加一行哨兵，不展开隐藏的长行尾部。
 	if (firstAdded >= 0 && firstRemoved >= 0
-		&& (!shown.some((row) => row.kind === "add") || !shown.some((row) => row.kind === "remove"))) {
+		&& (!shown.some((row) => rowHasChange(row, "add")) || !shown.some((row) => rowHasChange(row, "remove")))) {
 		const nextStart = Math.max(firstAdded, firstRemoved);
 		const firstCount = Math.floor((slots - 1) / 2);
-		const first = collectRows(entries, codeWidth, firstCount + 1, firstChanged, nextStart);
+		const first = collectRows(entries, layout, firstCount + 1, firstChanged, nextStart);
 		const gap = first.length > firstCount ? [GAP_ROW] : [];
 		const head = first.slice(0, firstCount);
-		shown = [...leading, ...head, ...gap, ...collectRows(entries, codeWidth, slots - head.length - gap.length, nextStart)];
+		shown = [...leading, ...head, ...gap, ...collectRows(entries, layout, slots - head.length - gap.length, nextStart)];
 	}
 	return shown;
 }
 
-function renderLine(slice: LineSlice, width: number, numberWidth: number, theme: HleditRenderTheme, palette: RowPalette, spans: SyntaxSpan[]): string {
+function renderLine(slice: LineSlice, width: number, numberWidth: number, theme: HleditRenderTheme, palette: RowPalette, spans: SyntaxSpan[], lineNumber = slice.line.lineNumber): string {
 	const { line } = slice;
 	const color = line.kind === "add" ? "toolDiffAdded" : line.kind === "remove" ? "toolDiffRemoved" : "dim";
 	const marker = line.kind === "add" ? "+" : line.kind === "remove" ? "-" : " ";
@@ -254,7 +298,7 @@ function renderLine(slice: LineSlice, width: number, numberWidth: number, theme:
 	const bg = colors?.row ?? palette.base;
 	const codeWidth = contentWidth(width, numberWidth);
 	const prefix = theme.style(`${marker} `, { fg: color, bg, bold: line.kind !== "context" })
-		+ (numberWidth ? theme.style((slice.start > 0 ? "" : String(line.lineNumber)).padStart(numberWidth) + " ", { fg: color, bg })
+		+ (numberWidth ? theme.style((slice.start > 0 ? "" : String(lineNumber)).padStart(numberWidth) + " ", { fg: color, bg })
 			+ theme.style("│ ", { fg: "dim", bg }) : "");
 	let content = "";
 	let chunk = "";
@@ -322,7 +366,8 @@ export function renderStandaloneDiff(
 	let prepared = preparedDiffCache.get(preview);
 	if (!prepared) {
 		const parsed = buildPreviewDiff(preview);
-		const numberWidth = parsed.entries.reduce((width, line) => line.kind === "meta" ? width : Math.max(width, String(line.lineNumber).length), 2);
+		const numberWidth = parsed.entries.reduce((width, line) => line.kind === "meta" ? width
+			: Math.max(width, String(line.oldLineNumber ?? "").length, String(line.newLineNumber ?? "").length), 2);
 		prepared = { parsed, numberWidth };
 		preparedDiffCache.set(preview, prepared);
 	}
@@ -354,16 +399,31 @@ export function renderStandaloneDiff(
 			if (safeWidth === 0) return cachedLines = [];
 			const output = [diffSummary(parsed, safeWidth, theme, summaryStats)];
 			if (safeWidth < 8) return cachedLines = output;
-			const numberWidth = safeWidth >= Math.max(18, numbers + 7) ? numbers : 0;
-			const codeWidth = contentWidth(safeWidth, numberWidth);
+			const split = safeWidth >= SPLIT_MIN_WIDTH;
+			const numberWidth = split ? Math.max(3, numbers) : safeWidth >= Math.max(18, numbers + 7) ? numbers : 0;
+			const leftWidth = split ? Math.floor((safeWidth - SPLIT_SEPARATOR.length) / 2) : safeWidth;
+			const rightWidth = split ? safeWidth - SPLIT_SEPARATOR.length - leftWidth : 0;
+			const layout = { leftWidth, rightWidth, numberWidth };
+			const entries = split ? parsed.splitEntries : parsed.entries;
 			const limit = expanded ? MAX_EXPANDED_DIFF_LINES : COLLAPSED_DIFF_LINES;
-			const rows = collectRows(parsed.entries, codeWidth, limit + 1);
-			const shown = expanded ? rows.slice(0, limit) : previewRows(parsed.entries, rows, codeWidth);
-			if (numberWidth) output.push(theme.fg("dim", "─".repeat(safeWidth)));
+			const rows = collectRows(entries, layout, limit + 1);
+			const shown = expanded ? rows.slice(0, limit) : previewRows(entries, rows, layout);
+			if (split) {
+				output.push(theme.fg("dim", "─".repeat(leftWidth) + "─┬─" + "─".repeat(rightWidth)));
+				const header = (label: string, width: number) => (`  ${label.padStart(numberWidth)} │ `).padEnd(width);
+				output.push(theme.fg("dim", header("old", leftWidth) + SPLIT_SEPARATOR + header("new", rightWidth)));
+			} else if (numberWidth) output.push(theme.fg("dim", "─".repeat(safeWidth)));
+			const renderCell = (slice: LineSlice | undefined, width: number, side: "oldLineNumber" | "newLineNumber") => slice
+				? renderLine(slice, width, numberWidth, theme, palette ??= makePalette(theme), spansFor(slice.line), slice.line[side])
+				: theme.style((" ".repeat(numberWidth + 3) + "│ ").padEnd(width), { fg: "dim", bg: "toolSuccessBg" });
 			for (const row of shown) {
 				output.push(row.kind === "meta"
 					? theme.fg(row === GAP_ROW ? "muted" : "dim", truncateToWidth(row.text, safeWidth))
-					: renderLine(row.slice, safeWidth, numberWidth, theme, palette ??= makePalette(theme), spansFor(row.slice.line)));
+					: row.kind === "split"
+						? renderCell(row.left, leftWidth, "oldLineNumber")
+							+ theme.style(SPLIT_SEPARATOR, { fg: "dim", bg: "toolSuccessBg" })
+							+ renderCell(row.right, rightWidth, "newLineNumber") + theme.getBgAnsi("toolSuccessBg")
+						: renderLine(row.slice, safeWidth, numberWidth, theme, palette ??= makePalette(theme), spansFor(row.slice.line)));
 			}
 			if (rows.length > limit) {
 				const hint = expandHint();

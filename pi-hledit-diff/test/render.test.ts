@@ -198,8 +198,8 @@ test("renderReadAnchorsResult folds to a single summary line when collapsed and 
 
     const expanded = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "notes.txt" } }), 80);
     assert.equal(expanded[0], "read notes.txt:1-14 · 14 行");
-    assert.equal(expanded[2], " 1#AAB │ line 1");
-    assert.ok(expanded.some((line) => line.includes("14#AAB │ line 14")));
+    assert.equal(expanded[2], " 1 AAB │ line 1");
+    assert.ok(expanded.some((line) => line.includes("14 AAB │ line 14")));
     assert.ok(expanded.every((line) => visibleWidth(line) <= 80));
 });
 
@@ -244,7 +244,7 @@ test("renderReadAnchorsResult keeps the 12-row preview for search results", () =
 
 	const expanded = render(renderReadAnchorsResult(result, options(true), theme, context), 120);
 	assert.equal(expanded.filter((line) => line.includes(" │ ")).length, lines.length);
-	assert.match(expanded.at(-1)!, /^29#AAB │ match 14 /);
+	assert.match(expanded.at(-1)!, /^29 AAB │ match 14 /);
 });
 
 for (const text of ["x".repeat(30_000), "字🙂e\u0301".repeat(2_000)]) {
@@ -318,13 +318,13 @@ test("renderReadAnchorsResult limits continuation to the requested range", () =>
     };
     const output = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "notes.txt" } }), 80);
 
-    assert.equal(output[0], "read notes.txt:8-9 · 2 行");
-    assert.ok(output.includes("8#AAB │ first"));
+    assert.equal(output[0], "read notes.txt:8-9 · 2 / 20 行");
+    assert.ok(output.includes("8 AAB │ first"));
     assert.doesNotMatch(output.join("\n"), /下一页|继续读取/);
 
     result.details.read!.requested.limit = 4;
     const incomplete = render(renderReadAnchorsResult(result, options(true), theme, { args: { path: "notes.txt" } }), 80);
-    assert.equal(incomplete[0], "read notes.txt:8-9 · 2 行 · 未读完 · 续读 10");
+    assert.equal(incomplete[0], "read notes.txt:8-9 · 2 / 20 行 · 未读完 · 续读 10");
     assert.ok(incomplete.some((line) => line.includes("继续读取请使用 offset: 10, limit: 2")));
 });
 

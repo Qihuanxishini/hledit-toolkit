@@ -231,24 +231,15 @@ function renderCompactReadResult(
 	].filter(Boolean);
 	const hint = `${context.keyText?.("app.tools.expand") ?? ""} 展开`.trim();
 	const heading = renderReadHeading(path, range, [
-		totalLines === 0 ? "空文件" : `${lines.length} 行`,
+		totalLines === 0 ? "空文件" : options.expanded && lines.length < totalLines ? `${lines.length} / ${totalLines} 行` : `${lines.length} 行`,
 		!options.expanded && lines.length ? hint : "",
 	].filter(Boolean), warnings, theme, context);
 	if (!options.expanded) return heading;
 
-	const requestedRange = windowsRead
-		? windowsRead.requested.map((window) => formatLineRange(window.offset, window.offset + window.limit - 1)).join(",")
-		: formatLineRange(read!.requested.offset, read!.requested.offset + read!.requested.limit - 1);
-	const detail = [
-		`共 ${totalLines} 行`,
-		windowsRead ? `${windowsRead.requested.length} 个窗口` : "",
-		requestedRange !== range ? `请求 ${requestedRange}` : "",
-		read?.eof ? "已到文件末尾" : "",
-	].filter(Boolean).join(" · ");
-	const source = createAnchoredRowsComponent(lines, path, theme);
+	const source = createAnchoredRowsComponent(lines, path, theme, true);
 	return component((width) => width === 0 ? [] : [
 		...heading.render(width),
-		...wrapTextWithAnsi(theme.fg("muted", detail), width),
+		...(lines.length ? [theme.fg("dim", "─".repeat(width))] : []),
 		...source.render(width),
 		...(continuation !== undefined ? wrapTextWithAnsi(theme.fg("warning", `继续读取请使用 ${continuation}`), width) : []),
 		...(textTruncated ? wrapTextWithAnsi(theme.fg("warning", "源文件行内容已截断；调整读取范围无法恢复该行被省略的文本"), width) : []),
@@ -263,8 +254,14 @@ function createAnchoredSourceRowsComponent(
 	path: string | undefined,
 	theme: RenderTheme,
 	maxRows = Number.POSITIVE_INFINITY,
+	expandedRead = false,
 ): RenderComponent {
 	const anchorWidth = lines.reduce((width, line) => Math.max(width, line.anchor.length), 0);
+	const columns = expandedRead ? lines.map(({ anchor }) => {
+		const [number, hash] = anchor.split("#");
+		return { number: number!, hash: hash! };
+	}) : undefined;
+	const numberWidth = columns?.reduce((width, anchor) => Math.max(width, anchor.number.length), 0) ?? 0;
 	const prefixWidth = anchorWidth + 4;
 	const highlighter = createHighlightedTextCache(path);
 
@@ -273,7 +270,13 @@ function createAnchoredSourceRowsComponent(
 		const contentWidth = Math.max(1, width - prefixWidth);
 		const rendered: string[] = [];
 
-		for (const line of lines) {
+		for (const [lineIndex, line] of lines.entries()) {
+			const column = columns?.[lineIndex];
+			const previous = columns?.[lineIndex - 1];
+			if (column && previous && Number(column.number) > Number(previous.number) + 1) {
+				const gap = formatLineRange(Number(previous.number) + 1, Number(column.number) - 1);
+				rendered.push(truncateToWidth(theme.fg("dim", `  ⋯ 第 ${gap} 行未显示`), width, "…"));
+			}
 			const remainingRows = maxRows - rendered.length;
 			if (remainingRows <= 0) break;
 			const highlighted = highlighter.highlight(line);
@@ -287,8 +290,10 @@ function createAnchoredSourceRowsComponent(
 				: wrapTextWithAnsi(displayText, contentWidth);
 			const wrapped = sourceRows.length > 0 ? sourceRows : [""];
 			for (const [index, source] of wrapped.slice(0, remainingRows).entries()) {
-				const anchor = index === 0 ? line.anchor.padStart(anchorWidth, " ") : " ".repeat(anchorWidth);
-				const prefix = `${theme.fg(index === 0 ? "accent" : "dim", anchor)}${theme.fg("dim", " │ ")}`;
+				const anchor = index > 0 ? " ".repeat(anchorWidth)
+					: column ? `${theme.fg("muted", column.number.padStart(numberWidth, " "))} ${theme.fg("dim", column.hash)}`
+					: theme.fg("accent", line.anchor.padStart(anchorWidth, " "));
+				const prefix = `${anchor}${theme.fg("dim", " │ ")}`;
 				const renderedLine = `${prefix}${source}`;
 				rendered.push(width > prefixWidth ? renderedLine : truncateToWidth(renderedLine, width, ""));
 			}
@@ -303,6 +308,7 @@ function createAnchoredRowsComponent(
 	lines: HleditReadLine[],
 	path: string | undefined,
 	theme: RenderTheme,
+	expanded = false,
 	maxRows?: number,
 ): RenderComponent {
 	return createAnchoredSourceRowsComponent(
@@ -310,6 +316,7 @@ function createAnchoredRowsComponent(
 		path,
 		theme,
 		maxRows,
+		expanded,
 	);
 }
 
@@ -426,6 +433,12 @@ export function renderReadAnchorsResult(
 	const preview = !options.expanded;
 	const headerText = () => {
 		const { firstLine, lastLine, totalLines } = read.actual;
+		if (!preview) {
+			return theme.fg("muted", [
+				`${read.lines.length} / ${totalLines} 行`,
+				read.totalMatches === undefined ? "" : `${read.totalMatches} 处匹配`,
+			].filter(Boolean).join(" · "));
+		}
 		const range = formatLineRange(firstLine, lastLine);
 		const actualRange = range ? `第 ${range} 行 / 共 ${totalLines} 行` : `0 行 / 共 ${totalLines} 行`;
 		return [
@@ -444,7 +457,7 @@ export function renderReadAnchorsResult(
 	const visibleLines = preview ? read.lines.slice(0, COLLAPSED_SEARCH_ROWS) : read.lines;
 	// [喵喵喵]: 多渲染一个屏幕行检测换行溢出，不能用源码行数判断长行是否隐藏。
 	const sourceRowsComponent = createAnchoredRowsComponent(
-		visibleLines, pathFromContext(context), theme, preview ? COLLAPSED_SEARCH_ROWS + 1 : undefined,
+		visibleLines, pathFromContext(context), theme, options.expanded, preview ? COLLAPSED_SEARCH_ROWS + 1 : undefined,
 	);
 	return component((width) => {
 		if (width === 0) return [];

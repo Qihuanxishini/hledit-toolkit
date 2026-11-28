@@ -2,7 +2,7 @@ import {
 	createReadToolDefinition, defineTool, detectSupportedImageMimeTypeFromFile, withFileMutationQueue,
 	type AgentToolResult,
 } from "@earendil-works/pi-coding-agent";
-import { Box, Container } from "@earendil-works/pi-tui";
+import { Container } from "@earendil-works/pi-tui";
 import { HLEDIT_READ_TOOL } from "./active-tools.ts";
 import { runHledit } from "./cli.ts";
 import { DEFAULT_READ_LIMIT, MAX_READ_LIMIT, normalizeToolPath } from "./read-args.ts";
@@ -28,7 +28,7 @@ export function createAnchoredReadTool(cwd: string, evidence: ReadEvidenceStore,
 		promptGuidelines: [
 			"Use read to examine files instead of cat or sed. Direct text reads provide edit proof for complete returned lines; nested reads do not. Read every line an edit consumes, not only its endpoints.",
 		],
-		renderShell: "self",
+		renderShell: "default",
 		renderCall: renderReadCall,
 		renderResult(result, options, theme, context) {
 			if (options.isPartial) return new Container();
@@ -38,16 +38,16 @@ export function createAnchoredReadTool(cwd: string, evidence: ReadEvidenceStore,
 			if (context.isError) {
 				return renderReadAnchorsResult({ ...result, details: { disposition: "rejected" } }, options, theme, context);
 			}
-			const box = new Box(context.outputPad, 0);
+			const output = new Container();
 			const first = result.content[0];
 			const emptyFile = !context.isError && first?.type === "text" && first.text.trim() === `[Read-only: ${EMPTY_FILE_NOTE}; no edit proof.]`;
 			// [喵喵喵]: 外层 lastComponent 是组合容器，不能传给原生 Text 渲染器复用。
 			const nativeContext = { ...context, lastComponent: undefined };
-			box.addChild(emptyFile
+			output.addChild(emptyFile
 				? renderReadHeading(normalizeToolPath(context.args.path), undefined, ["空文件"], [], theme, context)
 				: native.renderCall!(context.args, theme, nativeContext));
-			box.addChild(native.renderResult!(result as Awaited<ReturnType<typeof native.execute>>, options, theme, nativeContext));
-			return box;
+			output.addChild(native.renderResult!(result as Awaited<ReturnType<typeof native.execute>>, options, theme, nativeContext));
+			return output;
 		},
 		async execute(id, input, signal, onUpdate, ctx): Promise<AgentToolResult<ReadDetails>> {
 			// [喵喵喵]: 嵌套结果不会进入 transcript；保持原生 structuredContent，且绝不据此登记 proof。

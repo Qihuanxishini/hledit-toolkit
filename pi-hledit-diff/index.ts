@@ -54,7 +54,6 @@ export default function piHleditDiffExtension(pi: ExtensionAPI): void {
 				"Use read_windows for disjoint ranges of one file, not to fetch anchors after read. Only a complete multi-window result provides proof; read incomplete windows in smaller calls.",
 			],
 			parameters: HLEDIT_READ_ANCHORS_PARAMS_SCHEMA,
-			renderShell: "self",
 			renderCall: (args, theme, context) => renderHleditCall("read_anchors", args, theme, context),
 			renderResult: renderReadAnchorsResult,
 			async execute(_id, params, signal, _onUpdate, ctx) {

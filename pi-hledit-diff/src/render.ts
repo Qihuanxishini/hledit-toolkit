@@ -27,7 +27,6 @@ type ToolRenderContextLike = {
 	cwd?: string;
 	lastComponent?: unknown;
 	isPartial?: boolean;
-	outputPad?: number;
 	keyText?: (keybinding: Parameters<typeof keyHint>[0]) => string;
 };
 
@@ -158,14 +157,6 @@ function fitReadPath(path: string, width: number): string {
 	return truncateToWidth(parts.at(-1) || path, width, "…");
 }
 
-function readShell(body: RenderComponent, context: ToolRenderContextLike): RenderComponent {
-	return component((width) => {
-		const padding = Math.min(context.outputPad ?? 0, Math.floor(width / 2));
-		const innerWidth = width - padding * 2;
-		return innerWidth <= 0 ? [] : body.render(innerWidth).map((line) => " ".repeat(padding) + line);
-	}, () => body.invalidate());
-}
-
 export function renderReadHeading(
 	path: string | undefined,
 	range: string | undefined,
@@ -200,10 +191,10 @@ export function renderReadHeading(
 }
 
 export function renderReadCall(args: unknown, theme: RenderTheme, context: ToolRenderContextLike = {}): RenderComponent {
-	return reuseComponent(context.lastComponent, ["read-call", args, theme, context.cwd, context.isPartial, context.outputPad], () => {
+	return reuseComponent(context.lastComponent, ["read-call", args, theme, context.cwd, context.isPartial], () => {
 		// [喵喵喵]: 完成后的标题由结果槽合并输出；返回空组件不占行，也不触发宿主 fallback。
 		if (context.isPartial === false) return component(() => []);
-		return readShell(renderReadHeading(pathFromContext({ args }), readRequestRange(args), [], context.isPartial ? ["读取中…"] : [], theme, context), context);
+		return renderReadHeading(pathFromContext({ args }), readRequestRange(args), [], context.isPartial ? ["读取中…"] : [], theme, context);
 	});
 }
 
@@ -219,13 +210,13 @@ function renderCompactReadResult(
 	if (result.details.disposition !== "succeeded" || context.isError) {
 		const heading = renderReadHeading(path, readRequestRange(context.args), [], [], theme, context);
 		const failure = renderFailure("read", result, options.expanded, theme, true);
-		return readShell(component((width) => [...heading.render(width), ...failure.render(width)], () => {
+		return component((width) => [...heading.render(width), ...failure.render(width)], () => {
 			heading.invalidate();
 			failure.invalidate();
-		}), context);
+		});
 	}
 	if (!read && !windowsRead) {
-		return readShell(renderReadHeading(path, undefined, [], ["缺少结构化读取结果；请重新读取目标文件"], theme, context), context);
+		return renderReadHeading(path, undefined, [], ["缺少结构化读取结果；请重新读取目标文件"], theme, context);
 	}
 	const lines = windowsRead ? windowsRead.windows.flatMap((window) => window.lines) : read!.lines;
 	const range = windowsRead
@@ -243,7 +234,7 @@ function renderCompactReadResult(
 		totalLines === 0 ? "空文件" : `${lines.length} 行`,
 		!options.expanded && lines.length ? hint : "",
 	].filter(Boolean), warnings, theme, context);
-	if (!options.expanded) return readShell(heading, context);
+	if (!options.expanded) return heading;
 
 	const requestedRange = windowsRead
 		? windowsRead.requested.map((window) => formatLineRange(window.offset, window.offset + window.limit - 1)).join(",")
@@ -255,7 +246,7 @@ function renderCompactReadResult(
 		read?.eof ? "已到文件末尾" : "",
 	].filter(Boolean).join(" · ");
 	const source = createAnchoredRowsComponent(lines, path, theme);
-	return readShell(component((width) => width === 0 ? [] : [
+	return component((width) => width === 0 ? [] : [
 		...heading.render(width),
 		...wrapTextWithAnsi(theme.fg("muted", detail), width),
 		...source.render(width),
@@ -264,7 +255,7 @@ function renderCompactReadResult(
 	], () => {
 		heading.invalidate();
 		source.invalidate();
-	}), context);
+	});
 }
 
 function createAnchoredSourceRowsComponent(
@@ -416,7 +407,7 @@ export function renderReadAnchorsResult(
 ): RenderComponent {
 	return reuseComponent(
 		context.lastComponent,
-		["read", result.content, result.details, options.expanded, Boolean(options.isPartial), Boolean(context.isError), pathFromContext(context), readRequestRange(context.args), isRecord(context.args) && typeof context.args.pattern === "string", context.cwd, context.outputPad, context.keyText, theme],
+		["read", result.content, result.details, options.expanded, Boolean(options.isPartial), Boolean(context.isError), pathFromContext(context), readRequestRange(context.args), isRecord(context.args) && typeof context.args.pattern === "string", context.cwd, context.keyText, theme],
 		() => {
 			const search = result.details.read?.requested.pattern !== undefined || (isRecord(context.args) && typeof context.args.pattern === "string");
 			if (!search) return renderCompactReadResult(result, options, theme, context);

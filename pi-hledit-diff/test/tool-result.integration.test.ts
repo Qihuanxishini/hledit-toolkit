@@ -18,6 +18,7 @@ type RegisteredTool = {
 	name: string;
 	exposure?: ToolExposure;
 	annotations?: ToolAnnotations;
+	renderShell?: "default" | "self";
 	label?: string;
 	description?: string;
 	promptSnippet?: string;
@@ -69,6 +70,7 @@ test("anchored tools preserve native read exposure and declare local read/write 
 		assert.deepEqual(tool.annotations, tool.name === HLEDIT_APPLY_FILE_CHANGES_TOOL
 			? { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }
 			: { readOnlyHint: true, openWorldHint: false });
+		assert.notEqual(tool.renderShell, "self", `${tool.name} must retain the native tool background`);
 	}
 	assert.equal(eventListeners.has("tool_result"), false);
 });
